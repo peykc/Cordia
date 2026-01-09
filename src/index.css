@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 4%;
+    --foreground: 240 5% 96%;
+    --card: 240 8% 6%;
+    --card-foreground: 240 5% 96%;
+    --popover: 240 8% 6%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 240 5% 96%;
+    --primary-foreground: 240 10% 4%;
+    --secondary: 240 6% 10%;
+    --secondary-foreground: 240 5% 96%;
+    --muted: 240 6% 10%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 240 6% 12%;
+    --accent-foreground: 240 5% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 240 5% 96%;
+    --border: 240 6% 10%;
+    --input: 240 6% 10%;
+    --ring: 240 5% 84%;
+    --radius: 0px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html, body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    height: 100%;
+    overflow: hidden;
+  }
+  #root {
+    height: 100%;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .grid-pattern {
+    background-image: 
+      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  
+  .subtle-gradient {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%);
+  }
+  
+  .fade-in {
+    animation: fadeIn 0.6s ease-in forwards;
+    opacity: 0;
+  }
+  
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  
+  .animate-blink {
+    animation: blink 0.8s steps(2, end) infinite;
+  }
+  
+  @keyframes blink {
+    0%, 100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .animate-fade-in {
+    animation: fadeInQuick 0.3s ease-out forwards;
+  }
+  
+  @keyframes fadeInQuick {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Ensure window can be resized from all edges */
+body {
+  -webkit-app-region: no-drag;
+}
+
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+button, a, input, select, textarea {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom scrollbar styling - matches dark theme */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.4);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: hsl(var(--foreground));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+}
+
+/* Select dropdown styling */
+select option {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  padding: 0.5rem;
+}
+
+select:focus option:checked {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
