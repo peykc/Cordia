@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { checkSignalingServer, getSignalingServerUrl } from '../lib/tauri'
 
 export type SignalingStatus = 'connected' | 'disconnected' | 'checking'
@@ -15,7 +15,7 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SignalingStatus>('checking')
   const [signalingUrl, setSignalingUrl] = useState<string>('')
 
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     setStatus('checking')
     try {
       const isHealthy = await checkSignalingServer(signalingUrl || undefined)
@@ -24,7 +24,7 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
       console.error('Signaling health check failed:', error)
       setStatus('disconnected')
     }
-  }
+  }, [signalingUrl])
 
   useEffect(() => {
     // Load saved signaling server URL
@@ -45,7 +45,7 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
     const interval = setInterval(checkHealth, 30000)
 
     return () => clearInterval(interval)
-  }, [signalingUrl])
+  }, [signalingUrl, checkHealth])
 
   return (
     <SignalingContext.Provider value={{ status, signalingUrl, checkHealth }}>
