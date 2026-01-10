@@ -7,6 +7,7 @@ interface SignalingContextType {
   status: SignalingStatus
   signalingUrl: string
   checkHealth: () => Promise<void>
+  reloadUrl: () => Promise<void>
 }
 
 const SignalingContext = createContext<SignalingContextType | null>(null)
@@ -26,14 +27,19 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
     }
   }, [signalingUrl])
 
+  const reloadUrl = useCallback(async () => {
+    try {
+      const url = await getSignalingServerUrl()
+      setSignalingUrl(url)
+    } catch (error) {
+      console.error('Failed to load signaling URL:', error)
+    }
+  }, [])
+
   useEffect(() => {
     // Load saved signaling server URL
-    getSignalingServerUrl().then(url => {
-      setSignalingUrl(url)
-    }).catch(error => {
-      console.error('Failed to load signaling URL:', error)
-    })
-  }, [])
+    reloadUrl()
+  }, [reloadUrl])
 
   useEffect(() => {
     if (!signalingUrl) return
@@ -48,7 +54,7 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
   }, [signalingUrl, checkHealth])
 
   return (
-    <SignalingContext.Provider value={{ status, signalingUrl, checkHealth }}>
+    <SignalingContext.Provider value={{ status, signalingUrl, checkHealth, reloadUrl }}>
       {children}
     </SignalingContext.Provider>
   )

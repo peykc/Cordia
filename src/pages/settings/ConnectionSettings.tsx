@@ -7,7 +7,7 @@ import { useSignaling } from '../../contexts/SignalingContext'
 import { getSignalingServerUrl, setSignalingServerUrl } from '../../lib/tauri'
 
 export function ConnectionSettings() {
-  const { status, checkHealth } = useSignaling()
+  const { status, checkHealth, reloadUrl } = useSignaling()
   const [url, setUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
@@ -30,10 +30,12 @@ export function ConnectionSettings() {
 
       await setSignalingServerUrl(formattedUrl)
       setUrl(formattedUrl) // Update the input to show formatted URL
+
+      // Reload URL in context to trigger health check with new URL
+      await reloadUrl()
+
       setSaveMessage('Saved successfully!')
       setTimeout(() => setSaveMessage(''), 3000)
-      // Trigger health check with new URL
-      await checkHealth()
     } catch (error) {
       console.error('Failed to save signaling URL:', error)
       setSaveMessage('Failed to save')
@@ -44,8 +46,22 @@ export function ConnectionSettings() {
 
   const handleCheck = async () => {
     setIsChecking(true)
+    setSaveMessage('')
     try {
       await checkHealth()
+      // Show result after check completes
+      setTimeout(() => {
+        if (status === 'connected') {
+          setSaveMessage('Connection successful!')
+        } else {
+          setSaveMessage('Connection failed - check URL and server')
+        }
+        setTimeout(() => setSaveMessage(''), 3000)
+      }, 500)
+    } catch (error) {
+      console.error('Check failed:', error)
+      setSaveMessage('Connection failed')
+      setTimeout(() => setSaveMessage(''), 3000)
     } finally {
       setIsChecking(false)
     }
