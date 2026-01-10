@@ -74,20 +74,28 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -f signaling-server/Dockerfile.prebuilt -t temp-build .
+          echo "Building Docker image from repository root with context '.'"
+          echo "Using Dockerfile: signaling-server/Dockerfile.prebuilt"
+          docker build -f signaling-server/Dockerfile.prebuilt -t temp-build . || {
+            echo "Docker build failed!"
+            exit 1
+          }
+          echo "Docker build succeeded!"
+          docker images temp-build
 
       - name: Tag and push images
         if: github.event_name != 'pull_request'
         run: |
-          # Parse tags from metadata output
+          # Parse tags from metadata output (newline-separated)
           TAGS="${{ steps.meta.outputs.tags }}"
-          echo "Tags to push: $TAGS"
+          echo "Tags to push:"
+          echo "$TAGS"
 
           # Tag and push each one
-          echo "$TAGS" | tr ',' '\n' | while read -r tag; do
+          while IFS= read -r tag; do
             if [ -n "$tag" ]; then
               echo "Tagging and pushing: $tag"
               docker tag temp-build "$tag"
               docker push "$tag"
             fi
-          done
+          done <<< "$TAGS"
