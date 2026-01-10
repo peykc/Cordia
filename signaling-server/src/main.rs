@@ -282,21 +282,25 @@ async fn handle_request(
 
     // WebSocket upgrade
     if hyper_tungstenite::is_upgrade_request(&req) {
-        let (response, websocket) = hyper_tungstenite::upgrade(&mut req, None)
-            .map_err(|e| {
-                error!("WebSocket upgrade error: {}", e);
-                e
-            })?;
-
-        // Spawn a task to handle the WebSocket connection
-        tokio::spawn(async move {
-            if let Ok(ws) = websocket.await {
-                let addr = "0.0.0.0:9001".parse().unwrap(); // Placeholder for actual client addr
-                handle_connection(ws, addr, state).await;
+        match hyper_tungstenite::upgrade(&mut req, None) {
+            Ok((response, websocket)) => {
+                // Spawn a task to handle the WebSocket connection
+                tokio::spawn(async move {
+                    if let Ok(ws) = websocket.await {
+                        let addr = "0.0.0.0:9001".parse().unwrap(); // Placeholder for actual client addr
+                        handle_connection(ws, addr, state).await;
+                    }
+                });
+                return Ok(response);
             }
-        });
-
-        return Ok(response);
+            Err(e) => {
+                error!("WebSocket upgrade error: {}", e);
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("Invalid WebSocket upgrade request"))
+                    .unwrap());
+            }
+        }
     }
 
     // Default response for other requests
