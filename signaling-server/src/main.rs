@@ -20,9 +20,10 @@ type SigningPubkey = String;
 type WebSocketSender = mpsc::UnboundedSender<hyper_tungstenite::tungstenite::Message>;
 
 fn decode_path_segment(seg: &str) -> String {
-    urlencoding::decode(seg)
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| seg.to_string())
+    match urlencoding::decode(seg) {
+        Ok(s) => s.into_owned(),
+        Err(_) => seg.to_string(),
+    }
 }
 
 /// Simple invite codes: deterministic, short, and human-shareable.
