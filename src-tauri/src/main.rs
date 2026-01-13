@@ -13,6 +13,9 @@ use house::{HouseManager, HouseInfo};
 use signaling::{check_signaling_health, get_default_signaling_url};
 use account_manager::{AccountManager, SessionState, AccountInfo};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
+use rand::RngCore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedHouseHint {
@@ -20,6 +23,99 @@ struct EncryptedHouseHint {
     encrypted_state: String,
     signature: String,
     last_updated: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteTokenCreateRequest {
+    code: String,
+    ttl_seconds: u64,
+    encrypted_payload: String,
+    signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteTokenRecord {
+    code: String,
+    signing_pubkey: String,
+    encrypted_payload: String,
+    signature: String,
+    created_at: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteTokenPayload {
+    house: HouseInfo,
+    house_symmetric_key_b64: String,
+}
+
+fn derive_invite_key(code: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(code.as_bytes());
+    let out = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&out[..32]);
+    key
+}
+
+fn encrypt_invite_payload(code: &str, payload: &InviteTokenPayload) -> Result<String, String> {
+    let key = derive_invite_key(code);
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut nonce_bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = nonce_bytes.into();
+    let plaintext = serde_json::to_vec(payload).map_err(|e| format!("Failed to serialize invite payload: {}", e))?;
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_ref()).map_err(|_| "Invite encryption failed".to_string())?;
+    let mut out = nonce_bytes.to_vec();
+    out.extend(ciphertext);
+    Ok(base64::encode(&out))
+}
+
+fn decrypt_invite_payload(code: &str, encrypted_payload_b64: &str) -> Result<InviteTokenPayload, String> {
+    let key = derive_invite_key(code);
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let data = base64::decode(encrypted_payload_b64).map_err(|e| format!("Invite payload base64 decode failed: {}", e))?;
+    if data.len() < 24 {
+        return Err("Invite payload too short".to_string());
+    }
+    let mut nonce_bytes = [0u8; 24];
+    nonce_bytes.copy_from_slice(&data[..24]);
+    let nonce = nonce_bytes.into();
+    let ciphertext = &data[24..];
+    let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| "Invite decryption failed".to_string())?;
+    serde_json::from_slice::<InviteTokenPayload>(&plaintext).map_err(|e| format!("Invite payload JSON parse failed: {}", e))
+}
+
+fn encrypt_house_hint(symmetric_key: &[u8], house: &HouseInfo) -> Result<String, String> {
+    if symmetric_key.len() != 32 {
+        return Err("Invalid house symmetric key length".to_string());
+    }
+    let cipher = XChaCha20Poly1305::new(symmetric_key.into());
+    let mut nonce_bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = nonce_bytes.into();
+    let plaintext = serde_json::to_vec(house).map_err(|e| format!("Failed to serialize house: {}", e))?;
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_ref()).map_err(|_| "House hint encryption failed".to_string())?;
+    let mut out = nonce_bytes.to_vec();
+    out.extend(ciphertext);
+    Ok(base64::encode(&out))
+}
+
+fn decrypt_house_hint(symmetric_key: &[u8], encrypted_state_b64: &str) -> Result<HouseInfo, String> {
+    if symmetric_key.len() != 32 {
+        return Err("Invalid house symmetric key length".to_string());
+    }
+    let cipher = XChaCha20Poly1305::new(symmetric_key.into());
+    let data = base64::decode(encrypted_state_b64).map_err(|e| format!("House hint base64 decode failed: {}", e))?;
+    if data.len() < 24 {
+        return Err("House hint ciphertext too short".to_string());
+    }
+    let mut nonce_bytes = [0u8; 24];
+    nonce_bytes.copy_from_slice(&data[..24]);
+    let nonce = nonce_bytes.into();
+    let ciphertext = &data[24..];
+    let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| "House hint decryption failed".to_string())?;
+    serde_json::from_slice::<HouseInfo>(&plaintext).map_err(|e| format!("House hint JSON parse failed: {}", e))
 }
 
 fn normalize_signaling_to_http(url: &str) -> Result<String, String> {
@@ -325,6 +421,92 @@ async fn get_house_hint(signaling_server: String, signing_pubkey: String) -> Res
     Ok(Some(hint))
 }
 
+#[tauri::command]
+async fn publish_house_hint_opaque(signaling_server: String, house_id: String) -> Result<(), String> {
+    require_session()?;
+
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    let house = manager.load_house(&house_id)
+        .map_err(|e| format!("Failed to load house: {}", e))?;
+
+    let symmetric_key = house.get_symmetric_key()
+        .ok_or_else(|| "House missing symmetric key".to_string())?;
+
+    let house_info = house.to_info();
+    let encrypted_state = encrypt_house_hint(&symmetric_key, &house_info)?;
+
+    let hint = EncryptedHouseHint {
+        signing_pubkey: house_info.signing_pubkey.clone(),
+        encrypted_state,
+        signature: "".to_string(),
+        last_updated: chrono::Utc::now().to_rfc3339(),
+    };
+
+    register_house_hint(signaling_server, hint).await
+}
+
+#[tauri::command]
+async fn publish_house_hint_member_left(signaling_server: String, house_id: String, user_id: String) -> Result<(), String> {
+    require_session()?;
+
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    let house = manager.load_house(&house_id)
+        .map_err(|e| format!("Failed to load house: {}", e))?;
+
+    let symmetric_key = house.get_symmetric_key()
+        .ok_or_else(|| "House missing symmetric key".to_string())?;
+
+    let mut house_info = house.to_info();
+    house_info.members.retain(|m| m.user_id != user_id);
+
+    let encrypted_state = encrypt_house_hint(&symmetric_key, &house_info)?;
+    let hint = EncryptedHouseHint {
+        signing_pubkey: house_info.signing_pubkey.clone(),
+        encrypted_state,
+        signature: "".to_string(),
+        last_updated: chrono::Utc::now().to_rfc3339(),
+    };
+
+    register_house_hint(signaling_server, hint).await
+}
+
+#[tauri::command]
+async fn fetch_and_import_house_hint_opaque(signaling_server: String, signing_pubkey: String) -> Result<bool, String> {
+    require_session()?;
+
+    // Fetch encrypted hint from server
+    let hint = match get_house_hint(signaling_server.clone(), signing_pubkey.clone()).await? {
+        Some(h) => h,
+        None => return Ok(false),
+    };
+
+    // Find local house + symmetric key by signing_pubkey
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    let Some(house_id) = manager.find_house_id_by_signing_pubkey(&signing_pubkey)
+        .map_err(|e| format!("Failed to find local house: {}", e))? else {
+        return Err("Cannot decrypt hint: house not present locally (join via invite first)".to_string());
+    };
+
+    let local_house = manager.load_house(&house_id)
+        .map_err(|e| format!("Failed to load local house: {}", e))?;
+
+    let symmetric_key = local_house.get_symmetric_key()
+        .ok_or_else(|| "Cannot decrypt hint: missing symmetric key (join via invite first)".to_string())?;
+
+    let decrypted = decrypt_house_hint(&symmetric_key, &hint.encrypted_state)?;
+
+    manager.import_house_hint(decrypted)
+        .map_err(|e| format!("Failed to import decrypted hint: {}", e))?;
+
+    Ok(true)
+}
+
 #[derive(serde::Deserialize)]
 struct InviteResolveResponse {
     signing_pubkey: String,
@@ -360,6 +542,120 @@ async fn resolve_invite_code(signaling_server: String, invite_code: String) -> R
         .map_err(|e| format!("Failed to parse invite resolve JSON: {}", e))?;
 
     Ok(Some(parsed.signing_pubkey))
+}
+
+#[tauri::command]
+async fn create_temporary_invite(signaling_server: String, house_id: String, ttl_seconds: u64) -> Result<String, String> {
+    require_session()?;
+
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    // Load house with secrets (need symmetric key)
+    let house = manager.load_house(&house_id)
+        .map_err(|e| format!("Failed to load house: {}", e))?;
+
+    // Generate a short human-shareable code (18 chars)
+    const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut code = String::new();
+    let mut bytes = [0u8; 18];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    for b in bytes {
+        code.push(CHARSET[(b as usize) % CHARSET.len()] as char);
+    }
+
+    let house_info = house.to_info();
+    let symmetric_key = house.get_symmetric_key()
+        .ok_or_else(|| "House missing symmetric key".to_string())?;
+
+    let payload = InviteTokenPayload {
+        house: house_info.clone(),
+        house_symmetric_key_b64: base64::encode(&symmetric_key),
+    };
+    let encrypted_payload = encrypt_invite_payload(&code, &payload)?;
+
+    // POST to signaling server
+    let base = normalize_signaling_to_http(&signaling_server)?;
+    let url = format!(
+        "{}/api/houses/{}/invites",
+        base,
+        urlencoding::encode(&house_info.signing_pubkey)
+    );
+
+    let client = reqwest::Client::new();
+    let req = InviteTokenCreateRequest {
+        code: code.clone(),
+        ttl_seconds,
+        encrypted_payload,
+        signature: "".to_string(),
+    };
+    let resp = client
+        .post(url)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to create invite on signaling server: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Failed to create invite: HTTP {}", resp.status()));
+    }
+
+    // Store as active invite locally (clients hide when expired based on expires_at)
+    let record = resp.json::<InviteTokenRecord>().await
+        .map_err(|e| format!("Failed to parse invite response: {}", e))?;
+
+    // Update local house with active invite (uri includes server)
+    let invite_uri = format!("rmmt://{}@{}", code, signaling_server.trim());
+    let expires_at = chrono::DateTime::parse_from_rfc3339(&record.expires_at)
+        .map_err(|e| format!("Invalid expires_at: {}", e))?
+        .with_timezone(&chrono::Utc);
+
+    manager.set_active_invite(&house_id, Some(invite_uri.clone()), Some(expires_at))
+        .map_err(|e| format!("Failed to store active invite: {}", e))?;
+
+    Ok(invite_uri)
+}
+
+#[tauri::command]
+async fn redeem_temporary_invite(signaling_server: String, code: String, user_id: String, display_name: String) -> Result<HouseInfo, String> {
+    require_session()?;
+
+    let base = normalize_signaling_to_http(&signaling_server)?;
+    let url = format!("{}/api/invites/{}", base, urlencoding::encode(code.trim()));
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch invite: {}", e))?;
+
+    if resp.status().as_u16() == 404 {
+        return Err("Invite expired or not found".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Failed to fetch invite: HTTP {}", resp.status()));
+    }
+
+    let record = resp.json::<InviteTokenRecord>().await
+        .map_err(|e| format!("Failed to parse invite token: {}", e))?;
+
+    let payload = decrypt_invite_payload(code.trim(), &record.encrypted_payload)?;
+    let symmetric_key = base64::decode(&payload.house_symmetric_key_b64)
+        .map_err(|e| format!("Invalid symmetric key b64: {}", e))?;
+
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    // Import house + symmetric key locally
+    manager.import_house_invite(payload.house.clone(), symmetric_key)
+        .map_err(|e| format!("Failed to import house from invite: {}", e))?;
+
+    // Add member locally
+    let updated = manager.add_member_to_house(&payload.house.id, user_id, display_name)
+        .map_err(|e| format!("Failed to join house: {}", e))?;
+
+    Ok(updated.to_info())
 }
 
 #[tauri::command]
@@ -510,6 +806,11 @@ fn main() {
             register_house_hint,
             get_house_hint,
             resolve_invite_code,
+            publish_house_hint_opaque,
+            publish_house_hint_member_left,
+            fetch_and_import_house_hint_opaque,
+            create_temporary_invite,
+            redeem_temporary_invite,
             // Signaling commands
             check_signaling_server,
             get_default_signaling_server,

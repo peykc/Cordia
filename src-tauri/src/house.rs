@@ -104,6 +104,12 @@ pub struct HouseStorage {
     #[serde(default = "HouseStorage::generate_legacy_invite_code")]
     pub invite_code: String,
 
+    // Temporary invite (Option B): stored/displayed to members, expires client-side (server enforces too)
+    #[serde(default)]
+    pub active_invite_uri: Option<String>,
+    #[serde(default)]
+    pub active_invite_expires_at: Option<DateTime<Utc>>,
+
     // Legacy field for backwards compatibility
     #[serde(default)]
     pub public_key: String,
@@ -137,6 +143,10 @@ pub struct HouseInfo {
     pub connection_mode: ConnectionMode,
     pub signaling_url: Option<String>,
     pub invite_code: String,
+    #[serde(default)]
+    pub active_invite_uri: Option<String>,
+    #[serde(default)]
+    pub active_invite_expires_at: Option<DateTime<Utc>>,
     pub public_key: String,
     pub has_symmetric_key: bool,
     pub has_signing_key: bool,
@@ -165,6 +175,8 @@ pub struct House {
 
     // Legacy fields for backwards compatibility
     pub invite_code: String,
+    pub active_invite_uri: Option<String>,
+    pub active_invite_expires_at: Option<DateTime<Utc>>,
     pub public_key: String,
 }
 
@@ -465,6 +477,8 @@ impl House {
             connection_mode: self.connection_mode.clone(),
             signaling_url: self.signaling_url.clone(),
             invite_code: self.invite_code.clone(),
+            active_invite_uri: self.active_invite_uri.clone(),
+            active_invite_expires_at: self.active_invite_expires_at,
             public_key: self.public_key.clone(),
         })
     }
@@ -520,6 +534,8 @@ impl House {
             connection_mode: storage.connection_mode,
             signaling_url: storage.signaling_url,
             invite_code: storage.invite_code,
+            active_invite_uri: storage.active_invite_uri,
+            active_invite_expires_at: storage.active_invite_expires_at,
             public_key: storage.public_key.clone(),
         })
     }
@@ -539,6 +555,8 @@ impl House {
             connection_mode: storage.connection_mode,
             signaling_url: storage.signaling_url,
             invite_code: storage.invite_code,
+            active_invite_uri: storage.active_invite_uri,
+            active_invite_expires_at: storage.active_invite_expires_at,
             public_key: storage.public_key.clone(),
         }
     }
@@ -546,6 +564,10 @@ impl House {
     /// Set the symmetric key (used when joining via invite)
     pub fn set_symmetric_key(&mut self, key: Vec<u8>) {
         self.house_symmetric_key = Some(key);
+    }
+
+    pub fn get_symmetric_key(&self) -> Option<Vec<u8>> {
+        self.house_symmetric_key.clone()
     }
 
     /// Convert to HouseInfo for frontend serialization
@@ -572,6 +594,8 @@ impl House {
             // Use a deterministic, short invite code derived from signing_pubkey.
             // This is what the signaling server resolves for network-backed joins.
             invite_code: derive_simple_invite_code(&self.signing_pubkey),
+            active_invite_uri: self.active_invite_uri.clone(),
+            active_invite_expires_at: self.active_invite_expires_at,
             public_key: self.public_key.clone(),
             has_symmetric_key: self.house_symmetric_key.is_some(),
             has_signing_key: self.signing_secret.is_some(),
@@ -909,6 +933,31 @@ impl HouseManager {
         Ok(house)
     }
 
+    pub fn set_active_invite(
+        &self,
+        house_id: &str,
+        active_invite_uri: Option<String>,
+        active_invite_expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), HouseError> {
+        let mut house = self.load_house(house_id)?;
+        house.active_invite_uri = active_invite_uri;
+        house.active_invite_expires_at = active_invite_expires_at;
+        self.save_house(&house)?;
+        Ok(())
+    }
+
+    pub fn find_house_id_by_signing_pubkey(&self, signing_pubkey: &str) -> Result<Option<String>, HouseError> {
+        let house_ids = self.list_houses()?;
+        for house_id in house_ids {
+            if let Ok(house) = self.load_house_readonly(&house_id) {
+                if house.signing_pubkey == signing_pubkey {
+                    return Ok(Some(house_id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn remove_room_from_house(&self, house_id: &str, room_id: &str) -> Result<House, HouseError> {
         let mut house = self.load_house(house_id)?;
 
@@ -954,9 +1003,49 @@ impl HouseManager {
             connection_mode: info.connection_mode,
             signaling_url: info.signaling_url,
             invite_code: info.invite_code,
+            active_invite_uri: info.active_invite_uri,
+            active_invite_expires_at: info.active_invite_expires_at,
             public_key: info.public_key,
         };
 
+        let json = serde_json::to_string_pretty(&storage)?;
+        fs::write(house_path, json)?;
+        Ok(())
+    }
+
+    /// Import a house from an invite token that contains the house symmetric key.
+    /// This lets a new member decrypt future Option-B hints.
+    pub fn import_house_invite(&self, info: HouseInfo, house_symmetric_key: Vec<u8>) -> Result<(), HouseError> {
+        // Encrypt symmetric key with device key for local storage
+        let encrypted_symmetric_key = {
+            let cipher = XChaCha20Poly1305::new(self.device_key.into());
+            let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+            let ciphertext = cipher.encrypt(&nonce, house_symmetric_key.as_ref())
+                .map_err(|_| HouseError::EncryptionFailed)?;
+            let mut result = nonce.to_vec();
+            result.extend(ciphertext);
+            Some(base64::encode(&result))
+        };
+
+        let storage = HouseStorage {
+            id: info.id,
+            name: info.name,
+            created_at: info.created_at,
+            rooms: info.rooms,
+            members: info.members,
+            signing_pubkey: info.signing_pubkey,
+            encrypted_signing_secret: None,
+            encrypted_symmetric_key,
+            invite_uri: info.invite_uri,
+            connection_mode: info.connection_mode,
+            signaling_url: info.signaling_url,
+            invite_code: info.invite_code,
+            active_invite_uri: info.active_invite_uri,
+            active_invite_expires_at: info.active_invite_expires_at,
+            public_key: info.public_key,
+        };
+
+        let house_path = self.get_house_path(&storage.id);
         let json = serde_json::to_string_pretty(&storage)?;
         fs::write(house_path, json)?;
         Ok(())

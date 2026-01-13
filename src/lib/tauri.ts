@@ -81,6 +81,8 @@ export interface House {
   // Legacy fields - kept for backward compatibility
   public_key: string
   invite_code: string
+  active_invite_uri?: string | null
+  active_invite_expires_at?: string | null
 
   // Cryptographic key availability (for UI)
   has_symmetric_key: boolean
@@ -135,8 +137,33 @@ export async function getHouseHint(signalingServer: string, signingPubkey: strin
   return await invoke('get_house_hint', { signalingServer, signingPubkey })
 }
 
+export async function publishHouseHintOpaque(signalingServer: string, houseId: string): Promise<void> {
+  return await invoke('publish_house_hint_opaque', { signalingServer, houseId })
+}
+
+export async function publishHouseHintMemberLeft(signalingServer: string, houseId: string, userId: string): Promise<void> {
+  return await invoke('publish_house_hint_member_left', { signalingServer, houseId, userId })
+}
+
+export async function fetchAndImportHouseHintOpaque(signalingServer: string, signingPubkey: string): Promise<boolean> {
+  return await invoke('fetch_and_import_house_hint_opaque', { signalingServer, signingPubkey })
+}
+
 export async function resolveInviteCode(signalingServer: string, inviteCode: string): Promise<string | null> {
   return await invoke('resolve_invite_code', { signalingServer, inviteCode })
+}
+
+export async function createTemporaryInvite(signalingServer: string, houseId: string, ttlSeconds: number): Promise<string> {
+  return await invoke('create_temporary_invite', { signalingServer, houseId, ttlSeconds })
+}
+
+export async function redeemTemporaryInvite(
+  signalingServer: string,
+  code: string,
+  userId: string,
+  displayName: string
+): Promise<House> {
+  return await invoke('redeem_temporary_invite', { signalingServer, code, userId, displayName })
 }
 
 export async function checkSignalingServer(url?: string): Promise<boolean> {

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useAccount } from '../contexts/AccountContext'
 import { useSignaling } from '../contexts/SignalingContext'
-import { getHouseHint, importHouseHint, listHouses, type House } from '../lib/tauri'
+import { fetchAndImportHouseHintOpaque, listHouses } from '../lib/tauri'
 
 /**
  * Pull latest house metadata (members/rooms) from the signaling server after login.
@@ -36,10 +36,7 @@ export function HouseSyncBootstrap() {
         for (const h of houses) {
           if (cancelled) return
           try {
-            const hint = await getHouseHint(signalingUrl, h.signing_pubkey)
-            if (!hint) continue
-            const hintedHouse: House = JSON.parse(hint.encrypted_state)
-            await importHouseHint(hintedHouse)
+            await fetchAndImportHouseHintOpaque(signalingUrl, h.signing_pubkey)
           } catch (e) {
             console.warn('[HouseSyncBootstrap] Failed to sync house hint:', e)
           }
@@ -66,6 +63,29 @@ export function HouseSyncBootstrap() {
 
       const ws = new WebSocket(signalingUrl)
       wsRef.current = ws
+
+      const subscribeMissingHouses = async () => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        try {
+          const houses = await listHouses()
+          const nextSet = new Set(subscribedSigningPubkeysRef.current)
+          for (const h of houses) {
+            if (nextSet.has(h.signing_pubkey)) continue
+            nextSet.add(h.signing_pubkey)
+            ws.send(
+              JSON.stringify({
+                type: 'Register',
+                house_id: h.id,
+                peer_id: `house-sync:${currentAccountId}:${h.id}`,
+                signing_pubkey: h.signing_pubkey,
+              })
+            )
+          }
+          subscribedSigningPubkeysRef.current = nextSet
+        } catch (e) {
+          console.warn('[HouseSyncBootstrap] Failed to resubscribe after house list change:', e)
+        }
+      }
 
       ws.onopen = async () => {
         try {
@@ -97,8 +117,7 @@ export function HouseSyncBootstrap() {
             // Only apply updates for houses we currently track
             if (!subscribedSigningPubkeysRef.current.has(signingPubkey)) return
 
-            const hintedHouse: House = JSON.parse(msg.encrypted_state)
-            await importHouseHint(hintedHouse)
+            await fetchAndImportHouseHintOpaque(signalingUrl, signingPubkey)
             window.dispatchEvent(new Event('roommate:houses-updated'))
           }
         } catch (e) {
@@ -120,6 +139,32 @@ export function HouseSyncBootstrap() {
           }, 2000)
         }
       }
+
+      // If a house is removed locally, stop applying WS updates for it immediately (prevents re-import ghosts).
+      const onHouseRemoved = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ signing_pubkey?: string }>).detail
+        const spk = detail?.signing_pubkey
+        if (!spk) return
+        const next = new Set(subscribedSigningPubkeysRef.current)
+        next.delete(spk)
+        subscribedSigningPubkeysRef.current = next
+      }
+
+      // If houses are added (join/import), subscribe without reconnecting.
+      const onHousesUpdated = () => {
+        subscribeMissingHouses()
+      }
+
+      window.addEventListener('roommate:house-removed', onHouseRemoved)
+      window.addEventListener('roommate:houses-updated', onHousesUpdated)
+
+      // Ensure listeners are cleaned up when the WS is replaced.
+      const cleanupListeners = () => {
+        window.removeEventListener('roommate:house-removed', onHouseRemoved)
+        window.removeEventListener('roommate:houses-updated', onHousesUpdated)
+      }
+      ws.addEventListener('close', cleanupListeners, { once: true })
+      ws.addEventListener('error', cleanupListeners, { once: true })
     }
 
     connectWs()

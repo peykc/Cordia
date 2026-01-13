@@ -3,7 +3,7 @@ import { Plus, Settings, Users, Trash2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useState } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
-import { listHouses, createHouse, joinHouse, deleteHouse, importHouseHint, type House, parseInviteUri, getHouseHint, registerHouseHint, resolveInviteCode } from '../lib/tauri'
+import { listHouses, createHouse, deleteHouse, type House, parseInviteUri, publishHouseHintOpaque, publishHouseHintMemberLeft, redeemTemporaryInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 
 function HouseListPage() {
@@ -15,6 +15,7 @@ function HouseListPage() {
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showJoinDialog, setShowJoinDialog] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<House | null>(null)
   const [houseName, setHouseName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [joinError, setJoinError] = useState('')
@@ -55,15 +56,8 @@ function HouseListPage() {
         identity.display_name
       )
 
-      // Publish a house hint to the signaling server for cross-user invites (Option A)
-      // This is intentionally shaped so `encrypted_state` can later become a real encrypted blob (Option B).
       if (signalingStatus === 'connected' && signalingUrl) {
-        registerHouseHint(signalingUrl, {
-          signing_pubkey: newHouse.signing_pubkey,
-          encrypted_state: JSON.stringify(newHouse),
-          signature: '', // TODO (Option B): sign this with user identity key
-          last_updated: new Date().toISOString(),
-        }).catch(e => console.warn('Failed to publish house hint:', e))
+        publishHouseHintOpaque(signalingUrl, newHouse.id).catch(e => console.warn('Failed to publish house hint:', e))
       }
 
       setHouses([...houses, newHouse])
@@ -85,12 +79,8 @@ function HouseListPage() {
     setIsCreating(true)
 
     try {
-      // Network-backed join:
-      // - Accept full invite URI (rmmt://{signing_pubkey}@{server})
-      // - OR accept a short invite code (15-20 chars) resolved via the user's configured signaling server.
-      // - OR accept a raw signing_pubkey (fallback).
       let signalingServer = signalingUrl || ''
-      let signingPubkey: string | null = null
+      let inviteCode: string | null = null
 
       if (/^rmmt:\/\//i.test(input)) {
         const parsed = parseInviteUri(input)
@@ -103,63 +93,34 @@ function HouseListPage() {
           parsed.server.startsWith('ws://') || parsed.server.startsWith('wss://')
             ? parsed.server
             : `wss://${parsed.server}`
-        signingPubkey = parsed.signingPubkey
+        // Temporary invites use rmmt://{code}@{server}
+        inviteCode = parsed.signingPubkey
       } else {
         if (!signalingServer) {
           setJoinError('No signaling server configured.')
           return
         }
-        // Heuristic: treat short inputs as invite codes; long inputs as raw signing pubkeys.
-        if (input.length <= 25) {
-          signingPubkey = await resolveInviteCode(signalingServer, input)
-          if (!signingPubkey) {
-            setJoinError('Invite code not found on signaling server.')
-            return
-          }
-        } else {
-          signingPubkey = input
-        }
+        inviteCode = input
       }
 
-      // Fetch house hint from signaling server
-      const hint = await getHouseHint(signalingServer, signingPubkey)
-      if (!hint) {
-        setJoinError('Invite not found on signaling server.')
+      // If we have an invite code, redeem it (this imports house + keys and joins locally)
+      if (inviteCode) {
+        const updatedHouse = await redeemTemporaryInvite(signalingServer, inviteCode, identity.user_id, identity.display_name)
+
+        // Republish the updated membership list as an opaque hint so existing members see the change.
+        if (signalingStatus === 'connected' && signalingUrl) {
+          publishHouseHintOpaque(signalingUrl, updatedHouse.id).catch(e => console.warn('Failed to publish house hint after join:', e))
+        }
+
+        setHouses(prev => {
+          const exists = prev.some(h => h.id === updatedHouse.id)
+          return exists ? prev.map(h => (h.id === updatedHouse.id ? updatedHouse : h)) : [...prev, updatedHouse]
+        })
+        setShowJoinDialog(false)
+        setInviteCode('')
+        navigate(`/houses/${updatedHouse.id}`)
         return
       }
-
-      // For now (Option A), encrypted_state is plaintext JSON of a House object.
-      // Later (Option B), this becomes an encrypted blob; join flow stays the same.
-      const hintedHouse: House = JSON.parse(hint.encrypted_state)
-
-      // Persist the house locally for this account
-      await importHouseHint(hintedHouse)
-
-      // Add current user as member (local membership list)
-      const updatedHouse = await joinHouse(
-        hintedHouse.id,
-        identity.user_id,
-        identity.display_name
-      )
-
-      // Republish hint with updated member list so other accounts (including creator) can see it.
-      // (Option B later: encrypted_state becomes a signed/encrypted blob; same flow.)
-      registerHouseHint(signalingServer, {
-        signing_pubkey: updatedHouse.signing_pubkey,
-        encrypted_state: JSON.stringify(updatedHouse),
-        signature: '',
-        last_updated: new Date().toISOString(),
-      }).catch(e => console.warn('Failed to republish house hint after join:', e))
-
-      // Update local list state
-      setHouses(prev => {
-        const exists = prev.some(h => h.id === updatedHouse.id)
-        return exists ? prev.map(h => (h.id === updatedHouse.id ? updatedHouse : h)) : [...prev, updatedHouse]
-      })
-
-      setShowJoinDialog(false)
-      setInviteCode('')
-      navigate(`/houses/${updatedHouse.id}`)
     } catch (error) {
       console.error('Failed to join house:', error)
       setJoinError('Failed to join house. Please try again.')
@@ -168,37 +129,38 @@ function HouseListPage() {
     }
   }
 
-  const handleDeleteHouse = async (e: React.MouseEvent, houseId: string, houseName: string) => {
-    e.stopPropagation() // Prevent navigating to house when clicking delete
+  const handleDeleteHouse = (e: React.MouseEvent, houseId: string) => {
+    e.stopPropagation()
+    const target = houses.find(h => h.id === houseId) || null
+    setDeleteTarget(target)
+  }
 
-    if (!confirm(`Are you sure you want to leave and delete "${houseName}"? This cannot be undone.`)) {
-      return
-    }
+  const confirmDeleteHouse = async () => {
+    if (!deleteTarget) return
+    const houseId = deleteTarget.id
 
     try {
-      // Advertise "leave" by republishing the house hint without this user in the member list.
-      // Other clients will pick this up via their normal house hint sync/polling.
-      if (identity && signalingStatus === 'connected' && signalingUrl) {
-        const existing = houses.find(h => h.id === houseId)
-        if (existing) {
-          const updated: House = {
-            ...existing,
-            members: existing.members.filter(m => m.user_id !== identity.user_id),
-          }
-          registerHouseHint(signalingUrl, {
-            signing_pubkey: updated.signing_pubkey,
-            encrypted_state: JSON.stringify(updated),
-            signature: '',
-            last_updated: new Date().toISOString(),
-          }).catch(err => console.warn('Failed to publish leave update:', err))
-        }
-      }
+      setIsCreating(true)
+      // Stop WS-based re-import immediately (prevents "0 member ghost house" from coming back).
+      window.dispatchEvent(
+        new CustomEvent('roommate:house-removed', { detail: { signing_pubkey: deleteTarget.signing_pubkey } })
+      )
 
+      // Delete locally first (so it disappears from the list even if we can't publish).
       await deleteHouse(houseId)
-      setHouses(houses.filter(h => h.id !== houseId))
+      setHouses(prev => prev.filter(h => h.id !== houseId))
+      setDeleteTarget(null)
+      window.dispatchEvent(new Event('roommate:houses-updated'))
+
+      // Best-effort: advertise leave to other members.
+      if (identity && signalingStatus === 'connected' && signalingUrl) {
+        publishHouseHintMemberLeft(signalingUrl, houseId, identity.user_id).catch(err => console.warn('Failed to publish leave update:', err))
+      }
     } catch (error) {
       console.error('Failed to delete house:', error)
-      alert('Failed to delete house. Please try again.')
+      setJoinError('Failed to delete house. Please try again.')
+    } finally {
+      setIsCreating(false)
     }
   }
 
@@ -306,7 +268,7 @@ function HouseListPage() {
                         </div>
                       </div>
                       <button
-                        onClick={(e) => handleDeleteHouse(e, house.id, house.name)}
+                        onClick={(e) => handleDeleteHouse(e, house.id)}
                         className="opacity-0 group-hover:opacity-100 p-2 rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
                         title="Leave and delete house"
                       >
@@ -429,6 +391,39 @@ function HouseListPage() {
                 disabled={isCreating || !inviteCode.trim()}
               >
                 {isCreating ? 'Joining...' : 'Join'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-card border-2 border-border rounded-lg p-6 max-w-md w-full space-y-6">
+            <div className="space-y-2">
+              <h2 className="text-xl font-light tracking-tight">Leave House</h2>
+              <div className="w-8 h-px bg-foreground/20"></div>
+            </div>
+
+            <p className="text-sm text-muted-foreground font-light leading-relaxed">
+              Leave and delete <span className="text-foreground">{deleteTarget.name}</span> from this device?
+            </p>
+
+            <div className="flex gap-3">
+              <Button
+                onClick={() => setDeleteTarget(null)}
+                variant="outline"
+                className="flex-1 h-10 font-light"
+                disabled={isCreating}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={confirmDeleteHouse}
+                className="flex-1 h-10 bg-destructive text-destructive-foreground hover:bg-destructive/90 font-light"
+                disabled={isCreating}
+              >
+                {isCreating ? 'Leaving...' : 'Leave'}
               </Button>
             </div>
           </div>

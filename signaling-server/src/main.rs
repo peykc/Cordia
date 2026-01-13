@@ -26,16 +26,7 @@ fn decode_path_segment(seg: &str) -> String {
     }
 }
 
-/// Simple invite codes: deterministic, short, and human-shareable.
-/// NOTE: This is not meant to be cryptographic; it's a lookup key into server-side mappings.
-fn derive_invite_code(signing_pubkey: &str) -> String {
-    signing_pubkey
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_uppercase())
-        .take(18)
-        .collect()
-}
+// Invite tokens are temporary and opaque to the server. Clients encrypt payloads; the server only stores/forwards.
 
 // ============================================
 // WebSocket Signaling Messages
@@ -109,6 +100,24 @@ struct EncryptedHouseHint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteTokenCreateRequest {
+    code: String,
+    ttl_seconds: u64,
+    encrypted_payload: String, // Server cannot decrypt
+    signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InviteTokenRecord {
+    code: String,
+    signing_pubkey: String,
+    encrypted_payload: String,
+    signature: String,
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct HouseEvent {
     event_id: String,
     signing_pubkey: String,
@@ -153,8 +162,8 @@ struct ServerState {
     // === Event queue state (REST API) ===
     /// Hints only - clients treat local state as authoritative
     house_hints: HashMap<SigningPubkey, EncryptedHouseHint>,
-    /// Invite-code lookup (short code -> signing_pubkey)
-    invite_codes: HashMap<String, SigningPubkey>,
+    /// Temporary invite tokens (short code -> encrypted payload)
+    invite_tokens: HashMap<String, InviteTokenRecord>,
     /// Event queue - time-limited, not consensus-based
     event_queues: HashMap<SigningPubkey, Vec<HouseEvent>>,
     /// Best-effort acks - soft tracking, not hard requirement
@@ -169,7 +178,7 @@ impl ServerState {
             signing_houses: HashMap::new(),
             peer_senders: HashMap::new(),
             house_hints: HashMap::new(),
-            invite_codes: HashMap::new(),
+            invite_tokens: HashMap::new(),
             event_queues: HashMap::new(),
             member_acks: HashMap::new(),
         }
@@ -271,35 +280,37 @@ impl ServerState {
         self.house_hints.insert(signing_pubkey, hint);
     }
 
-    fn register_invite_code(&mut self, hint: &EncryptedHouseHint) {
-        let code = derive_invite_code(&hint.signing_pubkey);
-        self.invite_codes.insert(code, hint.signing_pubkey.clone());
-    }
-
     /// Get house hint
     fn get_house_hint(&self, signing_pubkey: &str) -> Option<&EncryptedHouseHint> {
         self.house_hints.get(signing_pubkey)
     }
 
-    fn resolve_invite_code(&self, code: &str) -> Option<SigningPubkey> {
-        if let Some(spk) = self.invite_codes.get(code).cloned() {
-            return Some(spk);
+    fn put_invite_token(&mut self, signing_pubkey: &str, req: InviteTokenCreateRequest) -> Result<InviteTokenRecord, String> {
+        let code = req.code.trim().to_string();
+        if code.len() < 10 || code.len() > 64 {
+            return Err("Invalid invite code length".to_string());
         }
+        let now = Utc::now();
+        let expires_at = now + Duration::seconds(req.ttl_seconds.min(60 * 60 * 24 * 30) as i64);
+        let record = InviteTokenRecord {
+            code: code.clone(),
+            signing_pubkey: signing_pubkey.to_string(),
+            encrypted_payload: req.encrypted_payload,
+            signature: req.signature,
+            created_at: now,
+            expires_at,
+        };
+        self.invite_tokens.insert(code.clone(), record.clone());
+        Ok(record)
+    }
 
-        // Fallback: resolve by scanning known house hints.
-        // This avoids brittle "must-have-mapping" behavior; the mapping can always be derived from signing_pubkey.
-        let mut match_spk: Option<SigningPubkey> = None;
-        for signing_pubkey in self.house_hints.keys() {
-            if derive_invite_code(signing_pubkey) == code {
-                if match_spk.is_some() {
-                    warn!("Invite code collision for code={} (multiple houses match)", code);
-                    // Return first match; collisions should be extremely rare with 18 chars.
-                    break;
-                }
-                match_spk = Some(signing_pubkey.clone());
-            }
-        }
-        match_spk
+    fn get_invite_token(&self, code: &str) -> Option<&InviteTokenRecord> {
+        self.invite_tokens.get(code)
+    }
+
+    fn gc_expired_invites(&mut self) {
+        let now = Utc::now();
+        self.invite_tokens.retain(|_, v| v.expires_at > now);
     }
 
     /// Post event to queue
@@ -566,7 +577,7 @@ async fn handle_api_request(
     }
 
     match path_parts[2] {
-        // GET /api/invites/{code} - Resolve short invite code to signing_pubkey
+        // GET /api/invites/{code} - Fetch temporary invite token (opaque encrypted payload)
         "invites" => {
             if path_parts.len() < 4 {
                 return Ok(Response::builder()
@@ -575,7 +586,8 @@ async fn handle_api_request(
                     .unwrap());
             }
 
-            let code = path_parts[3].trim().to_ascii_uppercase();
+            let code = decode_path_segment(path_parts[3]).trim().to_string();
+
             if method != Method::GET {
                 return Ok(Response::builder()
                     .status(StatusCode::METHOD_NOT_ALLOWED)
@@ -583,11 +595,11 @@ async fn handle_api_request(
                     .unwrap());
             }
 
-            let state = state.lock().await;
-            match state.resolve_invite_code(&code) {
-                Some(signing_pubkey) => {
-                    let json = serde_json::to_string(&serde_json::json!({ "signing_pubkey": signing_pubkey }))
-                        .unwrap();
+            let mut state = state.lock().await;
+            state.gc_expired_invites();
+            match state.get_invite_token(&code) {
+                Some(rec) => {
+                    let json = serde_json::to_string(rec).unwrap();
                     Ok(Response::builder()
                         .status(StatusCode::OK)
                         .header("Content-Type", "application/json")
@@ -596,7 +608,7 @@ async fn handle_api_request(
                 }
                 None => Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .body(Body::from("Invite code not found"))
+                    .body(Body::from("Invite not found"))
                     .unwrap()),
             }
         }
@@ -621,8 +633,6 @@ async fn handle_api_request(
                     let mut state = state.lock().await;
                     // Store the hint
                     state.register_house_hint(signing_pubkey.clone(), hint.clone());
-                    // Populate invite-code mapping (short code -> signing_pubkey)
-                    state.register_invite_code(&hint);
                     // Broadcast snapshot update to any subscribed peers
                     state.broadcast_house_hint_updated(&signing_pubkey, &hint);
                     info!("Registered house hint");
@@ -634,6 +644,38 @@ async fn handle_api_request(
                 }
                 Err(e) => {
                     warn!("Failed to parse house hint: {}", e);
+                    Ok(Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::from(format!("Invalid request body: {}", e)))
+                        .unwrap())
+                }
+            }
+        }
+
+        // POST /api/houses/{signing_pubkey}/invites - Create/update a temporary invite token
+        (Method::POST, Some("invites")) => {
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
+            match serde_json::from_slice::<InviteTokenCreateRequest>(&body_bytes) {
+                Ok(inv) => {
+                    let mut state = state.lock().await;
+                    state.gc_expired_invites();
+                    match state.put_invite_token(&signing_pubkey, inv) {
+                        Ok(record) => {
+                            let json = serde_json::to_string(&record).unwrap();
+                            Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(json))
+                                .unwrap())
+                        }
+                        Err(e) => Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Body::from(e))
+                            .unwrap()),
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to parse invite create request: {}", e);
                     Ok(Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(Body::from(format!("Invalid request body: {}", e)))

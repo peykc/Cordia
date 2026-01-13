@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadHouse, addRoom, type House, type Room, getHouseHint, importHouseHint } from '../lib/tauri'
+import { loadHouse, addRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { SignalingStatus } from '../components/SignalingStatus'
@@ -25,6 +25,8 @@ function HouseViewPage() {
   const [roomName, setRoomName] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
   const [isCreatingRoom, setIsCreatingRoom] = useState(false)
+  const [inviteTtl, setInviteTtl] = useState<'3600' | '86400' | '259200' | '604800'>('86400')
+  const [isCreatingInvite, setIsCreatingInvite] = useState(false)
 
   useEffect(() => {
     if (!houseId) {
@@ -55,12 +57,8 @@ function HouseViewPage() {
       // This uses a merge-import on the backend that preserves local encrypted secrets.
       if (signalingStatus === 'connected' && signalingUrl) {
         try {
-          const hint = await getHouseHint(signalingUrl, loadedHouse.signing_pubkey)
-          if (hint) {
-            const hintedHouse: House = JSON.parse(hint.encrypted_state)
-            await importHouseHint(hintedHouse)
-            loadedHouse = await loadHouse(houseId)
-          }
+          const changed = await fetchAndImportHouseHintOpaque(signalingUrl, loadedHouse.signing_pubkey)
+          if (changed) loadedHouse = await loadHouse(houseId)
         } catch (e) {
           console.warn('[HouseView] Failed to refresh house hint:', e)
         }
@@ -85,19 +83,44 @@ function HouseViewPage() {
 
   const copyInviteCode = () => {
     if (!house) return
-    // Simple in-app invite: short code (server-resolvable)
-    navigator.clipboard.writeText(house.invite_code)
+    const uri = getActiveInviteUri()
+    if (!uri) return
+    // Copy the full invite URI (rmmt://CODE@server). Join UI accepts either.
+    navigator.clipboard.writeText(uri)
     setCopiedInvite(true)
     setTimeout(() => setCopiedInvite(false), 2000)
   }
 
-  const copyInviteLink = () => {
-    if (!house) return
-    const invite = getInviteUriForCurrentServer()
-    if (!invite) return
-    navigator.clipboard.writeText(invite)
-    setCopiedInvite(true)
-    setTimeout(() => setCopiedInvite(false), 2000)
+  const getActiveInviteUri = (): string | null => {
+    if (!house) return null
+    const uri = house.active_invite_uri || null
+    const expiresAt = house.active_invite_expires_at ? new Date(house.active_invite_expires_at) : null
+    if (!uri || !expiresAt) return null
+    if (Date.now() > expiresAt.getTime()) return null
+    return uri
+  }
+
+  const getActiveInviteCode = (): string | null => {
+    const uri = getActiveInviteUri()
+    if (!uri) return null
+    const parsed = uri.trim().match(/^rmmt:\/\/([^@]+)@/i)
+    return parsed ? parsed[1] : null
+  }
+
+  const handleCreateInvite = async () => {
+    if (!houseId || !house) return
+    if (signalingStatus !== 'connected' || !signalingUrl) return
+
+    setIsCreatingInvite(true)
+    try {
+      await createTemporaryInvite(signalingUrl, houseId, Number(inviteTtl))
+      const updated = await loadHouse(houseId)
+      setHouse(updated)
+    } catch (e) {
+      console.warn('Failed to create invite:', e)
+    } finally {
+      setIsCreatingInvite(false)
+    }
   }
 
   const handleSelectRoom = (room: Room) => {
@@ -150,12 +173,7 @@ function HouseViewPage() {
 
       // Publish updated hint (rooms changed)
       if (signalingStatus === 'connected' && signalingUrl) {
-        registerHouseHint(signalingUrl, {
-          signing_pubkey: updatedHouse.signing_pubkey,
-          encrypted_state: JSON.stringify(updatedHouse),
-          signature: '',
-          last_updated: new Date().toISOString(),
-        }).catch(e => console.warn('Failed to publish house hint:', e))
+        publishHouseHintOpaque(signalingUrl, updatedHouse.id).catch(e => console.warn('Failed to publish house hint:', e))
       }
 
       setShowCreateRoomDialog(false)
@@ -257,13 +275,16 @@ function HouseViewPage() {
               </h3>
               <div className="flex items-center gap-2">
               <div className="flex-1 px-3 py-2 bg-background border border-border rounded-md">
-                  <code className="text-xs font-mono break-all">{house.invite_code}</code>
+                  <code className="text-xs font-mono break-all">
+                    {getActiveInviteCode() || '—'}
+                  </code>
                 </div>
                 <Button
                   onClick={copyInviteCode}
                   variant="outline"
                   size="icon"
                   className="h-9 w-9 shrink-0"
+                  disabled={!getActiveInviteUri()}
                 >
                   {copiedInvite ? (
                     <Check className="h-4 w-4 text-green-500" />
@@ -272,17 +293,38 @@ function HouseViewPage() {
                   )}
                 </Button>
               </div>
-              <div className="px-2 space-y-1">
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Share this short code with friends to invite them to this house.
-                </p>
-                <button
-                  onClick={copyInviteLink}
-                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground transition-colors"
-                  type="button"
-                >
-                  Copy full invite link (advanced)
-                </button>
+              <div className="px-2 space-y-2">
+                {getActiveInviteUri() ? (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Temporary invite is active. Friends can paste the code or the full link to join.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    No active invite. Create a temporary invite link:
+                  </p>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={inviteTtl}
+                    onChange={(e) => setInviteTtl(e.target.value as any)}
+                    className="flex-1 h-9 px-3 bg-background border border-border rounded-md text-xs font-light"
+                    disabled={isCreatingInvite || signalingStatus !== 'connected'}
+                  >
+                    <option value="604800">7d</option>
+                    <option value="259200">3d</option>
+                    <option value="86400">1d</option>
+                    <option value="3600">1hr</option>
+                  </select>
+                  <Button
+                    onClick={handleCreateInvite}
+                    size="sm"
+                    className="h-9 font-light"
+                    disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                  >
+                    {isCreatingInvite ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
