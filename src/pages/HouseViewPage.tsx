@@ -7,7 +7,6 @@ import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { SignalingStatus } from '../components/SignalingStatus'
 import { useSignaling } from '../contexts/SignalingContext'
-import { registerHouseHint } from '../lib/tauri'
 
 function HouseViewPage() {
   const { houseId } = useParams<{ houseId: string }>()
@@ -71,14 +70,6 @@ function HouseViewPage() {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const getInviteUriForCurrentServer = (): string | null => {
-    if (!house) return null
-    if (!signalingUrl) return house.invite_uri
-
-    // Include the full signaling URL (wss://...) to avoid ambiguity and redirects.
-    return `rmmt://${house.signing_pubkey}@${signalingUrl.trim()}`
   }
 
   const copyInviteCode = () => {

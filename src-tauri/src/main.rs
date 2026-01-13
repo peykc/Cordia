@@ -118,6 +118,48 @@ fn decrypt_house_hint(symmetric_key: &[u8], encrypted_state_b64: &str) -> Result
     serde_json::from_slice::<HouseInfo>(&plaintext).map_err(|e| format!("House hint JSON parse failed: {}", e))
 }
 
+fn merge_house_infos(mut base: HouseInfo, other: HouseInfo) -> HouseInfo {
+    // Members: union by user_id (keep first seen)
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut merged_members = Vec::new();
+    for m in base.members.into_iter() {
+        if seen.insert(m.user_id.clone()) {
+            merged_members.push(m);
+        }
+    }
+    for m in other.members.into_iter() {
+        if seen.insert(m.user_id.clone()) {
+            merged_members.push(m);
+        }
+    }
+    base.members = merged_members;
+
+    // Rooms: union by id
+    let mut seen_rooms = std::collections::HashSet::<String>::new();
+    let mut merged_rooms = Vec::new();
+    for r in base.rooms.into_iter() {
+        if seen_rooms.insert(r.id.clone()) {
+            merged_rooms.push(r);
+        }
+    }
+    for r in other.rooms.into_iter() {
+        if seen_rooms.insert(r.id.clone()) {
+            merged_rooms.push(r);
+        }
+    }
+    base.rooms = merged_rooms;
+
+    // Invite state: prefer any active value
+    if base.active_invite_uri.is_none() {
+        base.active_invite_uri = other.active_invite_uri;
+    }
+    if base.active_invite_expires_at.is_none() {
+        base.active_invite_expires_at = other.active_invite_expires_at;
+    }
+
+    base
+}
+
 fn normalize_signaling_to_http(url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.starts_with("wss://") {
@@ -685,18 +727,28 @@ async fn redeem_temporary_invite(signaling_server: String, code: String, user_id
     let manager = HouseManager::new()
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
 
-    // Import house + symmetric key locally
-    manager.import_house_invite(payload.house.clone(), symmetric_key)
+    // IMPORTANT: The invite payload's house snapshot can be stale (it was created when the invite was generated).
+    // Now that we have the symmetric key, pull+decrypt the latest server hint and merge memberships/rooms so we
+    // don't overwrite the server's member list with "creator + me".
+    let mut merged_house = payload.house.clone();
+    if let Some(latest_hint) = get_house_hint(signaling_server.clone(), merged_house.signing_pubkey.clone()).await? {
+        if let Ok(server_house) = decrypt_house_hint(&symmetric_key, &latest_hint.encrypted_state) {
+            merged_house = merge_house_infos(server_house, merged_house);
+        }
+    }
+
+    // Import merged house + symmetric key locally
+    manager.import_house_invite(merged_house.clone(), symmetric_key)
         .map_err(|e| format!("Failed to import house from invite: {}", e))?;
 
     // Add member locally
-    let updated = manager.add_member_to_house(&payload.house.id, user_id, display_name)
+    let updated = manager.add_member_to_house(&merged_house.id, user_id, display_name)
         .map_err(|e| format!("Failed to join house: {}", e))?;
 
     // CRITICAL: Publish updated encrypted hint as part of redeem flow.
     // Otherwise, other clients (including the creator) may never learn about this membership change,
     // and later syncs can overwrite the joiner's local member list.
-    publish_house_hint_opaque(signaling_server.clone(), payload.house.id.clone()).await?;
+    publish_house_hint_opaque(signaling_server.clone(), merged_house.id.clone()).await?;
 
     Ok(updated.to_info())
 }
