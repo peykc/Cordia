@@ -95,8 +95,9 @@ function HouseViewPage() {
     if (!house) return null
     const uri = house.active_invite_uri || null
     const expiresAt = house.active_invite_expires_at ? new Date(house.active_invite_expires_at) : null
-    if (!uri || !expiresAt) return null
-    if (Date.now() > expiresAt.getTime()) return null
+    if (!uri) return null
+    // If expires_at isn't present (older data), treat it as active until revoked.
+    if (expiresAt && Date.now() > expiresAt.getTime()) return null
     return uri
   }
 
@@ -256,7 +257,7 @@ function HouseViewPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar - Rooms List */}
         <div className="w-64 border-r-2 border-border bg-card/50 flex flex-col">
-          <div className="p-4 space-y-4">
+          <div className="p-4 flex flex-col h-full">
             <div className="space-y-2">
               <div className="flex items-center justify-between px-2">
                 <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground">
@@ -295,65 +296,45 @@ function HouseViewPage() {
               </div>
             </div>
 
-            <div className="pt-4 border-t border-border space-y-2">
-              <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2">
-                Invite Code
-              </h3>
-              <div className="flex items-center gap-2">
-              <div className="flex-1 px-3 py-2 bg-background border border-border rounded-md">
-                  <code className="text-xs font-mono break-all">
-                    {getActiveInviteCode() || '—'}
-                  </code>
-                </div>
+            <div className="mt-auto pt-4 border-t border-border">
+              {!getActiveInviteUri() ? (
                 <Button
-                  onClick={copyInviteCode}
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 shrink-0"
-                  disabled={!getActiveInviteUri()}
+                  onClick={handleCreateInvite}
+                  size="sm"
+                  className="h-9 font-light w-full"
+                  disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
                 >
-                  {copiedInvite ? (
-                    <Check className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
+                  {isCreatingInvite ? 'Creating…' : 'Create invite'}
                 </Button>
-              </div>
-              <div className="px-2 space-y-2">
-                {getActiveInviteUri() ? (
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Temporary invite is active. Friends can paste the code or the full link to join.
-                  </p>
-                ) : (
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    No active invite. Create a temporary invite link:
-                  </p>
-                )}
-
-                {!getActiveInviteUri() ? (
+              ) : (
+                <div className="space-y-2">
                   <div className="flex items-center gap-2">
+                    <div className="flex-1 px-3 py-2 bg-background border border-border rounded-md">
+                      <code className="text-xs font-mono break-all">{getActiveInviteCode() || ''}</code>
+                    </div>
                     <Button
-                      onClick={handleCreateInvite}
-                      size="sm"
-                      className="h-9 font-light w-full"
-                      disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                      onClick={copyInviteCode}
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 shrink-0"
                     >
-                      {isCreatingInvite ? 'Creating…' : 'Create invite'}
+                      {copiedInvite ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
                     </Button>
                   </div>
-                ) : (
-                  <div className="space-y-1">
-                    <button
-                      onClick={handleRevokeInvite}
-                      className="text-xs text-red-500 underline underline-offset-4 hover:text-red-400 transition-colors"
-                      type="button"
-                      disabled={isRevokingInvite || signalingStatus !== 'connected' || !signalingUrl}
-                    >
-                      {isRevokingInvite ? 'Revoking…' : 'Revoke access'}
-                    </button>
-                  </div>
-                )}
-              </div>
+                  <button
+                    onClick={handleRevokeInvite}
+                    className="text-xs text-red-500 underline underline-offset-4 hover:text-red-400 transition-colors"
+                    type="button"
+                    disabled={isRevokingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                  >
+                    {isRevokingInvite ? 'Revoking…' : 'Revoke access'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

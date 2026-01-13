@@ -564,9 +564,16 @@ async fn create_temporary_invite(signaling_server: String, house_id: String, max
         code.push(CHARSET[(b as usize) % CHARSET.len()] as char);
     }
 
-    let house_info = house.to_info();
+    let mut house_info = house.to_info();
     let symmetric_key = house.get_symmetric_key()
         .ok_or_else(|| "House missing symmetric key".to_string())?;
+
+    // Include active invite fields in the payload so new joiners see the current invite state immediately.
+    // We treat the invite as "active until revoked"; this timestamp is just to allow UI hiding if it's very stale.
+    let invite_uri = format!("rmmt://{}@{}", code, signaling_server.trim());
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(30);
+    house_info.active_invite_uri = Some(invite_uri.clone());
+    house_info.active_invite_expires_at = Some(expires_at);
 
     let payload = InviteTokenPayload {
         house: house_info.clone(),
@@ -603,12 +610,6 @@ async fn create_temporary_invite(signaling_server: String, house_id: String, max
     // Store as active invite locally (clients hide when expired based on expires_at)
     let record = resp.json::<InviteTokenRecord>().await
         .map_err(|e| format!("Failed to parse invite response: {}", e))?;
-
-    // Update local house with active invite (uri includes server)
-    let invite_uri = format!("rmmt://{}@{}", code, signaling_server.trim());
-    let expires_at = chrono::DateTime::parse_from_rfc3339(&record.expires_at)
-        .map_err(|e| format!("Invalid expires_at: {}", e))?
-        .with_timezone(&chrono::Utc);
 
     manager.set_active_invite(&house_id, Some(invite_uri.clone()), Some(expires_at))
         .map_err(|e| format!("Failed to store active invite: {}", e))?;
@@ -691,6 +692,11 @@ async fn redeem_temporary_invite(signaling_server: String, code: String, user_id
     // Add member locally
     let updated = manager.add_member_to_house(&payload.house.id, user_id, display_name)
         .map_err(|e| format!("Failed to join house: {}", e))?;
+
+    // CRITICAL: Publish updated encrypted hint as part of redeem flow.
+    // Otherwise, other clients (including the creator) may never learn about this membership change,
+    // and later syncs can overwrite the joiner's local member list.
+    publish_house_hint_opaque(signaling_server.clone(), payload.house.id.clone()).await?;
 
     Ok(updated.to_info())
 }

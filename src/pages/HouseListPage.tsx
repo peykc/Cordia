@@ -107,11 +107,6 @@ function HouseListPage() {
       if (inviteCode) {
         const updatedHouse = await redeemTemporaryInvite(signalingServer, inviteCode, identity.user_id, identity.display_name)
 
-        // Republish the updated membership list as an opaque hint so existing members see the change.
-        if (signalingStatus === 'connected' && signalingUrl) {
-          publishHouseHintOpaque(signalingUrl, updatedHouse.id).catch(e => console.warn('Failed to publish house hint after join:', e))
-        }
-
         setHouses(prev => {
           const exists = prev.some(h => h.id === updatedHouse.id)
           return exists ? prev.map(h => (h.id === updatedHouse.id ? updatedHouse : h)) : [...prev, updatedHouse]
@@ -146,16 +141,17 @@ function HouseListPage() {
         new CustomEvent('roommate:house-removed', { detail: { signing_pubkey: deleteTarget.signing_pubkey } })
       )
 
-      // Delete locally first (so it disappears from the list even if we can't publish).
+      // Best-effort: advertise leave to other members.
+      if (identity && signalingStatus === 'connected' && signalingUrl) {
+        // IMPORTANT: publish BEFORE deleting locally (encryption needs the local symmetric key)
+        await publishHouseHintMemberLeft(signalingUrl, houseId, identity.user_id)
+      }
+
+      // Delete locally last (so the leave broadcast can be encrypted)
       await deleteHouse(houseId)
       setHouses(prev => prev.filter(h => h.id !== houseId))
       setDeleteTarget(null)
       window.dispatchEvent(new Event('roommate:houses-updated'))
-
-      // Best-effort: advertise leave to other members.
-      if (identity && signalingStatus === 'connected' && signalingUrl) {
-        publishHouseHintMemberLeft(signalingUrl, houseId, identity.user_id).catch(err => console.warn('Failed to publish leave update:', err))
-      }
     } catch (error) {
       console.error('Failed to delete house:', error)
       setJoinError('Failed to delete house. Please try again.')
