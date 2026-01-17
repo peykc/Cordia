@@ -313,6 +313,37 @@ async fn init_db(pool: &PgPool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| format!("init_db invite_tokens: {}", e))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS house_events (
+          event_id TEXT PRIMARY KEY,
+          signing_pubkey TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          encrypted_payload TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          timestamp TIMESTAMPTZ NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("init_db house_events: {}", e))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS member_acks (
+          signing_pubkey TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          last_event_id TEXT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (signing_pubkey, user_id)
+        );
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("init_db member_acks: {}", e))?;
     Ok(())
 }
 
@@ -541,6 +572,125 @@ async fn revoke_invite_db(pool: &PgPool, code: &str) -> Result<bool, String> {
         .await
         .map_err(|e| format!("revoke_invite_db: {}", e))?;
     Ok(res.rows_affected() > 0)
+}
+
+#[cfg(feature = "postgres")]
+async fn insert_event_db(pool: &PgPool, event: &HouseEvent) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        INSERT INTO house_events (event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (event_id) DO NOTHING;
+        "#,
+    )
+    .bind(&event.event_id)
+    .bind(&event.signing_pubkey)
+    .bind(&event.event_type)
+    .bind(&event.encrypted_payload)
+    .bind(&event.signature)
+    .bind(event.timestamp)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("insert_event_db: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "postgres")]
+async fn get_event_timestamp_db(pool: &PgPool, signing_pubkey: &str, event_id: &str) -> Result<Option<DateTime<Utc>>, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT timestamp
+        FROM house_events
+        WHERE signing_pubkey = $1 AND event_id = $2
+        "#,
+    )
+    .bind(signing_pubkey)
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_event_timestamp_db: {}", e))?;
+
+    Ok(row.and_then(|r| r.try_get("timestamp").ok()))
+}
+
+#[cfg(feature = "postgres")]
+async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&str>) -> Result<Vec<HouseEvent>, String> {
+    let rows = if let Some(since_id) = since {
+        let Some(since_ts) = get_event_timestamp_db(pool, signing_pubkey, since_id).await? else {
+            return Ok(Vec::new());
+        };
+        sqlx::query(
+            r#"
+            SELECT event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp
+            FROM house_events
+            WHERE signing_pubkey = $1
+              AND (timestamp > $2 OR (timestamp = $2 AND event_id > $3))
+            ORDER BY timestamp ASC, event_id ASC
+            "#,
+        )
+        .bind(signing_pubkey)
+        .bind(since_ts)
+        .bind(since_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("get_events_db since: {}", e))?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp
+            FROM house_events
+            WHERE signing_pubkey = $1
+            ORDER BY timestamp ASC, event_id ASC
+            "#,
+        )
+        .bind(signing_pubkey)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("get_events_db: {}", e))?
+    };
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(HouseEvent {
+            event_id: row.try_get("event_id").unwrap_or_default(),
+            signing_pubkey: row.try_get("signing_pubkey").unwrap_or_default(),
+            event_type: row.try_get("event_type").unwrap_or_default(),
+            encrypted_payload: row.try_get("encrypted_payload").unwrap_or_default(),
+            signature: row.try_get("signature").unwrap_or_default(),
+            timestamp: row.try_get("timestamp").unwrap_or_else(|_| Utc::now()),
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "postgres")]
+async fn ack_events_db(pool: &PgPool, signing_pubkey: &str, user_id: &str, last_event_id: &str) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        INSERT INTO member_acks (signing_pubkey, user_id, last_event_id, updated_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (signing_pubkey, user_id) DO UPDATE
+        SET last_event_id = EXCLUDED.last_event_id,
+            updated_at = NOW();
+        "#,
+    )
+    .bind(signing_pubkey)
+    .bind(user_id)
+    .bind(last_event_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("ack_events_db: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "postgres")]
+async fn gc_old_events_db(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<(), String> {
+    sqlx::query("DELETE FROM house_events WHERE timestamp <= $1")
+        .bind(cutoff)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("gc_old_events_db: {}", e))?;
+    Ok(())
 }
 
 #[cfg(feature = "redis-backend")]
@@ -1819,6 +1969,19 @@ async fn handle_api_request(
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<AckRequest>(&body_bytes) {
                 Ok(ack) => {
+                    #[cfg(feature = "postgres")]
+                    {
+                        let db = { state.lock().await.db.clone() };
+                        if let Some(pool) = db {
+                            let _ = ack_events_db(&pool, &signing_pubkey, &ack.user_id, &ack.last_event_id).await;
+                            info!("Acknowledged events (db)");
+                            return Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(r#"{"status":"ok"}"#))
+                                .unwrap());
+                        }
+                    }
                     let mut state = state.lock().await;
                     state.ack_events(signing_pubkey, ack.user_id, ack.last_event_id);
                     info!("Acknowledged events");
@@ -1843,6 +2006,27 @@ async fn handle_api_request(
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<HouseEvent>(&body_bytes) {
                 Ok(event) => {
+                    let mut event = event;
+                    event.signing_pubkey = signing_pubkey.clone();
+                    event.timestamp = Utc::now();
+                    if event.event_id.is_empty() {
+                        event.event_id = uuid::Uuid::new_v4().to_string();
+                    }
+
+                    #[cfg(feature = "postgres")]
+                    {
+                        let db = { state.lock().await.db.clone() };
+                        if let Some(pool) = db {
+                            let _ = insert_event_db(&pool, &event).await;
+                            info!("Posted house event (db)");
+                            return Ok(Response::builder()
+                                .status(StatusCode::CREATED)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(r#"{"status":"created"}"#))
+                                .unwrap());
+                        }
+                    }
+
                     let mut state = state.lock().await;
                     state.post_event(signing_pubkey, event);
                     info!("Posted house event");
@@ -1869,6 +2053,19 @@ async fn handle_api_request(
                 .split('&')
                 .find(|p| p.starts_with("since="))
                 .map(|p| &p[6..]);
+            #[cfg(feature = "postgres")]
+            {
+                let db = { state.lock().await.db.clone() };
+                if let Some(pool) = db {
+                    let events = get_events_db(&pool, &signing_pubkey, since).await.unwrap_or_default();
+                    let json = serde_json::to_string(&events).unwrap();
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(json))
+                        .unwrap());
+                }
+            }
 
             let state = state.lock().await;
             let events = state.get_events(&signing_pubkey, since);
@@ -1885,6 +2082,19 @@ async fn handle_api_request(
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<AckRequest>(&body_bytes) {
                 Ok(ack) => {
+                    #[cfg(feature = "postgres")]
+                    {
+                        let db = { state.lock().await.db.clone() };
+                        if let Some(pool) = db {
+                            let _ = ack_events_db(&pool, &signing_pubkey, &ack.user_id, &ack.last_event_id).await;
+                            info!("Acknowledged events (db)");
+                            return Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(r#"{"status":"ok"}"#))
+                                .unwrap());
+                        }
+                    }
                     let mut state = state.lock().await;
                     state.ack_events(signing_pubkey, ack.user_id, ack.last_event_id);
                     info!("Acknowledged events");
@@ -2072,8 +2282,24 @@ async fn main() {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; // Every hour
-            let mut state = gc_state.lock().await;
-            state.gc_old_events();
+            let (db, cutoff) = {
+                let mut state = gc_state.lock().await;
+                state.gc_old_events();
+                #[cfg(feature = "postgres")]
+                let db = state.db.clone();
+                #[cfg(not(feature = "postgres"))]
+                let db: Option<()> = None;
+                let cutoff = Utc::now() - Duration::days(EVENT_RETENTION_DAYS);
+                (db, cutoff)
+            };
+
+            #[cfg(feature = "postgres")]
+            if let Some(pool) = db {
+                if let Err(e) = gc_old_events_db(&pool, cutoff).await {
+                    warn!("DB GC failed: {}", e);
+                }
+            }
+
             info!("Garbage collected old events");
         }
     });

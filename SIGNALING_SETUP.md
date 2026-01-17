@@ -124,8 +124,9 @@ environment:
 ### Default Signaling Server URL
 The app defaults to `ws://127.0.0.1:9001`.
 
-### Optional Postgres Durability (Profiles + Invites + House Hints)
-Postgres is **compile-time optional** and **runtime optional**:
+### Optional Postgres Durability (Profiles + Invites + House Hints + Events)
+Postgres is **compile-time optional** and **runtime optional**. When enabled it persists
+the event queue and acknowledgements for reliable offline catch-up.
 
 - Build with `--features postgres` (or `SIGNALING_FEATURES=postgres` in Docker)
 - Set `SIGNALING_DB_URL` at runtime

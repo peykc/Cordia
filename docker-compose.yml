@@ -1,28 +1,15 @@
-version: '3.8'
-
 services:
   signaling-server:
-    build:
-      context: ./signaling-server
-      dockerfile: Dockerfile
-      args:
-        - SIGNALING_FEATURES=${SIGNALING_FEATURES:-}
+    image: ghcr.io/pey-k/roommate-signaling:latest
     container_name: roommate-signaling
     hostname: roommate-signaling
     environment:
-
       - TZ=America/New_York
       - RUST_LOG=info
-    volumes:
-      - /mnt/App/apps/signal:/config
     ports:
       - "9001:9001"
     restart: unless-stopped
     healthcheck:
-      test: ["/app/signaling-server", "--healthcheck"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      disable: true
 
 networks: {}
