@@ -5,9 +5,13 @@ import { Select } from '../../components/ui/select'
 import { Slider } from '../../components/ui/slider'
 import { VoiceLevelMeter } from '../../components/VoiceLevelMeter'
 import { loadAudioSettings, saveAudioSettings, AudioSettings } from '../../lib/tauri'
-import { enumerateAudioDevices, AudioDevice, InputLevelMeter, setupDeviceChangeListener } from '../../lib/audio'
+import { enumerateAudioDevices, AudioDevice, setupDeviceChangeListener } from '../../lib/audio'
+import { useWebRTC } from '../../contexts/WebRTCContext'
 
 export function AudioSettingsPage() {
+  // Get WebRTC context - we'll use ITS meter, not create our own
+  const { inputLevelMeter, initializeAudio } = useWebRTC()
+
   // Audio state
   const [inputDevices, setInputDevices] = useState<AudioDevice[]>([])
   const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([])
@@ -23,7 +27,6 @@ export function AudioSettingsPage() {
   const [inputLevel, setInputLevel] = useState(0)
   const [isMonitoring, setIsMonitoring] = useState(false)
   const isMonitoringRef = useRef(false) // Track monitoring state without causing re-renders
-  const levelMeterRef = useRef<InputLevelMeter | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [isCapturingKey, setIsCapturingKey] = useState(false)
   const [isPttKeyPressed, setIsPttKeyPressed] = useState(false)
@@ -56,73 +59,61 @@ export function AudioSettingsPage() {
     return cleanup
   }, [])
 
-  // Start/stop input level meter when input device or processing settings change
+  // Initialize/reinitialize audio when device changes
+  // NOTE: This uses WebRTCContext's meter - one meter for both voice and settings
   useEffect(() => {
     const wasMonitoring = isMonitoringRef.current
 
-    if (levelMeterRef.current) {
-      levelMeterRef.current.stop()
-    }
+    const initAudio = async () => {
+      // Initialize audio with current device
+      await initializeAudio(audioSettings.input_device_id || null, setInputLevel)
+      console.log('[AudioSettings] Audio initialized with device:', audioSettings.input_device_id || 'default')
 
-    // Always start meter - use null for default device, or specific device ID if selected
-    const startAudio = async () => {
-      levelMeterRef.current = new InputLevelMeter()
-      await levelMeterRef.current.start(
-        audioSettings.input_device_id || null,
-        setInputLevel
-      )
-      // Set initial gain and threshold from settings
-      levelMeterRef.current.setGain(audioSettings.input_volume)
-      levelMeterRef.current.setThreshold(audioSettings.input_sensitivity)
-
-      // Restore monitoring if it was active (will use current output device from state)
-      if (wasMonitoring) {
+      // Restore monitoring if it was active
+      if (wasMonitoring && inputLevelMeter) {
         const currentOutputDevice = audioSettings.output_device_id
-        await levelMeterRef.current.setMonitoring(true, currentOutputDevice)
+        await inputLevelMeter.setMonitoring(true, currentOutputDevice)
       }
     }
 
-    startAudio()
+    initAudio()
 
-    return () => {
-      if (levelMeterRef.current) {
-        levelMeterRef.current.stop()
-      }
-    }
-  }, [audioSettings.input_device_id])
+    // Cleanup is handled by WebRTCContext - don't stop the meter here
+    // because it might be used by an active voice call
+  }, [audioSettings.input_device_id, initializeAudio])
 
   // Handle monitoring on/off ONLY when button is clicked, not when other settings change
   // This is controlled by isMonitoring state which only changes via handleToggleMonitoring
 
   // Update gain when input volume changes
   useEffect(() => {
-    if (levelMeterRef.current) {
-      levelMeterRef.current.setGain(audioSettings.input_volume)
+    if (inputLevelMeter) {
+      inputLevelMeter.setGain(audioSettings.input_volume)
     }
-  }, [audioSettings.input_volume])
+  }, [inputLevelMeter, audioSettings.input_volume])
 
   // Update threshold when input sensitivity changes
   useEffect(() => {
-    if (levelMeterRef.current) {
-      levelMeterRef.current.setThreshold(audioSettings.input_sensitivity)
+    if (inputLevelMeter) {
+      inputLevelMeter.setThreshold(audioSettings.input_sensitivity)
     }
-  }, [audioSettings.input_sensitivity])
+  }, [inputLevelMeter, audioSettings.input_sensitivity])
 
   // Update input mode when it changes
   useEffect(() => {
-    if (levelMeterRef.current) {
-      levelMeterRef.current.setInputMode(audioSettings.input_mode)
+    if (inputLevelMeter) {
+      inputLevelMeter.setInputMode(audioSettings.input_mode)
     }
-  }, [audioSettings.input_mode])
+  }, [inputLevelMeter, audioSettings.input_mode])
 
   // Update monitoring output device when it changes (only if already monitoring)
   useEffect(() => {
-    if (levelMeterRef.current && isMonitoring) {
+    if (inputLevelMeter && isMonitoring) {
       // Restart monitoring with new output device
-      levelMeterRef.current.setMonitoring(false)
-      levelMeterRef.current.setMonitoring(true, audioSettings.output_device_id)
+      inputLevelMeter.setMonitoring(false)
+      inputLevelMeter.setMonitoring(true, audioSettings.output_device_id)
     }
-  }, [audioSettings.output_device_id]) // Remove isMonitoring from deps to avoid re-triggering
+  }, [inputLevelMeter, audioSettings.output_device_id, isMonitoring])
 
   // Helper to check if a keyboard event matches the PTT key binding
   function matchesPttKey(e: KeyboardEvent, pttKey: string | null): boolean {
@@ -145,13 +136,13 @@ export function AudioSettingsPage() {
   }
 
   async function handleToggleMonitoring() {
-    if (!levelMeterRef.current) return
+    if (!inputLevelMeter) return
 
     const newMonitoringState = !isMonitoring
     setIsMonitoring(newMonitoringState)
     isMonitoringRef.current = newMonitoringState // Keep ref in sync
 
-    await levelMeterRef.current.setMonitoring(
+    await inputLevelMeter.setMonitoring(
       newMonitoringState,
       audioSettings.output_device_id
     )
@@ -236,8 +227,8 @@ export function AudioSettingsPage() {
       if (matchesPttKey(e, audioSettings.push_to_talk_key) && !isPttKeyPressed) {
         e.preventDefault()
         setIsPttKeyPressed(true)
-        if (levelMeterRef.current) {
-          levelMeterRef.current.setPttKeyPressed(true)
+        if (inputLevelMeter) {
+          inputLevelMeter.setPttKeyPressed(true)
         }
       }
     }
@@ -246,8 +237,8 @@ export function AudioSettingsPage() {
       if (matchesPttKey(e, audioSettings.push_to_talk_key)) {
         e.preventDefault()
         setIsPttKeyPressed(false)
-        if (levelMeterRef.current) {
-          levelMeterRef.current.setPttKeyPressed(false)
+        if (inputLevelMeter) {
+          inputLevelMeter.setPttKeyPressed(false)
         }
       }
     }

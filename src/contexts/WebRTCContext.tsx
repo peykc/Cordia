@@ -55,8 +55,10 @@ interface WebRTCContextType {
   peers: Map<string, PeerConnectionInfo>  // Keyed by peerId
   currentRoomId: string | null
 
-  // Integration
-  setInputLevelMeter(meter: InputLevelMeter | null): void
+  // Audio system
+  inputLevelMeter: InputLevelMeter | null  // Shared meter for audio settings
+  initializeAudio(deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void>
+  stopAudio(): void
 }
 
 const WebRTCContext = createContext<WebRTCContextType | null>(null)
@@ -69,6 +71,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const [isLocalMuted, setIsLocalMuted] = useState(false)
   const [peers, setPeers] = useState<Map<string, PeerConnectionInfo>>(new Map())
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null)
+  const [inputLevelMeter, setInputLevelMeter] = useState<InputLevelMeter | null>(null)
 
   // Refs
   const inputLevelMeterRef = useRef<InputLevelMeter | null>(null)
@@ -97,8 +100,43 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const setInputLevelMeter = useCallback((meter: InputLevelMeter | null) => {
-    inputLevelMeterRef.current = meter
+  // Initialize audio system (called by AudioSettings or before joining voice)
+  const initializeAudio = useCallback(async (deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void> => {
+    console.log('[Audio] Initializing audio system with device:', deviceId || 'default')
+
+    // Stop existing meter if any
+    if (inputLevelMeterRef.current) {
+      console.log('[Audio] Stopping existing meter')
+      inputLevelMeterRef.current.stop()
+    }
+
+    // Load current audio settings
+    const audioSettings = await loadAudioSettings()
+
+    // Create new meter
+    const newMeter = new InputLevelMeter()
+    await newMeter.start(
+      deviceId || audioSettings.input_device_id || null,
+      onLevelUpdate
+    )
+
+    // Apply saved settings
+    newMeter.setGain(audioSettings.input_volume)
+    newMeter.setThreshold(audioSettings.input_sensitivity)
+    newMeter.setInputMode(audioSettings.input_mode)
+
+    inputLevelMeterRef.current = newMeter
+    setInputLevelMeter(newMeter)  // Update state so context consumers get notified
+    console.log('[Audio] Audio system initialized - meter ready for voice and settings')
+  }, [])
+
+  const stopAudio = useCallback(() => {
+    if (inputLevelMeterRef.current) {
+      console.log('[Audio] Stopping audio system')
+      inputLevelMeterRef.current.stop()
+      inputLevelMeterRef.current = null
+      setInputLevelMeter(null)  // Update state
+    }
   }, [])
 
   const setOutputDevice = useCallback((deviceId: string) => {
@@ -302,13 +340,12 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
       if (needsRebuild) {
         isRebuildingAudioRef.current = true
-        console.log('[Media] Rebuilding entire audio stack from scratch...')
+        // This is a recovery path - the shared meter's track died mid-call
+        // We must rebuild, but settings changes won't apply live after this
+        console.warn('[Media] Track died mid-call, rebuilding audio stack (live settings updates disabled)')
         try {
-          // Stop the old meter completely
-          if (inputLevelMeterRef.current) {
-            inputLevelMeterRef.current.stop()
-            inputLevelMeterRef.current = null
-          }
+          // Don't stop the old meter - it may be shared and AudioSettings still needs the reference
+          // Just create a new meter that shadows it for WebRTC purposes
 
           // Load audio settings and create fresh meter
           const audioSettings = await loadAudioSettings()
@@ -321,6 +358,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           newMeter.setThreshold(audioSettings.input_sensitivity)
           newMeter.setInputMode(audioSettings.input_mode)
 
+          console.warn('[Media] ⚠️ Replacing shared meter with fallback - live settings disabled')
           inputLevelMeterRef.current = newMeter
 
           // Get fresh stream
@@ -346,8 +384,17 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     if (localStream) {
+      const tracks = localStream.getAudioTracks()
+      if (tracks.length > 0) {
+        console.log('[Media] Attaching track to peer connection:', {
+          trackId: tracks[0].id,
+          readyState: tracks[0].readyState,
+          enabled: tracks[0].enabled,
+          label: tracks[0].label
+        })
+      }
       attachAudioTrack(pc, localStream)
-      console.log('[Media] Attached local audio track to peer connection')
+      console.log('[Media] ✓ Local audio track attached to peer connection')
     } else {
       console.error('[Media] Cannot attach audio - no valid local stream!')
     }
@@ -652,53 +699,27 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       throw new Error('No signaling server configured')
     }
 
-    // Initialize InputLevelMeter on-demand if not already set or if existing one is dead
+    // Ensure audio is initialized before joining
     let meter = inputLevelMeterRef.current
-
-    // Check if existing meter has a live stream
-    let needsInit = !meter
-    if (meter) {
+    if (!meter) {
+      console.log('[Voice] No audio meter exists, initializing...')
+      await initializeAudio(null, () => {})
+      meter = inputLevelMeterRef.current  // Get the newly created meter
+    } else {
+      // Verify existing meter has a live stream
       const existingStream = meter.getTransmissionStream()
-      if (!existingStream) {
-        console.log('[Media] Existing meter has no stream, reinitializing...')
-        needsInit = true
+      if (!existingStream || existingStream.getAudioTracks().length === 0 ||
+          existingStream.getAudioTracks()[0].readyState === 'ended') {
+        console.warn('[Voice] Existing meter stream is dead, reinitializing...')
+        await initializeAudio(null, () => {})
+        meter = inputLevelMeterRef.current  // Get the newly created meter
       } else {
-        const tracks = existingStream.getAudioTracks()
-        if (tracks.length === 0 || tracks[0].readyState === 'ended') {
-          console.log('[Media] Existing meter stream is dead, reinitializing...')
-          needsInit = true
-        }
+        console.log('[Voice] ✓ Using existing audio meter')
+        console.log('[Voice] ✓ Live settings updates ENABLED (gain, threshold, VAD/PTT mode)')
+        console.log('[Voice] ✓ Stream track ID:', existingStream.getAudioTracks()[0].id)
       }
     }
 
-    if (needsInit) {
-      console.log('[Media] Initializing audio stack...')
-      try {
-        // Load saved audio settings
-        const audioSettings = await loadAudioSettings()
-
-        // Create and start InputLevelMeter
-        const newMeter = new InputLevelMeter()
-        await newMeter.start(
-          audioSettings.input_device_id || null,
-          () => {} // No level callback needed for WebRTC
-        )
-
-        // Apply saved settings
-        newMeter.setGain(audioSettings.input_volume)
-        newMeter.setThreshold(audioSettings.input_sensitivity)
-        newMeter.setInputMode(audioSettings.input_mode)
-
-        inputLevelMeterRef.current = newMeter
-        meter = newMeter
-        console.log('[Media] Audio stack initialized')
-      } catch (error) {
-        console.error('[Media] Failed to initialize audio:', error)
-        throw new Error('Failed to initialize audio. Please check microphone permissions.')
-      }
-    }
-
-    // At this point meter should be valid
     if (!meter) {
       throw new Error('Failed to initialize audio meter')
     }
@@ -772,13 +793,10 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
     signalingConnectedRef.current = false
 
-    // 5. Destroy the entire audio stack
-    // On explicit leave, we destroy audio so next join starts fresh
-    console.log('[Media] Destroying audio stack')
-    if (inputLevelMeterRef.current) {
-      inputLevelMeterRef.current.stop()
-      inputLevelMeterRef.current = null
-    }
+    // 5. Clear local stream reference
+    // NOTE: We keep the InputLevelMeter running for AudioSettings to use
+    // Only stop it if explicitly requested or on app shutdown
+    console.log('[Media] Clearing local stream reference (meter kept running)')
     localStreamRef.current = null
 
     // 6. Clear refs
@@ -814,7 +832,9 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         isLocalMuted,
         peers,
         currentRoomId,
-        setInputLevelMeter
+        inputLevelMeter,
+        initializeAudio,
+        stopAudio
       }}
     >
       {children}

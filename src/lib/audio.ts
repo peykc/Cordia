@@ -209,14 +209,17 @@ export class InputLevelMeter {
   setGain(value: number) {
     if (this.gainNode) {
       this.gainNode.gain.value = value
+      console.log(`[Audio] Input gain updated → ${value.toFixed(2)}`)
     }
   }
 
   setThreshold(value: number) {
     this.threshold = value
+    console.log(`[Audio] VAD threshold updated → ${value.toFixed(2)}`)
   }
 
   setInputMode(mode: 'voice_activity' | 'push_to_talk') {
+    const wasVAD = this.useVoiceActivity
     this.useVoiceActivity = mode === 'voice_activity'
     // Reset gain when switching modes
     if (!this.useVoiceActivity) {
@@ -225,10 +228,16 @@ export class InputLevelMeter {
     } else {
       this.currentGain = 0 // Voice activity starts gated
     }
+    if (wasVAD !== this.useVoiceActivity) {
+      console.log(`[Audio] Input mode switched → ${mode}`)
+    }
   }
 
   setPttKeyPressed(pressed: boolean) {
-    this.isPttKeyPressed = pressed
+    if (this.isPttKeyPressed !== pressed) {
+      this.isPttKeyPressed = pressed
+      console.log(`[Audio] PTT key ${pressed ? 'pressed' : 'released'}`)
+    }
   }
 
   async setMonitoring(enabled: boolean, outputDeviceId: string | null = null) {
