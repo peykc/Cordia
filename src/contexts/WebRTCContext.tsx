@@ -207,10 +207,24 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     // Handle remote audio track
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Received remote track from peer=${remotePeerId} user=${remoteUserId}`)
+      console.log(`[WebRTC] Track kind: ${event.track.kind}, enabled: ${event.track.enabled}, muted: ${event.track.muted}, readyState: ${event.track.readyState}`)
+      console.log(`[WebRTC] Streams in event: ${event.streams.length}`)
       const remoteStream = event.streams[0]
 
       if (remoteStream) {
+        const audioTracks = remoteStream.getAudioTracks()
+        console.log(`[WebRTC] Remote stream has ${audioTracks.length} audio tracks`)
+        if (audioTracks.length > 0) {
+          console.log(`[WebRTC] Remote track readyState: ${audioTracks[0].readyState}`)
+        }
+
         const audioElement = createRemoteAudioElement(remoteStream, outputDeviceRef.current || undefined)
+        console.log(`[WebRTC] Created audio element, paused: ${audioElement.paused}, volume: ${audioElement.volume}, muted: ${audioElement.muted}`)
+
+        // Listen for track unmute events
+        event.track.onunmute = () => {
+          console.log(`[WebRTC] Remote track unmuted for peer=${remotePeerId}`)
+        }
 
         setPeers(prev => {
           const updated = new Map(prev)
@@ -224,13 +238,43 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           }
           return updated
         })
+      } else {
+        console.error('[WebRTC] No stream in ontrack event!')
       }
     }
 
     // Attach local audio track
-    const localStream = localStreamRef.current
+    let localStream = localStreamRef.current
     if (localStream) {
+      const audioTracks = localStream.getAudioTracks()
+      console.log(`[WebRTC] Attaching local audio track. Stream has ${audioTracks.length} audio tracks`)
+      if (audioTracks.length > 0) {
+        const track = audioTracks[0]
+        console.log(`[WebRTC] Track label: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}, readyState: ${track.readyState}`)
+
+        // Check if track is dead and needs reinitialization
+        if (track.readyState === 'ended') {
+          console.warn('[WebRTC] Local audio track is ended, reinitializing audio...')
+          // Try to get a fresh stream from the meter
+          const meter = inputLevelMeterRef.current
+          if (meter) {
+            const freshStream = meter.getTransmissionStream()
+            if (freshStream) {
+              const freshTracks = freshStream.getAudioTracks()
+              if (freshTracks.length > 0 && freshTracks[0].readyState === 'live') {
+                console.log('[WebRTC] Got fresh stream from meter')
+                localStream = freshStream
+                localStreamRef.current = freshStream
+              } else {
+                console.error('[WebRTC] Fresh stream from meter also has dead tracks')
+              }
+            }
+          }
+        }
+      }
       attachAudioTrack(pc, localStream)
+    } else {
+      console.error('[WebRTC] No local stream available when creating peer connection!')
     }
 
     return pc
@@ -312,16 +356,12 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         const { peer_id: remotePeerId, user_id: remoteUserId, room_id } = msg
         console.log(`[WebRTC] Peer joined: peer=${remotePeerId} user=${remoteUserId} room=${room_id}`)
 
-        // Check if this user already has a connection (shouldn't happen, but handle it)
-        const existingByUserId = findPeerByUserId(remoteUserId)
-        if (existingByUserId) {
-          console.log(`[WebRTC] User ${remoteUserId} already has connection, cleaning up old one`)
-          handlePeerDisconnect(existingByUserId.peerId)
-        }
-
-        // Don't create a connection yet - wait for them to send us an offer
-        // or we'll send one after receiving VoiceRegistered
-        // The new peer will send offers to existing peers
+        // Don't clean up existing connections here - let VoiceOffer handle it
+        // The new peer will send us an offer, and we'll handle any duplicate
+        // user connections at that point when we have the new peer_id to connect to.
+        //
+        // Cleaning up here causes a race condition where we disconnect before
+        // establishing the new connection.
         break
       }
 
@@ -465,17 +505,29 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       console.log(`[WebRTC] WebSocket closed: code=${event.code} reason=${event.reason}`)
       wsRef.current = null
 
+      // Clean up all peer connections - they'll be stale after reconnect
+      // because the signaling state is lost
+      console.log('[WebRTC] Cleaning up peer connections due to WebSocket disconnect')
+      peersRef.current.forEach((peerInfo, peerId) => {
+        cleanupPeerConnection(peerId, peerInfo)
+      })
+      setPeers(new Map())
+      peersRef.current = new Map()
+
       // Layer A: Simple reconnect with fixed 2-second delay
       if (isInVoiceRef.current && currentRoomRef.current) {
         console.log('[WebRTC] Attempting reconnect in 2 seconds...')
         setTimeout(() => {
           if (isInVoiceRef.current && currentRoomRef.current) {
+            // Generate a new peer_id for the reconnect session
+            currentPeerIdRef.current = crypto.randomUUID()
+            console.log(`[WebRTC] Reconnecting with new peer_id: ${currentPeerIdRef.current}`)
             connectToSignaling()
           }
         }, 2000)
       }
     }
-  }, [signalingUrl, handleSignalingMessage])
+  }, [signalingUrl, handleSignalingMessage, cleanupPeerConnection])
 
   const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string) => {
     if (isInVoice) {
@@ -488,32 +540,55 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       throw new Error('No signaling server configured')
     }
 
-    // Initialize InputLevelMeter on-demand if not already set
+    // Initialize InputLevelMeter on-demand if not already set or if existing one is dead
     let meter = inputLevelMeterRef.current
-    if (!meter) {
+
+    // Check if existing meter has a live stream
+    let needsInit = !meter
+    if (meter) {
+      const existingStream = meter.getTransmissionStream()
+      if (!existingStream) {
+        console.log('[WebRTC] Existing meter has no stream, reinitializing...')
+        needsInit = true
+      } else {
+        const tracks = existingStream.getAudioTracks()
+        if (tracks.length === 0 || tracks[0].readyState === 'ended') {
+          console.log('[WebRTC] Existing meter stream is dead (readyState=ended), reinitializing...')
+          needsInit = true
+        }
+      }
+    }
+
+    if (needsInit) {
       console.log('[WebRTC] Initializing audio on-demand...')
       try {
         // Load saved audio settings
         const audioSettings = await loadAudioSettings()
 
         // Create and start InputLevelMeter
-        meter = new InputLevelMeter()
-        await meter.start(
+        const newMeter = new InputLevelMeter()
+        await newMeter.start(
           audioSettings.input_device_id || null,
           () => {} // No level callback needed for WebRTC
         )
 
         // Apply saved settings
-        meter.setGain(audioSettings.input_volume)
-        meter.setThreshold(audioSettings.input_sensitivity)
-        meter.setInputMode(audioSettings.input_mode)
+        newMeter.setGain(audioSettings.input_volume)
+        newMeter.setThreshold(audioSettings.input_sensitivity)
+        newMeter.setInputMode(audioSettings.input_mode)
 
-        inputLevelMeterRef.current = meter
+        inputLevelMeterRef.current = newMeter
+        meter = newMeter
         console.log('[WebRTC] Audio initialized successfully')
       } catch (error) {
         console.error('[WebRTC] Failed to initialize audio:', error)
         throw new Error('Failed to initialize audio. Please check microphone permissions.')
       }
+    }
+
+    // At this point meter should be valid
+    if (!meter) {
+      throw new Error('Failed to initialize audio meter')
     }
 
     // Generate EPHEMERAL peer_id for this session
@@ -526,6 +601,13 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     if (!stream) {
       console.error('[WebRTC] Failed to get transmission stream')
       throw new Error('Failed to get audio stream')
+    }
+
+    // Debug: check the transmission stream
+    const audioTracks = stream.getAudioTracks()
+    console.log(`[WebRTC] Transmission stream has ${audioTracks.length} audio tracks`)
+    if (audioTracks.length > 0) {
+      console.log(`[WebRTC] Transmission track: label="${audioTracks[0].label}", enabled=${audioTracks[0].enabled}, muted=${audioTracks[0].muted}, readyState=${audioTracks[0].readyState}`)
     }
 
     // Store refs

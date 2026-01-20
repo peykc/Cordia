@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
-    port: 1420,
+    port: parseInt(process.env.PORT || '1420'),
     strictPort: true,
     allowedHosts: ['dev.pkcollection.net'],
     watch: {

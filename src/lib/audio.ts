@@ -160,7 +160,14 @@ export class InputLevelMeter {
       this.stream = await navigator.mediaDevices.getUserMedia(constraints)
 
       this.audioContext = new AudioContext()
-      
+
+      // Ensure AudioContext is running (may be suspended due to autoplay policy)
+      if (this.audioContext.state === 'suspended') {
+        console.log('[Audio] AudioContext suspended, attempting to resume...')
+        await this.audioContext.resume()
+        console.log('[Audio] AudioContext state after resume:', this.audioContext.state)
+      }
+
       // Create audio graph: MediaStreamSource → GainNode → AnalyserNode
       this.microphone = this.audioContext.createMediaStreamSource(this.stream)
       
@@ -181,7 +188,14 @@ export class InputLevelMeter {
       this.monitoringGain.gain.value = 0 // Start muted (threshold not met)
       this.gainNode.connect(this.monitoringGain)
       this.monitoringGain.connect(this.destination)
-      
+
+      // Debug: Check the destination stream
+      const destTracks = this.destination.stream.getAudioTracks()
+      console.log('[Audio] Destination stream has', destTracks.length, 'tracks')
+      if (destTracks.length > 0) {
+        console.log('[Audio] Destination track readyState:', destTracks[0].readyState)
+      }
+
       // Use fftSize for time-domain data (Float32Array for higher resolution)
       this.dataArray = new Float32Array(this.analyser.fftSize)
       this.displayedLevel = 0
