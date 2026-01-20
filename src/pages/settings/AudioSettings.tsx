@@ -10,7 +10,7 @@ import { useWebRTC } from '../../contexts/WebRTCContext'
 
 export function AudioSettingsPage() {
   // Get WebRTC context - we'll use ITS meter, not create our own
-  const { inputLevelMeter, initializeAudio } = useWebRTC()
+  const { inputLevelMeter, ensureAudioInitialized, reinitializeAudio, isInVoice } = useWebRTC()
 
   // Audio state
   const [inputDevices, setInputDevices] = useState<AudioDevice[]>([])
@@ -59,15 +59,30 @@ export function AudioSettingsPage() {
     return cleanup
   }, [])
 
-  // Initialize/reinitialize audio when device changes
-  // NOTE: This uses WebRTCContext's meter - one meter for both voice and settings
+  // Initialize audio on mount (only creates if doesn't exist)
+  useEffect(() => {
+    const initAudio = async () => {
+      await ensureAudioInitialized(setInputLevel)
+      console.log('[AudioSettings] Audio meter ready')
+    }
+    initAudio()
+  }, [ensureAudioInitialized])
+
+  // Handle device changes
   useEffect(() => {
     const wasMonitoring = isMonitoringRef.current
 
-    const initAudio = async () => {
-      // Initialize audio with current device
-      await initializeAudio(audioSettings.input_device_id || null, setInputLevel)
-      console.log('[AudioSettings] Audio initialized with device:', audioSettings.input_device_id || 'default')
+    const handleDeviceChange = async () => {
+      if (isInVoice) {
+        // During active call - cannot change device
+        console.warn('[AudioSettings] Cannot change input device during active call')
+        // TODO: Show user notification that device change requires leaving voice
+        return
+      }
+
+      // Not in call - safe to reinitialize
+      await reinitializeAudio(audioSettings.input_device_id || null, setInputLevel)
+      console.log('[AudioSettings] Audio reinitialized with device:', audioSettings.input_device_id || 'default')
 
       // Restore monitoring if it was active
       if (wasMonitoring && inputLevelMeter) {
@@ -76,11 +91,8 @@ export function AudioSettingsPage() {
       }
     }
 
-    initAudio()
-
-    // Cleanup is handled by WebRTCContext - don't stop the meter here
-    // because it might be used by an active voice call
-  }, [audioSettings.input_device_id, initializeAudio])
+    handleDeviceChange()
+  }, [audioSettings.input_device_id, reinitializeAudio, isInVoice, inputLevelMeter])
 
   // Handle monitoring on/off ONLY when button is clicked, not when other settings change
   // This is controlled by isMonitoring state which only changes via handleToggleMonitoring

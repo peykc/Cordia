@@ -57,7 +57,8 @@ interface WebRTCContextType {
 
   // Audio system
   inputLevelMeter: InputLevelMeter | null  // Shared meter for audio settings
-  initializeAudio(deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void>
+  ensureAudioInitialized(onLevelUpdate: (level: number) => void): Promise<void>
+  reinitializeAudio(deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void>
   stopAudio(): void
 }
 
@@ -100,14 +101,50 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Initialize audio system (called by AudioSettings or before joining voice)
-  const initializeAudio = useCallback(async (deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void> => {
-    console.log('[Audio] Initializing audio system with device:', deviceId || 'default')
+  // Ensure audio is initialized (safe during calls - only creates if missing)
+  const ensureAudioInitialized = useCallback(async (onLevelUpdate: (level: number) => void): Promise<void> => {
+    if (inputLevelMeterRef.current) {
+      console.log('[Audio] Meter already exists, skipping initialization')
+      return
+    }
+
+    console.log('[Audio] Creating new audio meter')
+
+    // Load current audio settings
+    const audioSettings = await loadAudioSettings()
+
+    // Create new meter
+    const newMeter = new InputLevelMeter()
+    await newMeter.start(
+      audioSettings.input_device_id || null,
+      onLevelUpdate
+    )
+
+    // Apply saved settings
+    newMeter.setGain(audioSettings.input_volume)
+    newMeter.setThreshold(audioSettings.input_sensitivity)
+    newMeter.setInputMode(audioSettings.input_mode)
+
+    inputLevelMeterRef.current = newMeter
+    setInputLevelMeter(newMeter)  // Update state so context consumers get notified
+    console.log('[Audio] Audio meter created and ready')
+  }, [])
+
+  // Reinitialize audio (DANGEROUS during calls - only use when NOT in voice)
+  const reinitializeAudio = useCallback(async (deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void> => {
+    if (isInVoiceRef.current) {
+      console.error('[Audio] Cannot reinitialize audio during active call - device changes require hot-swap')
+      throw new Error('Cannot change audio device during active call')
+    }
+
+    console.log('[Audio] Reinitializing audio system with device:', deviceId || 'default')
 
     // Stop existing meter if any
     if (inputLevelMeterRef.current) {
       console.log('[Audio] Stopping existing meter')
       inputLevelMeterRef.current.stop()
+      inputLevelMeterRef.current = null
+      setInputLevelMeter(null)
     }
 
     // Load current audio settings
@@ -127,7 +164,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     inputLevelMeterRef.current = newMeter
     setInputLevelMeter(newMeter)  // Update state so context consumers get notified
-    console.log('[Audio] Audio system initialized - meter ready for voice and settings')
+    console.log('[Audio] Audio system reinitialized - meter ready')
   }, [])
 
   const stopAudio = useCallback(() => {
@@ -700,50 +737,38 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     // Ensure audio is initialized before joining
-    let meter = inputLevelMeterRef.current
-    if (!meter) {
-      console.log('[Voice] No audio meter exists, initializing...')
-      await initializeAudio(null, () => {})
-      meter = inputLevelMeterRef.current  // Get the newly created meter
-    } else {
-      // Verify existing meter has a live stream
-      const existingStream = meter.getTransmissionStream()
-      if (!existingStream || existingStream.getAudioTracks().length === 0 ||
-          existingStream.getAudioTracks()[0].readyState === 'ended') {
-        console.warn('[Voice] Existing meter stream is dead, reinitializing...')
-        await initializeAudio(null, () => {})
-        meter = inputLevelMeterRef.current  // Get the newly created meter
-      } else {
-        console.log('[Voice] ✓ Using existing audio meter')
-        console.log('[Voice] ✓ Live settings updates ENABLED (gain, threshold, VAD/PTT mode)')
-        console.log('[Voice] ✓ Stream track ID:', existingStream.getAudioTracks()[0].id)
-      }
-    }
+    await ensureAudioInitialized(() => {})  // Safe - only creates if missing
 
+    const meter = inputLevelMeterRef.current
     if (!meter) {
       throw new Error('Failed to initialize audio meter')
     }
+
+    // Get transmission stream from InputLevelMeter
+    const transmissionStream = meter.getTransmissionStream()
+    if (!transmissionStream) {
+      console.error('[Media] Failed to get transmission stream')
+      throw new Error('Failed to get audio stream')
+    }
+
+    // Verify the transmission stream is healthy
+    const audioTracks = transmissionStream.getAudioTracks()
+    if (audioTracks.length === 0 || audioTracks[0].readyState === 'ended') {
+      throw new Error('Audio meter stream is not live')
+    }
+
+    console.log('[Voice] ✓ Using audio meter for voice transmission')
+    console.log('[Voice] ✓ Live settings updates ENABLED (gain, threshold, VAD/PTT mode)')
+    console.log('[Voice] ✓ Stream track ID:', audioTracks[0].id)
+    console.log(`[Media] Transmission track ready: readyState=${audioTracks[0].readyState}`)
 
     // Generate EPHEMERAL peer_id for this session
     const peerId = crypto.randomUUID()
 
     console.log(`[Voice] Joining voice: room=${roomId} peer=${peerId}`)
 
-    // Get transmission stream from InputLevelMeter
-    const stream = meter.getTransmissionStream()
-    if (!stream) {
-      console.error('[Media] Failed to get transmission stream')
-      throw new Error('Failed to get audio stream')
-    }
-
-    // Verify the transmission stream is healthy
-    const audioTracks = stream.getAudioTracks()
-    if (audioTracks.length > 0) {
-      console.log(`[Media] Transmission track ready: readyState=${audioTracks[0].readyState}`)
-    }
-
     // Store refs
-    localStreamRef.current = stream
+    localStreamRef.current = transmissionStream
     currentRoomRef.current = roomId
     currentHouseRef.current = houseId
     currentPeerIdRef.current = peerId
@@ -833,7 +858,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         peers,
         currentRoomId,
         inputLevelMeter,
-        initializeAudio,
+        ensureAudioInitialized,
+        reinitializeAudio,
         stopAudio
       }}
     >
