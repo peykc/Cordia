@@ -200,9 +200,23 @@ export class InputLevelMeter {
       this.dataArray = new Float32Array(this.analyser.fftSize)
       this.displayedLevel = 0
       this.updateLevel()
+
+      console.log('[Audio] Input level meter started successfully', {
+        deviceId: deviceId || 'default',
+        audioContextState: this.audioContext.state,
+        trackLabel: this.stream.getAudioTracks()[0]?.label || 'unknown',
+        trackState: this.stream.getAudioTracks()[0]?.readyState || 'unknown'
+      })
     } catch (error) {
-      console.error('Failed to start input level meter:', error)
+      console.error('[Audio] Failed to start input level meter:', error)
+      console.error('[Audio] Error details:', {
+        name: (error as Error).name,
+        message: (error as Error).message,
+        deviceId: deviceId || 'default'
+      })
       onLevelUpdate(0)
+      // Re-throw the error so callers know initialization failed
+      throw error
     }
   }
 

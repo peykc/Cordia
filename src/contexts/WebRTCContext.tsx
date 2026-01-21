@@ -120,22 +120,32 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     // Load current audio settings
     const audioSettings = await loadAudioSettings()
+    const deviceId = audioSettings.input_device_id || null
+
+    console.log('[Audio] Initializing with device:', deviceId || 'default')
 
     // Create new meter
     const newMeter = new InputLevelMeter()
-    await newMeter.start(
-      audioSettings.input_device_id || null,
-      onLevelUpdate
-    )
+    try {
+      await newMeter.start(
+        deviceId,
+        onLevelUpdate
+      )
 
-    // Apply saved settings
-    newMeter.setGain(audioSettings.input_volume)
-    newMeter.setThreshold(audioSettings.input_sensitivity)
-    newMeter.setInputMode(audioSettings.input_mode)
+      // Apply saved settings
+      newMeter.setGain(audioSettings.input_volume)
+      newMeter.setThreshold(audioSettings.input_sensitivity)
+      newMeter.setInputMode(audioSettings.input_mode)
 
-    inputLevelMeterRef.current = newMeter
-    setInputLevelMeter(newMeter)  // Update state so context consumers get notified
-    console.log('[Audio] Audio meter created and ready')
+      inputLevelMeterRef.current = newMeter
+      setInputLevelMeter(newMeter)  // Update state so context consumers get notified
+      console.log('[Audio] Audio meter created and ready')
+    } catch (error) {
+      console.error('[Audio] Failed to initialize audio meter:', error)
+      // Clean up the failed meter
+      newMeter.stop()
+      throw error
+    }
   }, [])
 
   // Reinitialize audio (DANGEROUS during calls - only use when NOT in voice)
@@ -883,13 +893,14 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
   // Subscribe to house-wide events (voice presence, etc.) without joining voice
   const subscribeToHouse = useCallback((houseId: string) => {
-    if (subscribedHouseRef.current === houseId) {
-      console.log(`[House] Already subscribed to house ${houseId}`)
+    if (!signalingUrl) {
+      console.error('[House] Cannot subscribe: no signaling URL')
       return
     }
 
-    if (!signalingUrl) {
-      console.error('[House] Cannot subscribe: no signaling URL')
+    // Check if already subscribed AND connection is still open
+    if (subscribedHouseRef.current === houseId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log(`[House] Already subscribed to house ${houseId} with active connection`)
       return
     }
 
@@ -898,6 +909,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     // Open WebSocket if not already open (or reuse voice connection)
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.log('[House] Opening new WebSocket connection')
       const ws = new WebSocket(signalingUrl)
       wsRef.current = ws
 
@@ -926,9 +938,12 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         console.log('[House] WebSocket closed')
         signalingConnectedRef.current = false
         stopKeepalive()
+        // Clear subscribed house so we can reconnect if needed
+        subscribedHouseRef.current = null
       }
     } else {
       // Connection already open (probably for voice) - just query presence
+      console.log('[House] Reusing existing WebSocket connection')
       wsRef.current.send(JSON.stringify({
         type: 'VoicePresenceQuery',
         house_id: houseId
