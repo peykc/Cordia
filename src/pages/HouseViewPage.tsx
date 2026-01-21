@@ -53,13 +53,15 @@ function HouseViewPage() {
     }
   }
 
-  const PresenceSquare = ({ level }: { level: 'active' | 'online' | 'offline' }) => {
+  const PresenceSquare = ({ level }: { level: 'active' | 'online' | 'offline' | 'in_call' }) => {
     const cls =
-      level === 'active'
-        ? 'bg-green-500'
-        : level === 'online'
-          ? 'bg-amber-500'
-          : 'bg-muted-foreground'
+      level === 'in_call'
+        ? 'bg-blue-500'
+        : level === 'active'
+          ? 'bg-green-500'
+          : level === 'online'
+            ? 'bg-amber-500'
+            : 'bg-muted-foreground'
     return <div className={`h-2 w-2 ${cls} ring-2 ring-background`} />
   }
 
@@ -626,7 +628,7 @@ function HouseViewPage() {
                       </div>
                       {/* Presence badge "attached" to the avatar */}
                       <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                        <PresenceSquare level={getLevel(house.signing_pubkey, member.user_id)} />
+                        <PresenceSquare level={getLevel(house.signing_pubkey, member.user_id, Array.from(peers.values()).some(p => p.userId === member.user_id))} />
                       </div>
                     </div>
                     <span className="text-sm font-light truncate">{member.display_name}</span>
