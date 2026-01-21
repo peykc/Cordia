@@ -15,7 +15,7 @@ function HouseViewPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
   const { getLevel } = usePresence()
-  const { joinVoice, leaveVoice, toggleMute: webrtcToggleMute, isLocalMuted, peers, isInVoice: webrtcIsInVoice, currentRoomId, voicePresence } = useWebRTC()
+  const { joinVoice, leaveVoice, subscribeToHouse, unsubscribeFromHouse, toggleMute: webrtcToggleMute, isLocalMuted, peers, isInVoice: webrtcIsInVoice, currentRoomId, voicePresence } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const [house, setHouse] = useState<House | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -93,6 +93,17 @@ function HouseViewPage() {
       window.dispatchEvent(new CustomEvent('roommate:active-house-changed', { detail: { signing_pubkey: null } }))
     }
   }, [house?.signing_pubkey])
+
+  // Subscribe to house-wide events (voice presence) when viewing the house
+  useEffect(() => {
+    if (houseId) {
+      subscribeToHouse(houseId)
+    }
+
+    return () => {
+      unsubscribeFromHouse()
+    }
+  }, [houseId, subscribeToHouse, unsubscribeFromHouse])
 
   const loadHouseData = async () => {
     if (!houseId) return

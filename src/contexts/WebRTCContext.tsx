@@ -44,6 +44,8 @@ interface WebRTCContextType {
   // Connection management
   joinVoice(roomId: string, houseId: string, userId: string): Promise<void>
   leaveVoice(): void
+  subscribeToHouse(houseId: string): void  // Subscribe to house-wide events (voice presence, etc.)
+  unsubscribeFromHouse(): void
 
   // Local controls
   toggleMute(): void
@@ -93,6 +95,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const isRebuildingAudioRef = useRef<boolean>(false)    // Guard against concurrent rebuilds
   const keepaliveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)  // Signaling keepalive
   const signalingConnectedRef = useRef<boolean>(false)   // Track signaling state separately from media
+  const subscribedHouseRef = useRef<string | null>(null)  // Track house subscription for presence updates
 
   // Keep peersRef in sync with state
   useEffect(() => {
@@ -830,6 +833,25 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         break
       }
 
+      case 'VoicePresenceSnapshot': {
+        const { house_id, rooms } = msg
+        console.log(`[Signal] Received voice presence snapshot for house ${house_id}:`, rooms)
+
+        // Update voice presence from snapshot
+        setVoicePresence(prev => {
+          const updated = new Map(prev)
+
+          // Add all rooms from snapshot
+          for (const room of rooms) {
+            const userSet = new Set<string>(room.users as string[])
+            updated.set(room.room_id, userSet)
+          }
+
+          return updated
+        })
+        break
+      }
+
       default:
         // Ignore other message types (presence, profile, etc.)
         break
@@ -858,6 +880,81 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       keepaliveIntervalRef.current = null
     }
   }, [])
+
+  // Subscribe to house-wide events (voice presence, etc.) without joining voice
+  const subscribeToHouse = useCallback((houseId: string) => {
+    if (subscribedHouseRef.current === houseId) {
+      console.log(`[House] Already subscribed to house ${houseId}`)
+      return
+    }
+
+    if (!signalingUrl) {
+      console.error('[House] Cannot subscribe: no signaling URL')
+      return
+    }
+
+    console.log(`[House] Subscribing to house ${houseId}`)
+    subscribedHouseRef.current = houseId
+
+    // Open WebSocket if not already open (or reuse voice connection)
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      const ws = new WebSocket(signalingUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        console.log('[House] Connected to signaling server')
+        signalingConnectedRef.current = true
+        startKeepalive()
+
+        // Query current voice presence
+        ws.send(JSON.stringify({
+          type: 'VoicePresenceQuery',
+          house_id: houseId
+        }))
+        console.log(`[House] Sent VoicePresenceQuery for house ${houseId}`)
+      }
+
+      ws.onmessage = (event) => {
+        handleSignalingMessage(event.data)
+      }
+
+      ws.onerror = (error) => {
+        console.error('[House] WebSocket error:', error)
+      }
+
+      ws.onclose = () => {
+        console.log('[House] WebSocket closed')
+        signalingConnectedRef.current = false
+        stopKeepalive()
+      }
+    } else {
+      // Connection already open (probably for voice) - just query presence
+      wsRef.current.send(JSON.stringify({
+        type: 'VoicePresenceQuery',
+        house_id: houseId
+      }))
+      console.log(`[House] Sent VoicePresenceQuery for house ${houseId}`)
+    }
+  }, [signalingUrl, handleSignalingMessage, startKeepalive, stopKeepalive])
+
+  const unsubscribeFromHouse = useCallback(() => {
+    if (!subscribedHouseRef.current) {
+      return
+    }
+
+    console.log(`[House] Unsubscribing from house ${subscribedHouseRef.current}`)
+    subscribedHouseRef.current = null
+
+    // Only close WebSocket if we're not in a voice call
+    if (!isInVoiceRef.current && wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+      stopKeepalive()
+    }
+
+    // Clear voice presence
+    setVoicePresence(new Map())
+  }, [stopKeepalive])
 
   // Connect to signaling server (used for initial connect and reconnect)
   // NOTE: This is CONTROL PLANE only - does not touch media
@@ -1078,6 +1175,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       value={{
         joinVoice,
         leaveVoice,
+        subscribeToHouse,
+        unsubscribeFromHouse,
         toggleMute,
         setOutputDevice,
         isInVoice,

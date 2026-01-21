@@ -227,6 +227,17 @@ enum SignalingMessage {
         candidate: String,
     },
 
+    /// Client queries for current voice presence in a house
+    VoicePresenceQuery {
+        house_id: HouseId,
+    },
+
+    /// Server response with current voice presence across all rooms in a house
+    VoicePresenceSnapshot {
+        house_id: HouseId,
+        rooms: Vec<VoiceRoomPresence>,
+    },
+
     // ============================
     // Keepalive (prevents idle WebSocket disconnect)
     // ============================
@@ -269,6 +280,13 @@ struct VoicePeer {
     peer_id: PeerId,
     user_id: String,
     conn_id: ConnId,  // For cleanup on WebSocket disconnect
+}
+
+/// Voice presence for a single room (sent in snapshots)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceRoomPresence {
+    room_id: String,
+    users: Vec<String>,  // List of user_ids in this room
 }
 
 // ============================================
@@ -2104,6 +2122,40 @@ async fn handle_message(
                     .map_err(|e| format!("Failed to forward VoiceIceCandidate: {}", e))?;
             }
             // Don't warn on missing peer for ICE candidates - they may have left
+
+            Ok(())
+        }
+
+        SignalingMessage::VoicePresenceQuery { house_id } => {
+            info!("Voice presence query for house: {}", house_id);
+
+            let rooms = {
+                let state = state.lock().await;
+                let mut room_list = Vec::new();
+
+                // Collect all voice rooms for this house
+                for ((h, room_id), peers) in state.voice_rooms.iter() {
+                    if h == &house_id && !peers.is_empty() {
+                        let users: Vec<String> = peers.iter().map(|p| p.user_id.clone()).collect();
+                        room_list.push(VoiceRoomPresence {
+                            room_id: room_id.clone(),
+                            users,
+                        });
+                    }
+                }
+
+                room_list
+            };
+
+            // Send snapshot response
+            let snapshot = SignalingMessage::VoicePresenceSnapshot {
+                house_id: house_id.clone(),
+                rooms,
+            };
+            let json = serde_json::to_string(&snapshot)
+                .map_err(|e| format!("Failed to serialize VoicePresenceSnapshot: {}", e))?;
+            sender.send(hyper_tungstenite::tungstenite::Message::Text(json))
+                .map_err(|e| format!("Failed to send VoicePresenceSnapshot: {}", e))?;
 
             Ok(())
         }
