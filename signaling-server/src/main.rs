@@ -1440,6 +1440,30 @@ impl ServerState {
         }
     }
 
+    /// Broadcast a message to all peers in a house (for house-wide presence).
+    fn broadcast_to_house(&self, house_id: &HouseId, msg: &SignalingMessage, exclude_peer: Option<&PeerId>) {
+        let Some(peers) = self.houses.get(house_id) else {
+            return;
+        };
+
+        let Ok(json) = serde_json::to_string(msg) else {
+            return;
+        };
+
+        for peer_id in peers {
+            // Skip excluded peer
+            if let Some(excluded) = exclude_peer {
+                if peer_id == excluded {
+                    continue;
+                }
+            }
+
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json.clone()));
+            }
+        }
+    }
+
     /// Get the sender for a specific peer in a voice room (for targeted messages).
     fn get_voice_peer_sender(&self, house_id: &HouseId, room_id: &str, peer_id: &PeerId) -> Option<&WebSocketSender> {
         let key = (house_id.clone(), room_id.to_string());
@@ -1567,7 +1591,10 @@ async fn handle_connection(
                 user_id,
                 room_id: room_id.clone(),
             };
+            // Broadcast to voice room
             state.broadcast_to_voice_room(&house_id, &room_id, &msg, None);
+            // Also broadcast to entire house for presence visibility
+            state.broadcast_to_house(&house_id, &msg, None);
         }
     }
 
@@ -1916,7 +1943,7 @@ async fn handle_message(
                 .send(hyper_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send VoiceRegistered: {}", e))?;
 
-            // Broadcast VoicePeerJoined to other peers in the room
+            // Broadcast VoicePeerJoined to entire house (so everyone can see who's in voice)
             let join_msg = SignalingMessage::VoicePeerJoined {
                 peer_id: peer_id.clone(),
                 user_id,
@@ -1924,7 +1951,10 @@ async fn handle_message(
             };
             {
                 let state = state.lock().await;
+                // Broadcast to voice room for WebRTC negotiation
                 state.broadcast_to_voice_room(&house_id, &room_id, &join_msg, Some(&peer_id));
+                // Also broadcast to entire house for presence visibility
+                state.broadcast_to_house(&house_id, &join_msg, Some(&peer_id));
             }
 
             Ok(())
@@ -1963,7 +1993,10 @@ async fn handle_message(
                     room_id: room_id.clone(),
                 };
                 let state = state.lock().await;
+                // Broadcast to voice room
                 state.broadcast_to_voice_room(&house_id, &room_id, &leave_msg, None);
+                // Also broadcast to entire house for presence visibility
+                state.broadcast_to_house(&house_id, &leave_msg, None);
             }
 
             Ok(())

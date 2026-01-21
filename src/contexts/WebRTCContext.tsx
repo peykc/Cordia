@@ -55,6 +55,9 @@ interface WebRTCContextType {
   peers: Map<string, PeerConnectionInfo>  // Keyed by peerId
   currentRoomId: string | null
 
+  // Voice presence (house-wide)
+  voicePresence: Map<string, Set<string>>  // Map of roomId -> Set of userIds in that room
+
   // Audio system
   inputLevelMeter: InputLevelMeter | null  // Shared meter for audio settings
   ensureAudioInitialized(onLevelUpdate: (level: number) => void): Promise<void>
@@ -74,6 +77,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const [peers, setPeers] = useState<Map<string, PeerConnectionInfo>>(new Map())
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null)
   const [inputLevelMeter, setInputLevelMeter] = useState<InputLevelMeter | null>(null)
+  const [voicePresence, setVoicePresence] = useState<Map<string, Set<string>>>(new Map())
 
   // Refs
   const inputLevelMeterRef = useRef<InputLevelMeter | null>(null)
@@ -626,6 +630,25 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         const { peers: serverPeers, room_id } = msg
         console.log(`[Signal] Registered in room ${room_id}. Existing peers:`, serverPeers.length)
 
+        // Update voice presence: add ourselves and all existing peers to this room
+        setVoicePresence(prev => {
+          const updated = new Map(prev)
+          const roomUsers = new Set<string>()
+
+          // Add ourselves
+          if (currentUserIdRef.current) {
+            roomUsers.add(currentUserIdRef.current)
+          }
+
+          // Add all existing peers
+          for (const peerInfo of serverPeers) {
+            roomUsers.add(peerInfo.user_id)
+          }
+
+          updated.set(room_id, roomUsers)
+          return updated
+        })
+
         // Create connections to all existing peers in the room
         for (const peerInfo of serverPeers) {
           const { peer_id: remotePeerId, user_id: remoteUserId } = peerInfo
@@ -674,8 +697,17 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
 
       case 'VoicePeerJoined': {
-        const { peer_id: remotePeerId } = msg
-        console.log(`[Signal] Peer joined room: peer=${remotePeerId}`)
+        const { peer_id: remotePeerId, user_id: remoteUserId, room_id: roomId } = msg
+        console.log(`[Signal] Peer joined room: peer=${remotePeerId} user=${remoteUserId} room=${roomId}`)
+
+        // Update voice presence for this room
+        setVoicePresence(prev => {
+          const updated = new Map(prev)
+          const roomUsers = updated.get(roomId) || new Set()
+          roomUsers.add(remoteUserId)
+          updated.set(roomId, roomUsers)
+          return updated
+        })
 
         // Don't clean up existing connections here - let VoiceOffer handle it
         // The new peer will send us an offer, and we'll handle any duplicate
@@ -687,8 +719,23 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
 
       case 'VoicePeerLeft': {
-        const { peer_id: remotePeerId } = msg
-        console.log(`[Signal] Peer left room: peer=${remotePeerId}`)
+        const { peer_id: remotePeerId, user_id: remoteUserId, room_id: roomId } = msg
+        console.log(`[Signal] Peer left room: peer=${remotePeerId} user=${remoteUserId} room=${roomId}`)
+
+        // Update voice presence for this room
+        setVoicePresence(prev => {
+          const updated = new Map(prev)
+          const roomUsers = updated.get(roomId)
+          if (roomUsers) {
+            roomUsers.delete(remoteUserId)
+            if (roomUsers.size === 0) {
+              updated.delete(roomId)
+            } else {
+              updated.set(roomId, roomUsers)
+            }
+          }
+          return updated
+        })
 
         handlePeerDisconnect(remotePeerId)
         break
@@ -992,7 +1039,25 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     currentRoomRef.current = null
     currentHouseRef.current = null
 
-    // 7. Update state
+    // 7. Clear voice presence for the room we're leaving
+    const leavingRoomId = currentRoomRef.current
+    if (leavingRoomId && currentUserIdRef.current) {
+      setVoicePresence(prev => {
+        const updated = new Map(prev)
+        const roomUsers = updated.get(leavingRoomId)
+        if (roomUsers) {
+          roomUsers.delete(currentUserIdRef.current!)
+          if (roomUsers.size === 0) {
+            updated.delete(leavingRoomId)
+          } else {
+            updated.set(leavingRoomId, roomUsers)
+          }
+        }
+        return updated
+      })
+    }
+
+    // 8. Update state
     setIsInVoice(false)
     setCurrentRoomId(null)
     setIsLocalMuted(false)
@@ -1019,6 +1084,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         isLocalMuted,
         peers,
         currentRoomId,
+        voicePresence,
         inputLevelMeter,
         ensureAudioInitialized,
         reinitializeAudio,
