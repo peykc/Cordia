@@ -12,12 +12,14 @@ import { usePresence } from '../contexts/PresenceContext'
 import { useAccount } from '../contexts/AccountContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
+import { useWebRTC } from '../contexts/WebRTCContext'
 
 function HouseListPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
   const { currentAccountId } = useAccount()
   const { getLevel } = usePresence()
+  const { peers } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
@@ -148,10 +150,12 @@ function HouseListPage() {
     const itemCount = visible.length + (extraCount > 0 ? 1 : 0)
     const widthPx = itemCount > 0 ? avatarPx + (itemCount - 1) * stepPx : avatarPx
 
-    const PresenceMark = ({ level }: { level: 'active' | 'online' | 'offline' }) => {
+    const PresenceMark = ({ level }: { level: 'active' | 'online' | 'offline' | 'in_call' }) => {
       return (
         <div className="absolute -top-1 left-1/2 -translate-x-1/2">
-          {level === 'active' ? (
+          {level === 'in_call' ? (
+            <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+          ) : level === 'active' ? (
             <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
           ) : level === 'online' ? (
             <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
@@ -184,7 +188,7 @@ function HouseListPage() {
       >
         {visible.map((m, i) => (
           (() => {
-            const level = getLevel(house.signing_pubkey, m.user_id)
+            const level = getLevel(house.signing_pubkey, m.user_id, Array.from(peers.values()).some(p => p.userId === m.user_id))
             const p = resolveProfile(m.user_id, m.display_name)
             return (
           <div
