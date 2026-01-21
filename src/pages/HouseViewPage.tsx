@@ -195,11 +195,8 @@ function HouseViewPage() {
   const handleSelectRoom = (room: Room) => {
     if (currentRoom?.id === room.id) return
 
-    // If in voice in a different room, leave first
-    if (webrtcIsInVoice && currentRoomId !== room.id) {
-      leaveVoice()
-    }
-
+    // Don't leave voice when just viewing a different room
+    // Voice will only be left if user explicitly clicks "Leave Voice" or joins a different room
     setCurrentRoom(room)
     console.log('Opened room:', room.name)
   }

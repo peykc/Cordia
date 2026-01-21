@@ -142,6 +142,7 @@ function HouseListPage() {
   }
 
   const MemberStack = ({ house }: { house: House }) => {
+    const voicePresence = useVoicePresence()
     const maxVisible = 6
     const avatarPx = 28 // h-7/w-7
     const stepPx = 19    // overlap step (smaller = more overlap)
