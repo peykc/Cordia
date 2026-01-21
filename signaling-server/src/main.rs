@@ -228,8 +228,10 @@ enum SignalingMessage {
     },
 
     /// Client queries for current voice presence in a house
+    /// Also registers the client for house-wide broadcasts (VoicePeerJoined/Left)
     VoicePresenceQuery {
         house_id: HouseId,
+        peer_id: PeerId,  // Subscriber's peer_id for tracking and broadcasts
     },
 
     /// Server response with current voice presence across all rooms in a house
@@ -2126,14 +2128,29 @@ async fn handle_message(
             Ok(())
         }
 
-        SignalingMessage::VoicePresenceQuery { house_id } => {
-            info!("Voice presence query for house: {}", house_id);
+        SignalingMessage::VoicePresenceQuery { house_id, peer_id } => {
+            info!("Voice presence query: peer={} house={}", peer_id, house_id);
 
             let rooms = {
-                let state = state.lock().await;
-                let mut room_list = Vec::new();
+                let mut state = state.lock().await;
+
+                // Register this peer for house-wide broadcasts (VoicePeerJoined/Left)
+                state.peer_senders.insert(peer_id.clone(), sender.clone());
+
+                // Add to houses map so they receive broadcasts via broadcast_to_house()
+                let peers_in_house = state.houses.entry(house_id.clone()).or_insert_with(Vec::new);
+                if !peers_in_house.contains(&peer_id) {
+                    peers_in_house.push(peer_id.clone());
+                }
+
+                // Track for cleanup on disconnect
+                state.conn_peers
+                    .entry(conn_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(peer_id.clone());
 
                 // Collect all voice rooms for this house
+                let mut room_list = Vec::new();
                 for ((h, room_id), peers) in state.voice_rooms.iter() {
                     if h == &house_id && !peers.is_empty() {
                         let users: Vec<String> = peers.iter().map(|p| p.user_id.clone()).collect();
