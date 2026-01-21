@@ -124,6 +124,14 @@ enum SignalingMessage {
         active_signing_pubkey: Option<SigningPubkey>,
     },
 
+    /// Broadcast voice presence update (user joined/left voice in a room)
+    VoicePresenceUpdate {
+        signing_pubkey: SigningPubkey,
+        user_id: String,
+        room_id: String,
+        in_voice: bool,  // true = joined, false = left
+    },
+
     // ============================
     // Profile metadata (NO images)
     // ============================
@@ -172,6 +180,7 @@ enum SignalingMessage {
         room_id: String,
         peer_id: PeerId,      // Ephemeral session ID (UUID per join)
         user_id: String,      // Stable identity (public key hash)
+        signing_pubkey: SigningPubkey,  // House signing pubkey for presence broadcasting
     },
 
     /// Server response to voice registration
@@ -976,6 +985,8 @@ struct ServerState {
     // === Voice chat state (room-scoped) ===
     /// Map of (house_id, room_id) -> list of VoicePeers in that room
     voice_rooms: HashMap<(HouseId, String), Vec<VoicePeer>>,
+    /// Map of house_id -> signing_pubkey (for voice presence broadcasting)
+    house_signing_pubkeys: HashMap<HouseId, SigningPubkey>,
 
     // === Presence state ===
     presence_conns: HashMap<ConnId, PresenceConn>,
@@ -1012,6 +1023,7 @@ impl ServerState {
             peer_senders: HashMap::new(),
             conn_peers: HashMap::new(),
             voice_rooms: HashMap::new(),
+            house_signing_pubkeys: HashMap::new(),
             presence_conns: HashMap::new(),
             presence_users: HashMap::new(),
             profiles: HashMap::new(),
@@ -1452,6 +1464,31 @@ impl ServerState {
 
         self.peer_senders.get(peer_id)
     }
+
+    /// Broadcast voice presence update to all presence connections for a house.
+    fn broadcast_voice_presence(&self, signing_pubkey: &SigningPubkey, user_id: &str, room_id: &str, in_voice: bool) {
+        let Some(peers) = self.signing_houses.get(signing_pubkey) else {
+            return;
+        };
+
+        let msg = SignalingMessage::VoicePresenceUpdate {
+            signing_pubkey: signing_pubkey.clone(),
+            user_id: user_id.to_string(),
+            room_id: room_id.to_string(),
+            in_voice,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
+        // Send to all peer connections subscribed to this house (same mechanism as presence updates)
+        for peer_id in peers {
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json.clone()));
+            }
+        }
+    }
 }
 
 type SharedState = Arc<Mutex<ServerState>>;
@@ -1559,15 +1596,27 @@ async fn handle_connection(
 
     // Broadcast VoicePeerLeft to remaining peers in each affected room
     if !voice_removed.is_empty() {
-        let state = state.lock().await;
-        for (house_id, room_id, peer_id, user_id) in voice_removed {
-            info!("Voice peer {} (user {}) disconnected from room {}", peer_id, user_id, room_id);
-            let msg = SignalingMessage::VoicePeerLeft {
-                peer_id,
-                user_id,
-                room_id: room_id.clone(),
-            };
-            state.broadcast_to_voice_room(&house_id, &room_id, &msg, None);
+        {
+            let st = state.lock().await;
+            for (house_id, room_id, peer_id, user_id) in voice_removed.clone() {
+                info!("Voice peer {} (user {}) disconnected from room {}", peer_id, user_id, room_id);
+                let msg = SignalingMessage::VoicePeerLeft {
+                    peer_id,
+                    user_id: user_id.clone(),
+                    room_id: room_id.clone(),
+                };
+                st.broadcast_to_voice_room(&house_id, &room_id, &msg, None);
+            }
+        }
+        
+        // Broadcast voice presence updates for disconnected peers
+        {
+            let st = state.lock().await;
+            for (house_id, room_id, _, user_id) in voice_removed {
+                if let Some(signing_pubkey) = st.house_signing_pubkeys.get(&house_id) {
+                    st.broadcast_voice_presence(signing_pubkey, &user_id, &room_id, false);
+                }
+            }
         }
     }
 
@@ -1885,7 +1934,7 @@ async fn handle_message(
 
         // === Voice Chat Messages ===
 
-        SignalingMessage::VoiceRegister { house_id, room_id, peer_id, user_id } => {
+        SignalingMessage::VoiceRegister { house_id, room_id, peer_id, user_id, signing_pubkey } => {
             info!("Voice register: peer={} user={} house={} room={}", peer_id, user_id, house_id, room_id);
 
             let peers = {
@@ -1893,6 +1942,9 @@ async fn handle_message(
 
                 // Store the sender for this peer (voice peers need this for Offer/Answer/ICE forwarding)
                 state.peer_senders.insert(peer_id.clone(), sender.clone());
+
+                // Store house_id -> signing_pubkey mapping for voice presence broadcasting
+                state.house_signing_pubkeys.insert(house_id.clone(), signing_pubkey.clone());
 
                 // Register the voice peer
                 state.register_voice_peer(
@@ -1919,12 +1971,18 @@ async fn handle_message(
             // Broadcast VoicePeerJoined to other peers in the room
             let join_msg = SignalingMessage::VoicePeerJoined {
                 peer_id: peer_id.clone(),
-                user_id,
+                user_id: user_id.clone(),
                 room_id: room_id.clone(),
             };
             {
                 let state = state.lock().await;
                 state.broadcast_to_voice_room(&house_id, &room_id, &join_msg, Some(&peer_id));
+            }
+
+            // Broadcast voice presence update to all house members
+            {
+                let state = state.lock().await;
+                state.broadcast_voice_presence(&signing_pubkey, &user_id, &room_id, true);
             }
 
             Ok(())
@@ -1959,11 +2017,20 @@ async fn handle_message(
             if let Some((house_id, user_id)) = removed {
                 let leave_msg = SignalingMessage::VoicePeerLeft {
                     peer_id,
-                    user_id,
+                    user_id: user_id.clone(),
                     room_id: room_id.clone(),
                 };
-                let state = state.lock().await;
-                state.broadcast_to_voice_room(&house_id, &room_id, &leave_msg, None);
+                let signing_pubkey_opt = {
+                    let state = state.lock().await;
+                    state.broadcast_to_voice_room(&house_id, &room_id, &leave_msg, None);
+                    state.house_signing_pubkeys.get(&house_id).cloned()
+                };
+                
+                // Broadcast voice presence update to all house members
+                if let Some(signing_pubkey) = signing_pubkey_opt {
+                    let state = state.lock().await;
+                    state.broadcast_voice_presence(&signing_pubkey, &user_id, &room_id, false);
+                }
             }
 
             Ok(())

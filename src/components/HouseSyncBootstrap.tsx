@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useAccount } from '../contexts/AccountContext'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence } from '../contexts/PresenceContext'
+import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSignaling } from '../contexts/SignalingContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
@@ -17,6 +18,7 @@ export function HouseSyncBootstrap() {
   const { sessionLoaded, currentAccountId } = useAccount()
   const { identity } = useIdentity()
   const presence = usePresence()
+  const voicePresence = useVoicePresence()
   const { status: signalingStatus, signalingUrl } = useSignaling()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
@@ -223,6 +225,15 @@ export function HouseSyncBootstrap() {
             const online: boolean = msg.online
             const active: string | null | undefined = msg.active_signing_pubkey
             presence.applyUpdate(spk, userId, online, active ?? null)
+            return
+          }
+
+          if (msg.type === 'VoicePresenceUpdate') {
+            const spk: string = msg.signing_pubkey
+            const userId: string = msg.user_id
+            const roomId: string = msg.room_id
+            const inVoice: boolean = msg.in_voice
+            voicePresence.applyUpdate(spk, userId, roomId, inVoice)
             return
           }
 

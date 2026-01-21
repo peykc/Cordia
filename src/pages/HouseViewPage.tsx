@@ -9,12 +9,14 @@ import { SignalingStatus } from '../components/SignalingStatus'
 import { ProfileAvatarChip } from '../components/ProfileAvatarChip'
 import { useSignaling } from '../contexts/SignalingContext'
 import { usePresence } from '../contexts/PresenceContext'
+import { useVoicePresence } from '../contexts/VoicePresenceContext'
 
 function HouseViewPage() {
   const { houseId } = useParams<{ houseId: string }>()
   const navigate = useNavigate()
   const { identity } = useIdentity()
   const { getLevel } = usePresence()
+  const voicePresence = useVoicePresence()
   const { joinVoice, leaveVoice, toggleMute: webrtcToggleMute, isLocalMuted, peers, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const [house, setHouse] = useState<House | null>(null)
@@ -206,7 +208,7 @@ function HouseViewPage() {
     if (!currentRoom || !house || !identity) return
 
     try {
-      await joinVoice(currentRoom.id, house.id, identity.user_id)
+      await joinVoice(currentRoom.id, house.id, identity.user_id, house.signing_pubkey)
       console.log('Joined voice in room:', currentRoom.name)
     } catch (error) {
       console.error('Failed to join voice:', error)
@@ -348,49 +350,164 @@ function HouseViewPage() {
                 </button>
               </div>
               <div className="space-y-1">
-                {house.rooms.map((room) => (
-                  <div
-                    key={room.id}
-                    onClick={() => handleSelectRoom(room)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        handleSelectRoom(room)
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    className={`w-full px-3 py-2 rounded-md transition-colors text-left group ${
-                      currentRoom?.id === room.id
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-accent/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">#</span>
-                        <span className="text-sm font-light">{room.name}</span>
+                {house.rooms.map((room) => {
+                  const voiceParticipants = voicePresence.getVoiceParticipants(house.signing_pubkey, room.id)
+                  // Include self if in voice in this room
+                  const allParticipants = identity && webrtcIsInVoice && currentRoomId === room.id && !voiceParticipants.includes(identity.user_id)
+                    ? [identity.user_id, ...voiceParticipants]
+                    : voiceParticipants
+                  const isSelected = currentRoom?.id === room.id
+
+                  return (
+                    <div key={room.id}>
+                      <div
+                        onClick={() => handleSelectRoom(room)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            handleSelectRoom(room)
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        className={`w-full px-3 py-2 rounded-md transition-colors text-left group ${
+                          isSelected
+                            ? 'bg-primary text-primary-foreground'
+                            : 'hover:bg-accent/50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">#</span>
+                            <span className="text-sm font-light">{room.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {currentRoomId === room.id && webrtcIsInVoice && (
+                              <Volume2 className="h-3 w-3" />
+                            )}
+                            <button
+                              type="button"
+                              title="Delete room"
+                              onClick={(e) => handleDeleteRoomClick(e, room)}
+                              className={`p-1 rounded transition-colors ${
+                                isSelected
+                                  ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
+                                  : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
+                              } opacity-0 group-hover:opacity-100 focus:opacity-100`}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {currentRoomId === room.id && webrtcIsInVoice && (
-                          <Volume2 className="h-3 w-3" />
-                        )}
-                        <button
-                          type="button"
-                          title="Delete room"
-                          onClick={(e) => handleDeleteRoomClick(e, room)}
-                          className={`p-1 rounded transition-colors ${
-                            currentRoom?.id === room.id
-                              ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
-                              : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
-                          } opacity-0 group-hover:opacity-100 focus:opacity-100`}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
+
+                      {/* Voice Participants */}
+                      {allParticipants.length > 0 && (
+                        <div className={`px-3 pb-2 ${isSelected ? 'pt-1' : 'pt-0'}`}>
+                          {isSelected ? (
+                            // Expanded view for selected room
+                            <div className="space-y-1">
+                              {allParticipants.map((userId) => {
+                                const member = house.members.find(m => m.user_id === userId)
+                                const displayName = member?.display_name || (userId === identity?.user_id ? identity.display_name : `User ${userId.slice(0, 8)}`)
+                                const isSelf = userId === identity?.user_id
+                                const level = getLevel(
+                                  house.signing_pubkey,
+                                  userId,
+                                  isSelf
+                                    ? (webrtcIsInVoice && currentRoomId === room.id)
+                                    : Array.from(peers.values()).some(p => p.userId === userId)
+                                )
+
+                                return (
+                                  <div key={userId} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-accent/30 transition-colors">
+                                    <div className="relative">
+                                      <div
+                                        className="w-6 h-6 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 ring-background"
+                                        style={avatarStyleForUser(userId)}
+                                        title={displayName}
+                                      >
+                                        {getInitials(displayName)}
+                                      </div>
+                                      <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                                        <PresenceSquare level={level} />
+                                      </div>
+                                    </div>
+                                    <span className="text-xs font-light truncate">
+                                      {displayName}{isSelf ? ' (you)' : ''}
+                                    </span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            // Stacked view for non-selected rooms
+                            (() => {
+                              const maxVisible = 6
+                              const avatarPx = 20 // h-5/w-5
+                              const stepPx = 14   // overlap step
+                              const visible = allParticipants.slice(0, maxVisible)
+                              const extraCount = Math.max(0, allParticipants.length - maxVisible)
+                              const itemCount = visible.length + (extraCount > 0 ? 1 : 0)
+                              const widthPx = itemCount > 0 ? avatarPx + (itemCount - 1) * stepPx : avatarPx
+
+                              return (
+                                <div
+                                  className="relative h-5 isolation-isolate"
+                                  style={{ width: widthPx }}
+                                >
+                                  {visible.map((userId, i) => {
+                                    const member = house.members.find(m => m.user_id === userId)
+                                    const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
+                                    const isSelf = userId === identity?.user_id
+                                    const level = getLevel(
+                                      house.signing_pubkey,
+                                      userId,
+                                      isSelf
+                                        ? (webrtcIsInVoice && currentRoomId === room.id)
+                                        : Array.from(peers.values()).some(p => p.userId === userId)
+                                    )
+
+                                    return (
+                                      <div
+                                        key={userId}
+                                        className="absolute top-0 z-[var(--z)]"
+                                        style={{ left: i * stepPx, ['--z' as any]: i }}
+                                      >
+                                        <div className="relative">
+                                          <div
+                                            className="h-5 w-5 grid place-items-center rounded-none ring-2 ring-background"
+                                            style={avatarStyleForUser(userId)}
+                                            title={displayName}
+                                          >
+                                            <span className="text-[8px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                          </div>
+                                          <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
+                                            <PresenceSquare level={level} />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                                  {extraCount > 0 && (
+                                    <div
+                                      className="absolute top-0 z-[var(--z)]"
+                                      style={{ left: visible.length * stepPx, ['--z' as any]: visible.length }}
+                                    >
+                                      <div className="h-5 w-5 grid place-items-center rounded-none ring-2 ring-background bg-muted text-muted-foreground">
+                                        <span className="text-[8px] font-mono">+{extraCount}</span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })()
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
@@ -487,89 +604,6 @@ function HouseViewPage() {
                 </div>
               </div>
 
-              {/* Voice Panel (shown when in voice in this room) */}
-              {webrtcIsInVoice && currentRoomId === currentRoom.id && (
-                <div className="border-b-2 border-border bg-accent/30 p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
-                          <span className="text-sm font-light">
-                            {identity?.display_name.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="text-sm font-light">{identity?.display_name} (you)</p>
-                          <div className="flex items-center gap-1">
-                            {isLocalMuted ? (
-                              <MicOff className="h-3 w-3 text-red-500" />
-                            ) : (
-                              <Mic className="h-3 w-3 text-green-500" />
-                            )}
-                            <span className="text-xs text-muted-foreground">
-                              {isLocalMuted ? 'Muted' : 'Unmuted'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <Button
-                      onClick={toggleMute}
-                      variant={isLocalMuted ? 'destructive' : 'outline'}
-                      size="sm"
-                      className="h-9 w-9"
-                    >
-                      {isLocalMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                    </Button>
-                  </div>
-
-                  {/* Remote Peers */}
-                  {peers.size > 0 && (
-                    <div className="mt-4 pt-4 border-t-2 border-border space-y-2">
-                      <p className="text-xs text-muted-foreground font-light uppercase tracking-wide mb-2">
-                        Connected Peers ({peers.size})
-                      </p>
-                      {Array.from(peers.entries()).map(([peerId, info]) => {
-                        // Find peer display name from house members using userId (stable identity)
-                        const peerMember = house?.members.find(m => m.user_id === info.userId)
-                        const displayName = peerMember?.display_name || `User ${info.userId.slice(0, 8)}`
-
-                        return (
-                          <div key={peerId} className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                                <span className="text-xs font-light">
-                                  {displayName.charAt(0).toUpperCase()}
-                                </span>
-                              </div>
-                              <div>
-                                <p className="text-sm font-light">{displayName}</p>
-                                <span className="text-xs text-muted-foreground">
-                                  {info.connectionState === 'connected' ? 'Connected' : info.connectionState}
-                                </span>
-                                {/* Layer A: Show raw IDs for debugging */}
-                                <span className="text-xs text-muted-foreground font-mono block">
-                                  peer:{info.peerId.slice(0, 6)} user:{info.userId.slice(0, 6)}
-                                </span>
-                              </div>
-                            </div>
-                            <div className={`w-2 h-2 rounded-full ${
-                              info.connectionState === 'connected' ? 'bg-green-500' :
-                              info.connectionState === 'connecting' ? 'bg-yellow-500 animate-pulse' :
-                              'bg-red-500'
-                            }`} />
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-
-                  {peers.size === 0 && (
-                    <p className="text-sm text-muted-foreground mt-4">No one else in voice</p>
-                  )}
-                </div>
-              )}
-
               {/* Text Chat Area */}
               <div className="flex-1 flex flex-col overflow-hidden">
                 {/* Messages */}
@@ -628,7 +662,13 @@ function HouseViewPage() {
                       </div>
                       {/* Presence badge "attached" to the avatar */}
                       <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                        <PresenceSquare level={getLevel(house.signing_pubkey, member.user_id, Array.from(peers.values()).some(p => p.userId === member.user_id))} />
+                        <PresenceSquare level={getLevel(
+                          house.signing_pubkey,
+                          member.user_id,
+                          member.user_id === identity?.user_id
+                            ? (webrtcIsInVoice && currentRoomId === currentRoom?.id)
+                            : Array.from(peers.values()).some(p => p.userId === member.user_id)
+                        )} />
                       </div>
                     </div>
                     <span className="text-sm font-light truncate">{member.display_name}</span>

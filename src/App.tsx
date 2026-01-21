@@ -3,6 +3,7 @@ import { IdentityProvider, useIdentity } from './contexts/IdentityContext'
 import { AccountProvider, useAccount } from './contexts/AccountContext'
 import { SignalingProvider } from './contexts/SignalingContext'
 import { PresenceProvider } from './contexts/PresenceContext'
+import { VoicePresenceProvider } from './contexts/VoicePresenceContext'
 import { ProfileProvider } from './contexts/ProfileContext'
 import { RemoteProfilesProvider } from './contexts/RemoteProfilesContext'
 import { WebRTCProvider } from './contexts/WebRTCContext'
@@ -52,9 +53,10 @@ function App() {
       <AccountProvider>
         <SignalingProvider>
           <PresenceProvider>
-            <RemoteProfilesProvider>
-              <ProfileProvider>
-                <WebRTCProvider>
+            <VoicePresenceProvider>
+              <RemoteProfilesProvider>
+                <ProfileProvider>
+                  <WebRTCProvider>
                   <HouseSyncBootstrap />
                   <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20">
                     <TitleBar />
@@ -93,9 +95,10 @@ function App() {
                       </Router>
                     </div>
                   </div>
-                </WebRTCProvider>
-              </ProfileProvider>
-            </RemoteProfilesProvider>
+                  </WebRTCProvider>
+                </ProfileProvider>
+              </RemoteProfilesProvider>
+            </VoicePresenceProvider>
           </PresenceProvider>
         </SignalingProvider>
       </AccountProvider>

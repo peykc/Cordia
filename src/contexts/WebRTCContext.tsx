@@ -42,7 +42,7 @@ export interface PeerConnectionInfo {
 
 interface WebRTCContextType {
   // Connection management
-  joinVoice(roomId: string, houseId: string, userId: string): Promise<void>
+  joinVoice(roomId: string, houseId: string, userId: string, signingPubkey: string): Promise<void>
   leaveVoice(): void
 
   // Local controls
@@ -83,6 +83,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const currentHouseRef = useRef<string | null>(null)
   const currentPeerIdRef = useRef<string | null>(null)   // Ephemeral session ID
   const currentUserIdRef = useRef<string | null>(null)   // Stable identity
+  const currentSigningPubkeyRef = useRef<string | null>(null)  // House signing pubkey
   const outputDeviceRef = useRef<string | null>(null)
   const isInVoiceRef = useRef<boolean>(false)            // For reconnect logic
   const peersRef = useRef<Map<string, PeerConnectionInfo>>(new Map())  // For message handlers
@@ -848,7 +849,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         house_id: currentHouseRef.current,
         room_id: currentRoomRef.current,
         peer_id: currentPeerIdRef.current,
-        user_id: currentUserIdRef.current
+        user_id: currentUserIdRef.current,
+        signing_pubkey: currentSigningPubkeyRef.current
       }
       ws.send(JSON.stringify(registerMessage))
       console.log(`[Signal] Sent VoiceRegister: peer=${currentPeerIdRef.current}`)
@@ -887,7 +889,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
   }, [signalingUrl, handleSignalingMessage, startKeepalive, stopKeepalive])
 
-  const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string) => {
+  const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string, signingPubkey: string) => {
     if (isInVoice) {
       console.warn('[WebRTC] Already in voice, leaving first')
       leaveVoiceInternal()
@@ -935,6 +937,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     currentHouseRef.current = houseId
     currentPeerIdRef.current = peerId
     currentUserIdRef.current = userId
+    currentSigningPubkeyRef.current = signingPubkey
 
     // Update state
     setIsInVoice(true)
@@ -989,6 +992,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     // 6. Clear refs
     currentPeerIdRef.current = null
     currentUserIdRef.current = null
+    currentSigningPubkeyRef.current = null
     currentRoomRef.current = null
     currentHouseRef.current = null
 
