@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Save, RefreshCw } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -7,6 +7,57 @@ import { Select } from '../../components/ui/select'
 import { useSignaling } from '../../contexts/SignalingContext'
 import { getSignalingServerUrl, setSignalingServerUrl } from '../../lib/tauri'
 import { getNatOverride, setNatOverride, type NatOverride } from '../../lib/natOverride'
+import { PEER_CONNECTION_CONFIG } from '../../lib/webrtc'
+
+type NatIndicator = 'checking' | 'local_only' | 'nat' | 'relay' | 'unknown'
+
+let natProbePromise: Promise<NatIndicator> | null = null
+
+async function probeNatIndicator(): Promise<NatIndicator> {
+  try {
+    const pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG)
+    pc.createDataChannel('rmmt-nat-probe')
+
+    const candidates: string[] = []
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate?.candidate) candidates.push(ev.candidate.candidate)
+    }
+
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+
+    await new Promise<void>((resolve) => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        resolve()
+      }
+
+      const onState = () => {
+        if (pc.iceGatheringState === 'complete') finish()
+      }
+
+      pc.addEventListener('icegatheringstatechange', onState)
+      setTimeout(() => finish(), 2500)
+    })
+
+    pc.close()
+
+    const types = new Set<string>()
+    for (const c of candidates) {
+      const m = c.match(/\btyp\s+(\w+)\b/i)
+      if (m?.[1]) types.add(m[1].toLowerCase())
+    }
+
+    if (types.has('relay')) return 'relay'
+    if (types.has('srflx')) return 'nat'
+    if (types.has('host')) return 'local_only'
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 export function ConnectionSettings() {
   const { status, checkHealth, reloadUrl } = useSignaling()
@@ -15,6 +66,7 @@ export function ConnectionSettings() {
   const [isChecking, setIsChecking] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
   const [natOverride, setNatOverrideState] = useState<NatOverride>('auto')
+  const [nat, setNat] = useState<NatIndicator>('checking')
 
   // Load current signaling server URL
   useEffect(() => {
@@ -24,6 +76,53 @@ export function ConnectionSettings() {
   useEffect(() => {
     setNatOverrideState(getNatOverride())
   }, [])
+
+  useEffect(() => {
+    if (!natProbePromise) natProbePromise = probeNatIndicator()
+    natProbePromise.then(setNat).catch(() => setNat('unknown'))
+  }, [])
+
+  useEffect(() => {
+    const onChanged = () => setNatOverrideState(getNatOverride())
+    window.addEventListener('roommate:nat-override-changed', onChanged)
+    return () => window.removeEventListener('roommate:nat-override-changed', onChanged)
+  }, [])
+
+  type NatExperience = 'checking' | 'open' | 'moderate' | 'strict'
+
+  const natExperience: NatExperience = useMemo(() => {
+    if (natOverride !== 'auto') return natOverride
+    if (nat === 'checking') return 'checking'
+    if (nat === 'nat') return 'open'
+    if (nat === 'local_only') return 'strict'
+    return 'moderate'
+  }, [nat, natOverride])
+
+  const getNatDisplayText = () => {
+    switch (natExperience) {
+      case 'open':
+        return 'Open'
+      case 'moderate':
+        return 'Moderate'
+      case 'strict':
+        return 'Strict / CGNAT'
+      case 'checking':
+        return 'Checking...'
+    }
+  }
+
+  const getNatDisplayColor = () => {
+    switch (natExperience) {
+      case 'open':
+        return 'text-green-500'
+      case 'moderate':
+        return 'text-amber-500'
+      case 'strict':
+        return 'text-red-500'
+      case 'checking':
+        return 'text-amber-500'
+    }
+  }
 
   const handleSave = async () => {
     setIsSaving(true)
@@ -169,10 +268,34 @@ export function ConnectionSettings() {
           </div>
         </div>
 
-        {/* NAT Type (Testing) */}
+        {/* NAT Type Display */}
+        <div className="space-y-3">
+          <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            NAT Type
+          </Label>
+          <div className="border border-border/50 bg-muted/20 rounded-md p-4">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0">
+                <p className={`text-sm font-light ${getNatDisplayColor()}`}>
+                  {getNatDisplayText()}
+                </p>
+                {natOverride !== 'auto' && (
+                  <p className="text-xs text-muted-foreground font-light mt-1">
+                    Override enabled: {natOverride.toUpperCase()}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground font-light">
+            Detected NAT type based on ICE candidate analysis.
+          </p>
+        </div>
+
+        {/* NAT Type Override (Testing) */}
         <div className="space-y-3">
           <Label htmlFor="nat-override" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            NAT Type (testing)
+            NAT Type Override (testing)
           </Label>
           <Select
             id="nat-override"
