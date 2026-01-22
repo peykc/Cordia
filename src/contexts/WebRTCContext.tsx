@@ -11,6 +11,9 @@ import {
   closePeerConnection
 } from '../lib/webrtc'
 import { useSignaling } from './SignalingContext'
+import { useVoicePresence } from './VoicePresenceContext'
+import { useSpeaking } from './SpeakingContext'
+import { RemoteAudioAnalyzer } from '../lib/remoteAudioAnalyzer'
 import { loadAudioSettings } from '../lib/tauri'
 
 /**
@@ -37,6 +40,7 @@ export interface PeerConnectionInfo {
   connection: RTCPeerConnection
   remoteStream: MediaStream | null
   audioElement: HTMLAudioElement | null
+  audioAnalyzer: RemoteAudioAnalyzer | null  // For voice activity detection
   connectionState: PeerConnectionState
 }
 
@@ -67,6 +71,8 @@ const WebRTCContext = createContext<WebRTCContextType | null>(null)
 
 export function WebRTCProvider({ children }: { children: ReactNode }) {
   const { signalingUrl } = useSignaling()
+  const voicePresence = useVoicePresence()
+  const { setUserSpeaking } = useSpeaking()
 
   // State
   const [isInVoice, setIsInVoice] = useState(false)
@@ -90,6 +96,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const isRebuildingAudioRef = useRef<boolean>(false)    // Guard against concurrent rebuilds
   const keepaliveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)  // Signaling keepalive
   const signalingConnectedRef = useRef<boolean>(false)   // Track signaling state separately from media
+  const localAudioAnalyzerRef = useRef<RemoteAudioAnalyzer | null>(null)  // For self-speaking detection
 
   // Keep peersRef in sync with state
   useEffect(() => {
@@ -382,6 +389,13 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const cleanupPeerConnection = useCallback((peerId: string, peerInfo: PeerConnectionInfo) => {
     console.log(`[WebRTC] Cleaning up peer ${peerId} (user ${peerInfo.userId})`)
 
+    // Stop audio analyzer
+    if (peerInfo.audioAnalyzer) {
+      peerInfo.audioAnalyzer.stop()
+      // Clear speaking state for this user
+      setUserSpeaking(peerInfo.userId, false)
+    }
+
     // Stop remote audio
     if (peerInfo.audioElement) {
       peerInfo.audioElement.pause()
@@ -397,7 +411,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       peerInfo.connection.oniceconnectionstatechange = null
       closePeerConnection(peerInfo.connection)
     }
-  }, [])
+  }, [setUserSpeaking])
 
   // Find peer by user_id (for handling reconnects)
   const findPeerByUserId = useCallback((userId: string): PeerConnectionInfo | undefined => {
@@ -407,7 +421,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     return undefined
   }, [])
 
-  const createPeerConnectionForPeer = useCallback(async (remotePeerId: string, _remoteUserId: string): Promise<RTCPeerConnection> => {
+  const createPeerConnectionForPeer = useCallback(async (remotePeerId: string, remoteUserId: string): Promise<RTCPeerConnection> => {
     const pc = createPeerConnection()
     const roomId = currentRoomRef.current
 
@@ -482,6 +496,21 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         const audioElement = createRemoteAudioElement(remoteStream, outputDeviceRef.current || undefined)
         console.log(`[Media] Created audio element for peer=${remotePeerId}`)
 
+        // Create analyzer for voice activity detection
+        let audioAnalyzer: RemoteAudioAnalyzer | null = null
+        try {
+          audioAnalyzer = new RemoteAudioAnalyzer(
+            remoteStream,
+            (isSpeaking: boolean) => {
+              // Update speaking state for this user
+              setUserSpeaking(remoteUserId, isSpeaking)
+            }
+          )
+          console.log(`[Media] Created audio analyzer for peer=${remotePeerId}`)
+        } catch (error) {
+          console.warn(`[Media] Failed to create audio analyzer for peer=${remotePeerId}:`, error)
+        }
+
         // Listen for track unmute events
         event.track.onunmute = () => {
           console.log(`[Media] Remote track unmuted for peer=${remotePeerId}`)
@@ -494,7 +523,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             updated.set(remotePeerId, {
               ...peerInfo,
               remoteStream,
-              audioElement
+              audioElement,
+              audioAnalyzer
             })
           }
           return updated
@@ -663,6 +693,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
                 connection: pc,
                 remoteStream: null,
                 audioElement: null,
+                audioAnalyzer: null,
                 connectionState: pc.connectionState
               })
               return updated
@@ -905,6 +936,10 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string, signingPubkey: string) => {
     if (isInVoice) {
       console.warn('[WebRTC] Already in voice, leaving first')
+      // Clean up stale presence data before leaving
+      if (currentSigningPubkeyRef.current && currentUserIdRef.current) {
+        voicePresence.removeUserFromAllRooms(currentSigningPubkeyRef.current, currentUserIdRef.current)
+      }
       leaveVoiceInternal()
     }
 
@@ -939,6 +974,20 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     console.log('[Voice] ✓ Stream track ID:', audioTracks[0].id)
     console.log(`[Media] Transmission track ready: readyState=${audioTracks[0].readyState}`)
 
+    // Create analyzer for local voice activity detection (self-speaking indicator)
+    try {
+      localAudioAnalyzerRef.current = new RemoteAudioAnalyzer(
+        transmissionStream,
+        (isSpeaking: boolean) => {
+          // Update speaking state for self
+          setUserSpeaking(userId, isSpeaking)
+        }
+      )
+      console.log('[Media] Created local audio analyzer for self-speaking detection')
+    } catch (error) {
+      console.warn('[Media] Failed to create local audio analyzer:', error)
+    }
+
     // Generate EPHEMERAL peer_id for this session
     const peerId = crypto.randomUUID()
 
@@ -957,14 +1006,28 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     setCurrentRoomId(roomId)
     isInVoiceRef.current = true
 
+    // Clean up any stale presence data for this user in this house before joining
+    // This ensures we don't have duplicate entries if the user was in a different room
+    voicePresence.removeUserFromAllRooms(signingPubkey, userId)
+
     // Connect to signaling
     connectToSignaling()
-  }, [isInVoice, signalingUrl, connectToSignaling])
+  }, [isInVoice, signalingUrl, connectToSignaling, voicePresence, setUserSpeaking])
 
   // Internal leave function that doesn't check isInVoice state
   // NOTE: This is an EXPLICIT leave - tear down both signaling AND media
   const leaveVoiceInternal = useCallback(() => {
     console.log('[Voice] Leaving voice - tearing down signaling and media')
+
+    // Stop local audio analyzer
+    if (localAudioAnalyzerRef.current) {
+      localAudioAnalyzerRef.current.stop()
+      localAudioAnalyzerRef.current = null
+      // Clear self-speaking state
+      if (currentUserIdRef.current) {
+        setUserSpeaking(currentUserIdRef.current, false)
+      }
+    }
 
     // 1. Stop keepalive
     stopKeepalive()
@@ -1016,7 +1079,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     isInVoiceRef.current = false
 
     console.log('[Voice] Leave complete')
-  }, [cleanupPeerConnection, stopKeepalive])
+  }, [cleanupPeerConnection, stopKeepalive, setUserSpeaking])
 
   const leaveVoice = useCallback(() => {
     if (!isInVoice) {

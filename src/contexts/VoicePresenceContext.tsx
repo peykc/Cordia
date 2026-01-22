@@ -5,6 +5,7 @@ type VoicePresenceByHouse = Record<string, Record<string, Set<string>>> // signi
 interface VoicePresenceContextType {
   getVoiceParticipants: (signingPubkey: string, roomId: string) => string[]  // Returns user_ids in voice for a room
   isUserInVoice: (signingPubkey: string, userId: string) => boolean  // Check if user is in voice in any room
+  removeUserFromAllRooms: (signingPubkey: string, userId: string) => void  // Remove user from all rooms in a house
   applyUpdate: (signingPubkey: string, userId: string, roomId: string, inVoice: boolean) => void
   applySnapshot: (signingPubkey: string, roomId: string, userIds: string[]) => void
 }
@@ -91,8 +92,46 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
     return false
   }
 
+  const removeUserFromAllRooms: VoicePresenceContextType['removeUserFromAllRooms'] = (signingPubkey, userId) => {
+    setByHouse((prev) => {
+      const house = prev[signingPubkey]
+      if (!house) return prev
+      
+      const updatedHouse = { ...house }
+      let hasChanges = false
+      
+      // Remove user from all rooms in this house
+      for (const roomId of Object.keys(updatedHouse)) {
+        const room = updatedHouse[roomId]
+        if (room.has(userId)) {
+          const updatedRoom = new Set(room)
+          updatedRoom.delete(userId)
+          if (updatedRoom.size === 0) {
+            delete updatedHouse[roomId]
+          } else {
+            updatedHouse[roomId] = updatedRoom
+          }
+          hasChanges = true
+        }
+      }
+      
+      if (!hasChanges) return prev
+      
+      // Clean up empty houses
+      if (Object.keys(updatedHouse).length === 0) {
+        const { [signingPubkey]: _, ...rest } = prev
+        return rest
+      }
+      
+      return {
+        ...prev,
+        [signingPubkey]: updatedHouse,
+      }
+    })
+  }
+
   const value = useMemo(
-    () => ({ applyUpdate, applySnapshot, getVoiceParticipants, isUserInVoice }),
+    () => ({ applyUpdate, applySnapshot, getVoiceParticipants, isUserInVoice, removeUserFromAllRooms }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [byHouse]
   )

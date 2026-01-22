@@ -10,6 +10,8 @@ import { ProfileAvatarChip } from '../components/ProfileAvatarChip'
 import { useSignaling } from '../contexts/SignalingContext'
 import { usePresence } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
+import { useSpeaking } from '../contexts/SpeakingContext'
+import { cn } from '../lib/utils'
 
 function HouseViewPage() {
   const { houseId } = useParams<{ houseId: string }>()
@@ -17,6 +19,7 @@ function HouseViewPage() {
   const { identity } = useIdentity()
   const { getLevel } = usePresence()
   const voicePresence = useVoicePresence()
+  const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, toggleMute: webrtcToggleMute, isLocalMuted, peers, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const [house, setHouse] = useState<House | null>(null)
@@ -55,7 +58,7 @@ function HouseViewPage() {
     }
   }
 
-  const PresenceSquare = ({ level }: { level: 'active' | 'online' | 'offline' | 'in_call' }) => {
+  const PresenceSquare = ({ level, size = 'default' }: { level: 'active' | 'online' | 'offline' | 'in_call'; size?: 'default' | 'small' }) => {
     const cls =
       level === 'in_call'
         ? 'bg-blue-500'
@@ -64,7 +67,8 @@ function HouseViewPage() {
           : level === 'online'
             ? 'bg-amber-500'
             : 'bg-muted-foreground'
-    return <div className={`h-2 w-2 ${cls} ring-2 ring-background`} />
+    const sizeClass = size === 'small' ? 'h-1.5 w-1.5' : 'h-2 w-2'
+    return <div className={`${sizeClass} ${cls} ring-2 ring-background`} />
   }
 
   useEffect(() => {
@@ -413,19 +417,23 @@ function HouseViewPage() {
                                   userId,
                                   voicePresence.isUserInVoice(house.signing_pubkey, userId)
                                 )
+                                const isSpeaking = isUserSpeaking(userId)
 
                                 return (
                                   <div key={userId} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-accent/30 transition-colors">
                                     <div className="relative">
                                       <div
-                                        className="w-6 h-6 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 ring-background"
+                                        className={cn(
+                                          "w-6 h-6 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 transition-all",
+                                          isSpeaking ? "ring-green-500 ring-2" : "ring-background"
+                                        )}
                                         style={avatarStyleForUser(userId)}
                                         title={displayName}
                                       >
                                         {getInitials(displayName)}
                                       </div>
                                       <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                                        <PresenceSquare level={level} />
+                                        <PresenceSquare level={level} size="small" />
                                       </div>
                                     </div>
                                     <span className="text-xs font-light truncate">
@@ -460,6 +468,7 @@ function HouseViewPage() {
                                       userId,
                                       voicePresence.isUserInVoice(house.signing_pubkey, userId)
                                     )
+                                    const isSpeaking = isUserSpeaking(userId)
 
                                     return (
                                       <div
@@ -469,14 +478,17 @@ function HouseViewPage() {
                                       >
                                         <div className="relative">
                                           <div
-                                            className="h-5 w-5 grid place-items-center rounded-none ring-2 ring-background"
+                                            className={cn(
+                                              "h-5 w-5 grid place-items-center rounded-none ring-2 transition-all",
+                                              isSpeaking ? "ring-green-500 ring-2" : "ring-background"
+                                            )}
                                             style={avatarStyleForUser(userId)}
                                             title={displayName}
                                           >
                                             <span className="text-[8px] font-mono tracking-wider">{getInitials(displayName)}</span>
                                           </div>
                                           <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
-                                            <PresenceSquare level={level} />
+                                            <PresenceSquare level={level} size="small" />
                                           </div>
                                         </div>
                                       </div>

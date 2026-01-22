@@ -1163,7 +1163,11 @@ impl HouseManager {
 
     /// Import a house from an invite token that contains the house symmetric key.
     /// This lets a new member decrypt future Option-B hints.
-    pub fn import_house_invite(&self, info: HouseInfo, house_symmetric_key: Vec<u8>) -> Result<(), HouseError> {
+    /// Returns the actual house ID used (may differ from info.id if house already existed).
+    pub fn import_house_invite(&self, info: HouseInfo, house_symmetric_key: Vec<u8>) -> Result<String, HouseError> {
+        // Check if house already exists by signing_pubkey
+        let existing_house_id_opt = self.find_house_id_by_signing_pubkey(&info.signing_pubkey)?;
+        
         // Encrypt symmetric key with device key for local storage
         let encrypted_symmetric_key = {
             let cipher = XChaCha20Poly1305::new((&self.device_key).into());
@@ -1175,14 +1179,35 @@ impl HouseManager {
             Some(base64::encode(&result))
         };
 
+        // Use existing house ID if found, otherwise use the ID from info
+        let house_id = existing_house_id_opt.clone().unwrap_or(info.id.clone());
+        
+        // If house exists, preserve its encrypted_signing_secret
+        let preserve_encrypted_signing_secret = if let Some(ref existing_id) = existing_house_id_opt {
+            let house_path = self.get_house_path(existing_id);
+            if house_path.exists() {
+                match fs::read_to_string(&house_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<HouseStorage>(&s).ok())
+                {
+                    Some(existing) => existing.encrypted_signing_secret,
+                    None => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let storage = HouseStorage {
-            id: info.id,
+            id: house_id.clone(),
             name: info.name,
             created_at: info.created_at,
             rooms: info.rooms,
             members: info.members,
             signing_pubkey: info.signing_pubkey,
-            encrypted_signing_secret: None,
+            encrypted_signing_secret: preserve_encrypted_signing_secret,
             encrypted_symmetric_key,
             invite_uri: info.invite_uri,
             connection_mode: info.connection_mode,
@@ -1196,6 +1221,6 @@ impl HouseManager {
         let house_path = self.get_house_path(&storage.id);
         let json = serde_json::to_string_pretty(&storage)?;
         fs::write(house_path, json)?;
-        Ok(())
+        Ok(house_id)  // Return the actual house ID used
     }
 }

@@ -1059,17 +1059,18 @@ async fn redeem_temporary_invite(signaling_server: String, code: String, user_id
     }
 
     // Import merged house + symmetric key locally
-    manager.import_house_invite(merged_house.clone(), symmetric_key)
+    // Returns the actual house ID used (may differ from merged_house.id if house already existed)
+    let actual_house_id = manager.import_house_invite(merged_house.clone(), symmetric_key)
         .map_err(|e| format!("Failed to import house from invite: {}", e))?;
 
-    // Add member locally
-    let updated = manager.add_member_to_house(&merged_house.id, user_id, display_name)
+    // Add member locally using the actual house ID
+    let updated = manager.add_member_to_house(&actual_house_id, user_id, display_name)
         .map_err(|e| format!("Failed to join house: {}", e))?;
 
     // CRITICAL: Publish updated encrypted hint as part of redeem flow.
     // Otherwise, other clients (including the creator) may never learn about this membership change,
     // and later syncs can overwrite the joiner's local member list.
-    publish_house_hint_opaque(signaling_server.clone(), merged_house.id.clone()).await?;
+    publish_house_hint_opaque(signaling_server.clone(), actual_house_id).await?;
 
     Ok(updated.to_info())
 }
