@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus, Trash2, Phone } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { loadHouse, addRoom, removeRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -26,6 +26,7 @@ function HouseViewPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [copiedInvite, setCopiedInvite] = useState(false)
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null)
+  const [hoveredRoomId, setHoveredRoomId] = useState<string | null>(null)
   const [showCreateRoomDialog, setShowCreateRoomDialog] = useState(false)
   const [roomName, setRoomName] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
@@ -205,12 +206,12 @@ function HouseViewPage() {
     console.log('Opened room:', room.name)
   }
 
-  const handleJoinVoice = async () => {
-    if (!currentRoom || !house || !identity) return
+  const handleJoinVoice = async (room: Room) => {
+    if (!house || !identity) return
 
     try {
-      await joinVoice(currentRoom.id, house.id, identity.user_id, house.signing_pubkey)
-      console.log('Joined voice in room:', currentRoom.name)
+      await joinVoice(room.id, house.id, identity.user_id, house.signing_pubkey)
+      console.log('Joined voice in room:', room.name)
     } catch (error) {
       console.error('Failed to join voice:', error)
     }
@@ -369,6 +370,8 @@ function HouseViewPage() {
                             handleSelectRoom(room)
                           }
                         }}
+                        onMouseEnter={() => setHoveredRoomId(room.id)}
+                        onMouseLeave={() => setHoveredRoomId(null)}
                         role="button"
                         tabIndex={0}
                         className={`w-full px-3 py-2 rounded-md transition-colors text-left group ${
@@ -383,9 +386,32 @@ function HouseViewPage() {
                             <span className="text-sm font-light">{room.name}</span>
                           </div>
                           <div className="flex items-center gap-2">
-                            {currentRoomId === room.id && webrtcIsInVoice && (
-                              <Volume2 className="h-3 w-3" />
-                            )}
+                            {/* Phone icon for joining/leaving voice - visible when in call, hover-only otherwise */}
+                            {(() => {
+                              const inThisRoom = webrtcIsInVoice && currentRoomId === room.id
+                              const showJoin = !inThisRoom && hoveredRoomId === room.id
+                              return (
+                                <button
+                                  type="button"
+                                  title={inThisRoom ? "Leave voice" : "Join voice"}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (inThisRoom) {
+                                      handleLeaveVoice()
+                                    } else {
+                                      handleJoinVoice(room)
+                                    }
+                                  }}
+                                  className={`p-1 rounded transition-colors ${
+                                    isSelected
+                                      ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
+                                      : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
+                                  } ${inThisRoom || showJoin ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                                >
+                                  {inThisRoom ? <PhoneOff className="h-3 w-3" /> : <Phone className="h-3 w-3" />}
+                                </button>
+                              )
+                            })()}
                             <button
                               type="button"
                               title="Delete room"
@@ -394,7 +420,7 @@ function HouseViewPage() {
                                 isSelected
                                   ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
                                   : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
-                              } opacity-0 group-hover:opacity-100 focus:opacity-100`}
+                              } ${webrtcIsInVoice && currentRoomId === room.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
                             >
                               <Trash2 className="h-3 w-3" />
                             </button>
@@ -585,27 +611,7 @@ function HouseViewPage() {
                       )}
                     </div>
                   </div>
-                  {!(webrtcIsInVoice && currentRoomId === currentRoom.id) ? (
-                    <Button
-                      onClick={handleJoinVoice}
-                      variant="default"
-                      size="sm"
-                      className="h-9 gap-2"
-                    >
-                      <Volume2 className="h-4 w-4" />
-                      Join Voice
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={handleLeaveVoice}
-                      variant="destructive"
-                      size="sm"
-                      className="h-9 gap-2"
-                    >
-                      <PhoneOff className="h-4 w-4" />
-                      Leave Voice
-                    </Button>
-                  )}
+                  {/* Join Voice button removed - now in sidebar on hover */}
                 </div>
               </div>
 
