@@ -1,12 +1,12 @@
-# Roommate Deployment Guide for Users
+# Deployment Guide
 
-Super simple guide for deploying the Roommate signaling server to your NAS or server.
+Simple guide for deploying the Roommate signaling server to your NAS or server.
 
-## For Users: Installing the Signaling Server
+## Installation Methods
 
-### 🖱️ Method 1: Using Dockge/Portainer (Easiest!)
+### 🖱️ Method 1: Dockge/Portainer (Easiest!)
 
-**If you have Dockge, Portainer, or any Docker GUI:**
+If you have Dockge, Portainer, or any Docker GUI:
 
 1. Open your Docker manager in a browser
 2. Create a new stack/compose named `roommate-signaling`
@@ -17,7 +17,7 @@ version: '3.8'
 
 services:
   signaling-server:
-    image: ghcr.io/pey-k/roommate-signaling:latest
+    image: ghcr.io/YOUR_USERNAME/roommate-signaling:latest
     container_name: roommate-signaling
     hostname: roommate-signaling
     environment:
@@ -34,26 +34,19 @@ services:
 networks: {}
 ```
 
+**Important:** Replace `YOUR_USERNAME` with your actual GitHub username.
+
 4. Click "Deploy" or "Start"
 
-**That's it!** Check the container logs to verify it's running.
+✅ **Done!** Check the container logs to verify it's running.
+
+See **[deploy/DOCKGE_SETUP.md](deploy/DOCKGE_SETUP.md)** for detailed instructions.
 
 ---
 
-### 💻 Method 2: Command Line Installation
+### 💻 Method 2: One-Command Installation
 
-**If you prefer SSH:**
-
-#### Step 1: SSH to Your NAS
-
-Connect to your NAS via SSH:
-```bash
-ssh your-username@your-nas-ip
-```
-
-#### Step 2: Run the One-Line Installer
-
-Copy and paste this command:
+SSH into your NAS/server and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/install.sh | bash
@@ -64,61 +57,68 @@ That's it! The installer will:
 - ✅ Download the configuration
 - ✅ Pull the Docker image
 - ✅ Start the signaling server
-- ✅ Set up proper permissions (PUID 1000, PGID 1000)
+- ✅ Set up proper permissions
 
-### Step 3: Verify It's Working
-
-You should see output like:
-```
-🎉 Installation complete!
-
-Your signaling server is now running at ws://localhost:9001
-Data will be stored at: /mnt/App/apps/signal
-```
-
-To check the logs:
+**Verify it's working:**
 ```bash
 cd /mnt/App/stacks/roommate-signaling
 docker-compose logs -f signaling-server
 ```
 
-You should see:
+You should see: `Signaling server listening on ws://127.0.0.1:9001`
+
+---
+
+### 📝 Method 3: Manual Installation
+
+If you prefer manual setup:
+
+```bash
+# Create directory
+mkdir -p /mnt/App/stacks/roommate-signaling
+cd /mnt/App/stacks/roommate-signaling
+
+# Download configuration
+wget https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/docker-compose.yml
+
+# Update image name with your username
+# Edit docker-compose.yml and replace YOUR_USERNAME
+
+# Start server
+docker-compose pull
+docker-compose up -d
 ```
-Signaling server listening on ws://127.0.0.1:9001
-```
 
-Press `Ctrl+C` to stop viewing logs (server keeps running).
+## Configuration
 
-### Step 4: Find Your NAS IP Address
+### Find Your Server IP
 
-You'll need your NAS's local IP address to connect the Roommate app.
+You'll need your NAS/server's IP address to connect the Roommate app:
 
-**On your NAS**, run:
 ```bash
 hostname -I | awk '{print $1}'
 ```
 
 This will show something like: `192.168.1.100`
 
-**Write this down!** You'll need it to configure the Roommate app.
+### Update App Configuration
 
-## What Was Installed?
+The Roommate app needs to be configured with your server's IP address. The developer needs to update:
 
-### Directories Created:
-- **Installation**: `/mnt/App/stacks/roommate-signaling/`
-  - Contains the docker-compose.yml configuration
-- **Data Storage**: `/mnt/App/apps/signal/`
-  - Docker creates this automatically
-  - Stores logs and future configuration
+**File:** `src-tauri/src/signaling.rs`
 
-### Docker Container:
-- **Name**: `roommate-signaling`
-- **Port**: 9001
-- **Restart Policy**: Automatically restarts if it crashes or NAS reboots
+```rust
+pub fn get_default_signaling_url() -> String {
+    "ws://YOUR_NAS_IP:9001".to_string()  // Replace with your actual IP
+}
+```
+
+Then rebuild the app: `npm run tauri build`
 
 ## Managing the Server
 
 All commands should be run from the installation directory:
+
 ```bash
 cd /mnt/App/stacks/roommate-signaling
 ```
@@ -144,7 +144,6 @@ docker-compose restart
 ```
 
 ### Update to Latest Version
-When a new version is released:
 ```bash
 docker-compose pull
 docker-compose up -d
@@ -155,99 +154,38 @@ docker-compose up -d
 docker-compose ps
 ```
 
-Should show:
-```
-NAME                  STATUS
-roommate-signaling    Up 5 minutes (healthy)
-```
-
-## Connecting Roommate App to Your Server
-
-After the signaling server is running on your NAS, you need to configure the Roommate app to use it.
-
-### Find Your Server Address
-
-Your signaling server URL will be:
-```
-ws://YOUR_NAS_IP:9001
-```
-
-For example, if your NAS IP is `192.168.1.100`:
-```
-ws://192.168.1.100:9001
-```
-
-### Configure the App
-
-The app developer needs to update the default signaling URL in the code and rebuild the app for you.
-
-**File to modify**: `src-tauri/src/signaling.rs`
-
-Change:
-```rust
-pub fn get_default_signaling_url() -> String {
-    "ws://127.0.0.1:9001".to_string()
-}
-```
-
-To:
-```rust
-pub fn get_default_signaling_url() -> String {
-    "ws://192.168.1.100:9001".to_string()  // Your NAS IP
-}
-```
-
-Then rebuild: `npm run tauri build`
-
 ## Troubleshooting
 
-### Can't Access Server from Other Devices
-
-If you can't connect to the signaling server from other devices on your network:
+### Can't Access from Other Devices
 
 1. **Check if server is running:**
    ```bash
-   cd /mnt/App/stacks/roommate-signaling
    docker-compose ps
    ```
 
-2. **Check firewall on NAS:**
-   Make sure port 9001 is open. On most NAS systems:
-   - Go to Control Panel → Security → Firewall
+2. **Check firewall:**
+   - Make sure port 9001 is open
+   - On most NAS systems: Control Panel → Security → Firewall
    - Add rule to allow port 9001
 
-3. **Test connection from another device:**
+3. **Test connection:**
    ```bash
    telnet YOUR_NAS_IP 9001
    ```
 
-   If it connects, you should see the connection in the logs:
-   ```bash
-   docker-compose logs signaling-server
-   ```
-
 ### Server Not Starting
 
-1. **Check logs for errors:**
+1. **Check logs:**
    ```bash
    docker-compose logs signaling-server
    ```
 
-2. **Check if port 9001 is already in use:**
+2. **Check if port is in use:**
    ```bash
    netstat -tlnp | grep 9001
    ```
 
-3. **Restart Docker:**
-   ```bash
-   # On Synology NAS
-   sudo synoservicectl --restart pkgctl-Docker
-
-   # On most Linux systems
-   sudo systemctl restart docker
-   ```
-
-4. **Rebuild and restart:**
+3. **Rebuild and restart:**
    ```bash
    docker-compose down
    docker-compose up -d --build
@@ -255,84 +193,47 @@ If you can't connect to the signaling server from other devices on your network:
 
 ### Permission Issues
 
-If you see permission errors in the logs:
+If you see permission errors:
 
-1. **Check volume permissions:**
-   ```bash
-   ls -la /mnt/App/apps/signal
-   ```
-
-2. **Should show UID 1000, GID 1000**
-
-3. **Fix permissions if needed:**
-   ```bash
-   sudo chown -R 1000:1000 /mnt/App/apps/signal
-   ```
-
-### Installation Failed
-
-If the installation script fails:
-
-1. **Check internet connection:**
-   ```bash
-   ping github.com
-   ```
-
-2. **Check Docker is installed:**
-   ```bash
-   docker --version
-   docker-compose --version
-   ```
-
-3. **Try manual installation instead:**
-   ```bash
-   mkdir -p /mnt/App/stacks/roommate-signaling
-   cd /mnt/App/stacks/roommate-signaling
-   wget https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/docker-compose.yml
-   docker-compose pull
-   docker-compose up -d
-   ```
+```bash
+sudo chown -R 1000:1000 /mnt/App/apps/signal
+```
 
 ## Uninstalling
 
 To completely remove the signaling server:
 
 ```bash
-# Stop and remove container
 cd /mnt/App/stacks/roommate-signaling
 docker-compose down
-
-# Remove Docker image
-docker rmi ghcr.io/pey-k/roommate-signaling:latest
-
-# Remove installation directory
+docker rmi ghcr.io/YOUR_USERNAME/roommate-signaling:latest
 rm -rf /mnt/App/stacks/roommate-signaling
-
-# Optionally remove data directory
+# Optionally remove data
 rm -rf /mnt/App/apps/signal
 ```
 
 ## Custom Installation Directory
 
-If you don't want to use the default location:
+To use a custom installation directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/install.sh | INSTALL_DIR=/your/custom/path bash
 ```
 
-**Note**: You'll also need to update the data volume path in docker-compose.yml if you want data stored elsewhere.
-
-## Getting Help
-
-If you're stuck:
-1. Check the logs: `docker-compose logs -f signaling-server`
-2. Verify Docker is working: `docker ps`
-3. Check GitHub issues: https://github.com/Pey-K/Roommate/issues
+**Note:** You'll also need to update the data volume path in docker-compose.yml.
 
 ## Next Steps
 
 Once the signaling server is running:
+
 1. ✅ Server is running on your NAS
-2. ⏭️ Get the Roommate app configured with your NAS IP
+2. ⏭️ Configure the Roommate app with your NAS IP
 3. ⏭️ Distribute the app to your friends
 4. ⏭️ Start voice chatting!
+
+## Getting Help
+
+- Check logs: `docker-compose logs -f signaling-server`
+- Verify Docker: `docker ps`
+- See [SIGNALING_SETUP.md](SIGNALING_SETUP.md) for local development setup
+- See [GITHUB_SETUP.md](GITHUB_SETUP.md) for automated builds
