@@ -1,13 +1,22 @@
-# GitHub Repository Setup Guide
+# GitHub Actions Setup Guide
 
-This guide will help you set up the GitHub repository for automatic Docker image builds.
+This guide will help you set up automatic Docker image builds using GitHub Actions.
 
-## Step 1: Initialize Git Repository
+## Overview
+
+GitHub Actions will automatically build and push the signaling server Docker image to GitHub Container Registry (ghcr.io) whenever you push code to the repository.
+
+## Prerequisites
+
+- A GitHub account
+- A GitHub repository (public or private)
+- Git initialized in your project
+
+## Step 1: Push Your Code to GitHub
+
+If you haven't already:
 
 ```bash
-# In your project directory
-cd "C:\Users\peyto\Documents\!My Games\Roommate"
-
 # Initialize git (if not already done)
 git init
 
@@ -15,25 +24,9 @@ git init
 git add .
 
 # Create first commit
-git commit -m "Initial commit: Roommate P2P voice chat app with signaling server"
-```
+git commit -m "Initial commit: Roommate P2P voice chat app"
 
-## Step 2: Create GitHub Repository
-
-1. Go to [GitHub](https://github.com)
-2. Click the **+** icon in top-right → **New repository**
-3. Name it: `roommate` (or your preferred name)
-4. Description: "Privacy-focused P2P voice chat app with hybrid DHT/signaling architecture"
-5. Choose **Public** or **Private** (your preference)
-6. **Do NOT** initialize with README, .gitignore, or license (we already have these)
-7. Click **Create repository**
-
-## Step 3: Push to GitHub
-
-GitHub will show you commands like this:
-
-```bash
-# Add the remote
+# Add remote (replace YOUR_USERNAME with your GitHub username)
 git remote add origin https://github.com/YOUR_USERNAME/roommate.git
 
 # Push to GitHub
@@ -41,22 +34,43 @@ git branch -M main
 git push -u origin main
 ```
 
-Replace `YOUR_USERNAME` with your actual GitHub username.
+## Step 2: Verify GitHub Actions Workflow
 
-## Step 4: Enable GitHub Actions
+The workflow file should already exist at `.github/workflows/build-signaling.yml`.
 
-GitHub Actions should be enabled by default for your repository.
-
-To verify:
 1. Go to your repository on GitHub
 2. Click the **Actions** tab
 3. You should see the workflow "Build and Push Signaling Server"
 
 After your first push, the workflow will automatically run and build the Docker image.
 
-## Step 5: Enable GitHub Container Registry
+## Step 3: Wait for Build to Complete
 
-The Docker images will be published to GitHub Container Registry (ghcr.io).
+1. Go to **Actions** tab in your repository
+2. Click on the running workflow
+3. Wait for it to complete (usually 2-5 minutes)
+4. Once complete, your Docker image will be available at:
+   ```
+   ghcr.io/YOUR_USERNAME/roommate-signaling:latest
+   ```
+
+## Step 4: Update Deployment Configuration
+
+Update `deploy/docker-compose.yml` with your actual GitHub username:
+
+```yaml
+image: ghcr.io/YOUR_ACTUAL_USERNAME/roommate-signaling:latest
+```
+
+Commit and push this change:
+
+```bash
+git add deploy/docker-compose.yml
+git commit -m "Update docker image name with actual username"
+git push
+```
+
+## Step 5: Enable GitHub Container Registry
 
 **For Public Images** (default):
 - No additional setup needed
@@ -67,164 +81,59 @@ The Docker images will be published to GitHub Container Registry (ghcr.io).
 2. Under **Workflow permissions**, ensure "Read and write permissions" is checked
 3. Click **Save**
 
-## Step 6: Wait for Build to Complete
+## How It Works
 
-1. Go to **Actions** tab in your repository
-2. Click on the running workflow
-3. Wait for it to complete (usually 2-5 minutes)
-4. Once complete, your Docker image will be available at:
-   ```
-   ghcr.io/YOUR_USERNAME/roommate-signaling:latest
-   ```
+The GitHub Actions workflow:
 
-## Step 7: Update Deployment Configuration
+1. **Triggers** on push to `main` branch
+2. **Builds** the signaling server Docker image
+3. **Pushes** to GitHub Container Registry
+4. **Tags** as `latest` and with the commit SHA
 
-Update `deploy/docker-compose.yml` with your actual GitHub username:
+## Manual Trigger
 
-```yaml
-image: ghcr.io/YOUR_ACTUAL_USERNAME/roommate-signaling:latest
-```
+You can also manually trigger the workflow:
 
-Commit and push this change:
-```bash
-git add deploy/docker-compose.yml
-git commit -m "Update docker image name with actual username"
-git push
-```
+1. Go to **Actions** tab
+2. Select "Build and Push Signaling Server"
+3. Click **Run workflow**
+4. Select branch and click **Run workflow**
 
-## Step 8: Deploy to Your NAS
+## Updating the Image
 
-Now you can deploy to your NAS with a single command:
+Every time you push code to the `main` branch, a new image will be built automatically. To use the latest image:
 
 ```bash
-# SSH to your NAS and run:
-curl -fsSL https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/install.sh | bash
-```
-
-This one-liner will:
-- Create `/mnt/App/stacks/roommate-signaling` directory
-- Download docker-compose.yml
-- Pull the Docker image from GitHub Container Registry
-- Start the server
-- Docker will automatically create `/mnt/App/apps/signal` with proper permissions
-
-**Check logs:**
-```bash
-cd /mnt/App/stacks/roommate-signaling
-docker-compose logs -f signaling-server
-```
-
-## Automatic Updates
-
-Every time you push changes to the `signaling-server/` directory, GitHub Actions will automatically:
-1. Build a new Docker image
-2. Push it to GitHub Container Registry
-3. Tag it as `latest`
-
-To update your NAS:
-```bash
+# On your deployment server
 docker-compose pull
 docker-compose up -d
 ```
 
-## Workflow Triggers
-
-The Docker build workflow runs when:
-- You push to `main` or `master` branch
-- Changes are made to `signaling-server/` directory
-- Changes are made to the workflow file itself
-- You manually trigger it from GitHub Actions tab
-
-## Repository Structure
-
-After setup, your repository will have:
-
-```
-roommate/
-├── .github/
-│   └── workflows/
-│       └── docker-build.yml       # Auto-builds Docker image
-├── deploy/
-│   ├── docker-compose.yml         # For deploying on NAS
-│   └── README.md                  # Deployment instructions
-├── signaling-server/
-│   ├── src/
-│   │   └── main.rs
-│   ├── Cargo.toml
-│   ├── Dockerfile
-│   └── entrypoint.sh
-├── src-tauri/                     # Tauri backend
-├── src/                           # React frontend
-├── docker-compose.yml             # For local development
-├── package.json
-└── README.md
-```
-
-## Viewing Your Published Images
-
-To see your published Docker images:
-1. Go to your GitHub profile
-2. Click **Packages** tab
-3. You'll see `roommate-signaling`
-4. Click it to see all versions/tags
-
-## Making Images Public
-
-If your repository is private but you want the Docker image to be public:
-
-1. Go to the package page (GitHub Profile → Packages → roommate-signaling)
-2. Click **Package settings**
-3. Scroll down to **Danger Zone**
-4. Click **Change visibility** → **Public**
-
 ## Troubleshooting
 
-### Workflow Fails with Permission Error
+### Workflow Fails
 
-1. Go to repository **Settings** → **Actions** → **General**
-2. Under **Workflow permissions**, select "Read and write permissions"
-3. Click **Save**
-4. Re-run the workflow
+1. Check the **Actions** tab for error messages
+2. Common issues:
+   - Missing Dockerfile
+   - Build errors in signaling-server
+   - Permission issues with ghcr.io
 
-### Can't Pull Image on NAS
+### Image Not Found
 
-If you get "unauthorized" error when pulling:
+- Make sure the workflow completed successfully
+- Check that the image name matches your username
+- Verify the image is public (or you're authenticated if private)
 
-**For public images:**
+### Authentication Required
+
+If using private images, you may need to authenticate:
+
 ```bash
-docker logout ghcr.io
-docker-compose pull
+echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 ```
-
-**For private images:**
-You need to authenticate:
-```bash
-# Create a Personal Access Token (PAT) on GitHub with read:packages scope
-# Then login:
-echo YOUR_PAT | docker login ghcr.io -u YOUR_USERNAME --password-stdin
-
-# Then pull
-docker-compose pull
-```
-
-### Build Takes Too Long
-
-The first build takes 5-10 minutes because it compiles Rust from scratch.
-Subsequent builds are faster due to caching (usually 2-3 minutes).
 
 ## Next Steps
 
-After setup is complete:
-
-1. ✅ Repository is on GitHub
-2. ✅ Docker image builds automatically
-3. ✅ Image is published to ghcr.io
-4. ✅ Can deploy to NAS with `docker-compose pull && docker-compose up -d`
-5. ⏭️ Update Roommate app to point to your NAS IP
-6. ⏭️ Build and distribute Roommate app to friends
-
-## Helpful Links
-
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
+- See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** to deploy your built image
+- See **[SIGNALING_SETUP.md](SIGNALING_SETUP.md)** for local development setup
