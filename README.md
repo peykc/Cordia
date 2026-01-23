@@ -8,7 +8,7 @@ A privacy-focused P2P voice hangout app with modern usability. Built with Tauri,
 - 🏠 **Houses & Rooms** - Organize conversations with persistent spaces and room management
 - 👥 **Real-time Presence** - See who's online, active, or in a call with color-coded status indicators
 - 🗣️ **Voice Activity Detection** - Visual indicators show who's speaking in real-time
-- 🔐 **Privacy-First** - Ed25519 identity, end-to-end encrypted communication, no central server required
+- 🔐 **Privacy-First** - Ed25519 identity, end-to-end encrypted communication, no central server required. The signaling server cannot read your data - all house data is encrypted and stored locally.
 - 🌐 **Hybrid Architecture** - Optional signaling server for enhanced features with graceful fallback
 - 🎨 **Modern UI** - Clean, brutalist design with dark mode and Discord-inspired UX
 - ⚙️ **Flexible Audio** - Voice activation or push-to-talk modes with device hot-swapping
@@ -21,15 +21,25 @@ A privacy-focused P2P voice hangout app with modern usability. Built with Tauri,
 
 - **Node.js** (v18 or higher)
 - **Rust** (latest stable)
-- **Docker & Docker Compose** (for signaling server - optional but recommended)
+- **Docker & Docker Compose** (for self-hosting signaling server - optional)
 
-### 1. Start Signaling Server (Optional)
+### 1. Signaling Server
 
+Roommate comes with a default signaling server at `signal.pkcollection.net` that you can use immediately. No setup required!
+
+**Option A: Use Default Server (Recommended for Quick Start)**
+- The app automatically connects to `signal.pkcollection.net`
+- No configuration needed
+- Full features available immediately
+- **Privacy:** The server cannot read your data - all house data is encrypted and stored locally
+
+**Option B: Self-Host Your Own Server (Optional)**
 ```bash
 docker-compose up -d
 ```
+See **[SIGNALING_SETUP.md](SIGNALING_SETUP.md)** for details.
 
-The signaling server enables advanced features like multiple rooms, presence tracking, and automatic peer discovery.
+**Note:** You can change the signaling server URL at any time in Settings → Connections. Each account can use a different server.
 
 ### 2. Start Roommate App
 
@@ -45,6 +55,10 @@ See **[QUICKSTART.md](QUICKSTART.md)** for detailed step-by-step instructions.
 Roommate uses a hybrid P2P model that gracefully degrades based on available infrastructure:
 
 - **Signaling Server** (optional): WebSocket server for peer discovery, room metadata, and presence tracking
+  - **Default Server**: `signal.pkcollection.net` (hosted for your convenience)
+  - **Self-Hosted**: Run your own server for full control (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
+  - **Per-Account**: Each account can use a different signaling server
+  - **Privacy**: The signaling server cannot read your user data - all house data and messages are encrypted and stored locally
 - **WebRTC P2P**: Direct peer-to-peer connections for voice communication
 - **Local Storage**: Houses and rooms are stored locally with encrypted keys
 
@@ -129,12 +143,18 @@ roommate/
 ### Run Locally
 
 ```bash
+# Option 1: Use default server (no setup needed)
+npm run tauri dev
+
+# Option 2: Self-host signaling server
 # Terminal 1: Start signaling server
 docker-compose up
 
 # Terminal 2: Start Roommate app
 npm run tauri dev
 ```
+
+**Note:** The app connects to `signal.pkcollection.net` by default. You can change this in Settings → Connections.
 
 ### Build for Production
 

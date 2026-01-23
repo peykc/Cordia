@@ -28,10 +28,12 @@ See **[SETUP.md](SETUP.md)** for detailed platform-specific setup instructions.
    npm install
    ```
 
-3. **Start the signaling server:**
+3. **Start the signaling server (optional):**
    ```bash
    docker-compose up -d
    ```
+   
+   **Note:** You can also use the default server at `signal.pkcollection.net` for development. No local server needed!
 
 4. **Start the development server:**
    ```bash

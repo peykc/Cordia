@@ -8,22 +8,26 @@ Before you begin, make sure you have:
 
 - ✅ **Node.js** (v18 or higher) - [Download](https://nodejs.org/)
 - ✅ **Rust** (latest stable) - [Install Rust](https://www.rust-lang.org/tools/install)
-- ✅ **Docker Desktop** (for signaling server) - [Download Docker](https://docs.docker.com/desktop/)
+- ✅ **Docker Desktop** (optional - only if you want to self-host your own signaling server) - [Download Docker](https://docs.docker.com/desktop/)
 
-## Step 1: Start the Signaling Server
+**Note:** Roommate includes a default signaling server at `signal.pkcollection.net` that works immediately - no Docker needed!
 
-The signaling server enables advanced features like multiple rooms, presence tracking, and automatic peer discovery.
+## Step 1: Signaling Server Setup
+
+Roommate comes with a **default signaling server** at `signal.pkcollection.net` that works out of the box! No setup required.
+
+**Option A: Use Default Server (Easiest - Recommended)**
+- ✅ No configuration needed
+- ✅ Works immediately
+- ✅ Full features available
+- ✅ **Privacy:** The server cannot read your data - all house data is encrypted and stored locally
+- The app automatically connects to `signal.pkcollection.net`
+
+**Option B: Self-Host Your Own Server (Optional)**
+If you prefer to run your own signaling server:
 
 ```bash
 docker-compose up -d
-```
-
-**Expected output:**
-```
-Creating network "roommate_default" with the default driver
-Building signaling-server
-...
-Creating roommate-signaling ... done
 ```
 
 **Verify it's running:**
@@ -33,7 +37,9 @@ docker-compose logs signaling-server
 
 You should see: `Signaling server listening on ws://127.0.0.1:9001`
 
-✅ **Success indicator:** The server is running if you see the "listening" message.
+**Note:** You can change the signaling server URL at any time in Settings → Connections. Each account can use a different server.
+
+**Privacy Note:** The signaling server cannot read your user data. All house data, room content, and messages are encrypted and stored locally. The server only helps with peer discovery and presence tracking. Your voice communication is direct peer-to-peer and never passes through the server.
 
 ## Step 2: Install Dependencies and Start Roommate
 
@@ -63,6 +69,8 @@ The app window will open automatically.
    - Look at the top bar
    - Should show 🟢 **"Connected"** status
    - This means the signaling server is working and full features are available
+   - By default, it connects to `signal.pkcollection.net`
+   - You can change this in Settings → Connections at any time
 
 4. **Create a Room** (optional):
    - Click the **+** button next to "Rooms" in the sidebar
@@ -95,9 +103,14 @@ The app window will open automatically.
 
 ### ❌ Red "Offline" or "Disconnected" indicator?
 
-**Problem:** The signaling server isn't running or can't be reached.
+**Problem:** Can't connect to the signaling server.
 
-**Fix:**
+**If using default server (`signal.pkcollection.net`):**
+- Check your internet connection
+- The default server may be temporarily unavailable
+- Try switching to a self-hosted server (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
+
+**If using self-hosted server:**
 ```bash
 # Check if signaling server is running
 docker-compose ps
@@ -112,14 +125,21 @@ docker-compose logs signaling-server
 # Close the app window and run: npm run tauri dev
 ```
 
+**Change Server URL:**
+- Go to Settings → Connections
+- Update the signaling server URL
+- You can switch between the default server (`signal.pkcollection.net`) and your own at any time
+
 ### ❌ Can't create rooms?
 
 **Problem:** Room creation requires the signaling server to be connected.
 
 **Solution:**
 - Check the connection status in the top bar
-- If it shows red/offline, start the signaling server: `docker-compose up -d`
-- Restart the Roommate app
+- If using default server (`signal.pkcollection.net`), check your internet connection
+- If using self-hosted server and it shows red/offline, start it: `docker-compose up -d`
+- You can change servers in Settings → Connections at any time
+- Restart the Roommate app if needed
 
 ### ❌ Docker not installed or not running?
 

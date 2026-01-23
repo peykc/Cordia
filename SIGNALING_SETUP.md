@@ -1,6 +1,27 @@
 # Signaling Server Setup Guide
 
-This guide will help you get the Roommate signaling server up and running for local development.
+This guide will help you set up your own signaling server. **Note:** Roommate comes with a default signaling server at `signal.pkcollection.net` that you can use immediately - no setup required!
+
+You only need to follow this guide if you want to:
+- Self-host your own signaling server
+- Run a local development server
+- Have full control over your signaling infrastructure
+
+## Default Server
+
+Roommate includes a default signaling server at **`signal.pkcollection.net`** that works out of the box. You can:
+- Use it immediately with no configuration
+- Change it at any time in Settings → Connections
+- Use different servers for different accounts
+
+## Privacy & Security
+
+**Important:** The signaling server cannot read your user data. All house data, room content, and messages are encrypted and stored locally on your device. The signaling server only facilitates:
+- Peer discovery (finding other users)
+- Room metadata (room names, member lists)
+- Presence tracking (who's online/active)
+
+Your actual voice communication is direct peer-to-peer (WebRTC) and never passes through the signaling server. Your house keys, encrypted data, and identity are stored locally and never sent to the server.
 
 ## Prerequisites
 
@@ -44,6 +65,8 @@ Once the app is running, check the connection status:
 - **🟢 Green "Connected"**: Signaling server is online - full features available
 - **🟡 Yellow "Checking"**: Checking connection status
 - **🔴 Red "Offline"**: Signaling server offline - limited to single room per house
+
+**Default Server:** The app connects to `signal.pkcollection.net` by default. You can change this in Settings → Connections at any time. Each account can use a different server.
 
 ## Managing the Server
 

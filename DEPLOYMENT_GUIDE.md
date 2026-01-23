@@ -1,6 +1,12 @@
 # Deployment Guide
 
-Simple guide for deploying the Roommate signaling server to your NAS or server.
+Simple guide for deploying your own Roommate signaling server to your NAS or server.
+
+**Note:** Roommate comes with a default signaling server at `signal.pkcollection.net` that you can use immediately. You only need to deploy your own server if you want full control over your signaling infrastructure.
+
+**Privacy:** The signaling server cannot read your user data. All house data, room content, and messages are encrypted and stored locally on your device. The server only facilitates peer discovery and presence tracking. Your voice communication is direct peer-to-peer and never passes through the server.
+
+You can change the signaling server URL at any time in Settings → Connections, and each account can use a different server.
 
 ## Installation Methods
 

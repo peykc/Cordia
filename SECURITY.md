@@ -85,6 +85,13 @@ If you're running your own signaling server:
 - **IP Exposure**: P2P connections may expose your local IP address to peers
 - **No Message Encryption**: Voice is P2P but signaling messages are not encrypted (future: E2E encryption)
 
+### Privacy Protections
+
+- **Server Cannot Read Data**: The signaling server cannot read your user data. All house data, room content, and messages are encrypted and stored locally on your device
+- **P2P Voice**: Voice communication is direct peer-to-peer (WebRTC) and never passes through the signaling server
+- **Local Storage**: Your identity, house keys, and encrypted data are stored locally and never sent to the server
+- **Server Role**: The signaling server only facilitates peer discovery, room metadata, and presence tracking - it does not have access to your encrypted content
+
 ### Future Security Enhancements
 
 - End-to-end encrypted signaling messages
