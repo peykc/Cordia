@@ -1,5 +1,7 @@
 #[cfg(feature = "redis-backend")]
 use crate::{SigningPubkey, state::presence::PresenceUserStatus};
+#[cfg(feature = "redis-backend")]
+use redis::AsyncCommands;
 
 #[cfg(feature = "redis-backend")]
 pub fn redis_user_key(user_id: &str) -> String {

@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "postgres")]
-use sqlx::{PgPool, postgres::PgPoolOptions, Row};
-#[cfg(feature = "redis-backend")]
-use redis::AsyncCommands;
+use sqlx::postgres::PgPoolOptions;
 
 pub mod state;
 pub mod handlers;
