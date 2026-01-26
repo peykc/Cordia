@@ -249,7 +249,7 @@ pub enum SignalingMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProfileSnapshotRecord {
+pub struct ProfileSnapshotRecord {
     user_id: String,
     display_name: String,
     #[serde(default)]
