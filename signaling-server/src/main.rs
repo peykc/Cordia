@@ -1,7 +1,7 @@
 // Allow unused code during WebRTC scaffolding phase
 #![allow(dead_code, unused_variables)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
