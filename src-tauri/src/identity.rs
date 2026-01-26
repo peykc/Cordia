@@ -298,13 +298,16 @@ impl IdentityManager {
                 }
             }
             
-            // Fallback: try PowerShell command
+            // Fallback: try PowerShell command (hidden window)
             #[cfg(not(feature = "windows-registry"))]
             {
                 use std::process::Command;
+                use std::os::windows::process::CommandExt;
                 
+                // CREATE_NO_WINDOW flag (0x08000000) hides the console window
                 let output = Command::new("powershell")
-                    .args(&["-NoProfile", "-Command", "Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid | Select-Object -ExpandProperty MachineGuid"])
+                    .args(&["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid | Select-Object -ExpandProperty MachineGuid"])
+                    .creation_flags(0x08000000)
                     .output();
                 
                 if let Ok(output) = output {

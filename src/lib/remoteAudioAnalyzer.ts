@@ -32,6 +32,7 @@ export class RemoteAudioAnalyzer {
 
   private startMonitoring() {
     const update = () => {
+      // @ts-ignore - getByteFrequencyData accepts Uint8Array, TypeScript is being overly strict
       this.analyser.getByteFrequencyData(this.dataArray)
 
       // Calculate RMS (root mean square) for overall volume

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, type CSSProperties } from 'react'
-import { useParams, useNavigate, Link, useLocation } from 'react-router-dom'
-import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus, Trash2, Phone } from 'lucide-react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { ArrowLeft, Copy, Check, PhoneOff, Plus, Trash2, Phone } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { loadHouse, addRoom, removeRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -21,7 +21,7 @@ function HouseViewPage() {
   const { getLevel } = usePresence()
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
-  const { joinVoice, leaveVoice, toggleMute: webrtcToggleMute, isLocalMuted, peers, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
+  const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const { width, setWidth, resetWidth } = useSidebarWidth()
   const roomPaneResizeHandleRef = useRef<HTMLDivElement>(null)
@@ -281,10 +281,6 @@ function HouseViewPage() {
   const handleLeaveVoice = () => {
     leaveVoice()
     console.log('Left voice')
-  }
-
-  const toggleMute = () => {
-    webrtcToggleMute()
   }
 
   const handleCreateRoom = async () => {
@@ -549,7 +545,6 @@ function HouseViewPage() {
                                   {visible.map((userId, i) => {
                                     const member = house.members.find(m => m.user_id === userId)
                                     const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
-                                    const isSelf = userId === identity?.user_id
                                     const level = getLevel(
                                       house.signing_pubkey,
                                       userId,

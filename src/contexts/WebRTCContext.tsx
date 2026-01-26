@@ -771,6 +771,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
               connection: pc,
               remoteStream: null,
               audioElement: null,
+              audioAnalyzer: null,
               connectionState: pc.connectionState
             })
             return updated

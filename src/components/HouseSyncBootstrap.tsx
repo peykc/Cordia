@@ -204,11 +204,41 @@ export function HouseSyncBootstrap() {
           const msg = JSON.parse(event.data)
           if (msg.type === 'HouseHintUpdated') {
             const signingPubkey: string = msg.signing_pubkey
-            // Only apply updates for houses we currently track
-            if (!subscribedSigningPubkeysRef.current.has(signingPubkey)) return
-
-            await fetchAndImportHouseHintOpaque(signalingUrl, signingPubkey)
-            window.dispatchEvent(new Event('roommate:houses-updated'))
+            
+            // Try to import the hint - this will only succeed if we have the house locally
+            // (because we need the symmetric key to decrypt). If we don't have it, the import
+            // will fail gracefully and we can ignore the update.
+            try {
+              const imported = await fetchAndImportHouseHintOpaque(signalingUrl, signingPubkey)
+              
+              // If we successfully imported, ensure we're subscribed for future updates
+              if (imported && !subscribedSigningPubkeysRef.current.has(signingPubkey)) {
+                subscribedSigningPubkeysRef.current.add(signingPubkey)
+                if (ws.readyState === WebSocket.OPEN) {
+                  // Find the house ID to register
+                  const houses = await listHouses().catch(() => [])
+                  const house = houses.find(h => h.signing_pubkey === signingPubkey)
+                  if (house) {
+                    ws.send(
+                      JSON.stringify({
+                        type: 'Register',
+                        house_id: house.id,
+                        peer_id: `house-sync:${currentAccountId}:${house.id}`,
+                        signing_pubkey: signingPubkey,
+                      })
+                    )
+                  }
+                }
+              }
+              
+              // Only dispatch event if we actually imported something
+              if (imported) {
+                window.dispatchEvent(new Event('roommate:houses-updated'))
+              }
+            } catch (e) {
+              // House doesn't exist locally or can't decrypt - ignore silently
+              // This is expected for houses we're not a member of
+            }
             return
           }
 

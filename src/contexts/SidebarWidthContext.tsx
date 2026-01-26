@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
 
 const DEFAULT_WIDTH = 13 // 13em
 const MIN_WIDTH = 10 // 10em (3em thinner)

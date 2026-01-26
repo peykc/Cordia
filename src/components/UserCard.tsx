@@ -42,7 +42,7 @@ export function UserCard() {
   }, [identity?.user_id])
 
   const displayName = profile.display_name || identity?.display_name || 'Account'
-  const presenceLevel = identity ? getLevel(null, identity.user_id, isInVoice) : 'offline'
+  const presenceLevel = identity ? getLevel('', identity.user_id, isInVoice) : 'offline'
 
   const getStatusText = () => {
     if (isInVoice) return 'In voice'

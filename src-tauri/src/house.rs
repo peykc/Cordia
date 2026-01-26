@@ -687,23 +687,46 @@ impl HouseManager {
     fn get_device_id() -> Result<String, HouseError> {
         #[cfg(target_os = "windows")]
         {
-            use std::process::Command;
-
-            let output = Command::new("powershell")
-                .args(&["-NoProfile", "-Command", "Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid | Select-Object -ExpandProperty MachineGuid"])
-                .output();
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    let guid = String::from_utf8_lossy(&output.stdout);
-                    let guid = guid.trim().trim_end_matches('\r').trim_end_matches('\n');
-                    if !guid.is_empty() && guid.len() >= 32 {
-                        return Ok(guid.to_string());
+            #[cfg(feature = "windows-registry")]
+            {
+                use winreg::enums::*;
+                use winreg::RegKey;
+                
+                // Try to read machine GUID directly from registry (no visible window)
+                let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+                if let Ok(crypto_key) = hklm.open_subkey("SOFTWARE\\Microsoft\\Cryptography") {
+                    if let Ok(guid) = crypto_key.get_value::<String, _>("MachineGuid") {
+                        if !guid.is_empty() && guid.len() >= 32 {
+                            return Ok(guid);
+                        }
                     }
                 }
             }
+            
+            // Fallback: try PowerShell command (hidden window)
+            #[cfg(not(feature = "windows-registry"))]
+            {
+                use std::process::Command;
+                use std::os::windows::process::CommandExt;
 
-            // Fallback: use computer name + username
+                // CREATE_NO_WINDOW flag (0x08000000) hides the console window
+                let output = Command::new("powershell")
+                    .args(&["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid | Select-Object -ExpandProperty MachineGuid"])
+                    .creation_flags(0x08000000)
+                    .output();
+
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        let guid = String::from_utf8_lossy(&output.stdout);
+                        let guid = guid.trim().trim_end_matches('\r').trim_end_matches('\n');
+                        if !guid.is_empty() && guid.len() >= 32 {
+                            return Ok(guid.to_string());
+                        }
+                    }
+                }
+            }
+            
+            // Final fallback: use computer name + username
             let computer = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
             let user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".to_string());
             Ok(format!("{}-{}", computer, user))
