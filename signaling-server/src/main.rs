@@ -1,7 +1,7 @@
 // Allow unused code during WebRTC scaffolding phase
 #![allow(dead_code, unused_variables)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -1052,6 +1052,12 @@ async fn handle_connection(
     }
 
     // Clean up when connection closes
+    // Get signing_pubkeys BEFORE disconnecting to ensure we have them for presence updates
+    let house_signing_map = {
+        let voice = state.voice.lock().await;
+        voice.house_signing_pubkeys.clone()
+    };
+
     let (presence_removed, voice_removed, redis_client) = {
         let mut signaling = state.signaling.lock().await;
 
@@ -1102,12 +1108,9 @@ async fn handle_connection(
         
         // Broadcast voice presence updates for disconnected peers
         for (house_id, room_id, _, user_id) in voice_removed {
-            let signing_pubkey = {
-                let voice = state.voice.lock().await;
-                voice.house_signing_pubkeys.get(&house_id).cloned()
-            };
-            if let Some(signing_pubkey) = signing_pubkey {
-                state.broadcast_voice_presence(&signing_pubkey, &user_id, &room_id, false).await;
+            // Use the signing_pubkey we collected BEFORE disconnecting
+            if let Some(signing_pubkey) = house_signing_map.get(&house_id) {
+                state.broadcast_voice_presence(signing_pubkey, &user_id, &room_id, false).await;
             }
         }
     }
@@ -1548,7 +1551,7 @@ async fn handle_message(
                 }
             }
 
-            // Find the house_id for this peer and unregister
+            // Find the house_id and signing_pubkey for this peer BEFORE unregistering
             let removed = {
                 let voice = state.voice.lock().await;
 
@@ -1562,25 +1565,29 @@ async fn handle_message(
                     }
                 }
 
-                if let Some(house_id) = found_house {
+                // Get signing_pubkey BEFORE unregistering (while we still have the lock)
+                if let Some(house_id) = found_house.clone() {
+                    let signing_pubkey = voice.house_signing_pubkeys.get(&house_id).cloned();
+                    drop(voice);
+                    
+                    // Now unregister the peer
                     let mut voice = state.voice.lock().await;
-                    voice.unregister_voice_peer(&peer_id, &house_id, &room_id)
-                        .map(|user_id| (house_id, user_id))
+                    if let Some(user_id) = voice.unregister_voice_peer(&peer_id, &house_id, &room_id) {
+                        Some((house_id, user_id, signing_pubkey))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
             };
 
-            // Broadcast VoicePeerLeft if peer was found
-            if let Some((house_id, user_id)) = removed {
+            // Broadcast VoicePeerLeft and voice presence update if peer was found
+            if let Some((house_id, user_id, signing_pubkey_opt)) = removed {
                 let leave_msg = SignalingMessage::VoicePeerLeft {
                     peer_id,
                     user_id: user_id.clone(),
                     room_id: room_id.clone(),
-                };
-                let signing_pubkey_opt = {
-                    let voice = state.voice.lock().await;
-                    voice.house_signing_pubkeys.get(&house_id).cloned()
                 };
                 
                 state.broadcast_to_voice_room(&house_id, &room_id, &leave_msg, None).await;
