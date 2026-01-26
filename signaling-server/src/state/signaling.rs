@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use crate::{PeerId, HouseId, SigningPubkey, WebSocketSender, ConnId, PeerConnection};
+use crate::{PeerId, HouseId, SigningPubkey, WebSocketSender, ConnId, PeerConnection, EncryptedHouseHint, SignalingMessage};
+use hyper_tungstenite::tungstenite::Message;
 
 /// WebSocket signaling state (peer ↔ peer)
 pub struct SignalingState {
@@ -102,5 +103,32 @@ impl SignalingState {
         }
         // Remove WebSocket sender
         self.peer_senders.remove(peer_id);
+    }
+
+    pub fn get_house(&self, peer_id: &PeerId) -> Option<HouseId> {
+        self.peers.get(peer_id).map(|c| c.house_id.clone())
+    }
+
+    pub fn broadcast_house_hint_updated(&self, signing_pubkey: &SigningPubkey, hint: &EncryptedHouseHint) {
+        let Some(peers) = self.signing_houses.get(signing_pubkey) else {
+            return;
+        };
+
+        let msg = SignalingMessage::HouseHintUpdated {
+            signing_pubkey: signing_pubkey.clone(),
+            encrypted_state: hint.encrypted_state.clone(),
+            signature: hint.signature.clone(),
+            last_updated: hint.last_updated,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
+        for peer_id in peers {
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(Message::Text(json.clone()));
+            }
+        }
     }
 }

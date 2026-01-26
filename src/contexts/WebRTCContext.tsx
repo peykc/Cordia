@@ -400,8 +400,10 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     // Stop audio analyzer
     if (peerInfo.audioAnalyzer) {
       peerInfo.audioAnalyzer.stop()
-      // Clear speaking state for this user
-      setUserSpeaking(peerInfo.userId, false)
+      // Clear speaking state for this user (defer to avoid updating during render)
+      setTimeout(() => {
+        setUserSpeaking(peerInfo.userId, false)
+      }, 0)
     }
 
     // Stop remote audio
