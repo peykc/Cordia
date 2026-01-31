@@ -193,6 +193,13 @@ lsof -ti:9001 | xargs kill -9
 
 - The page at `https://your-beacon-domain/` (and `/api/status`) must be served by the Cordia beacon. If you use a reverse proxy or Cloudflare Tunnel, ensure **HTTP** (not only WebSocket) is forwarded to the beacon on port 9001. See **Cloudflare Tunnel / Reverse proxy** above.
 
+### Count shows 0 even with the app open
+
+- The count is **concurrent WebSocket connections** to this beacon. The Cordia app opens a connection when:
+  1. You’re **logged in** and the beacon shows as **Connected** (sync/presence connection), or  
+  2. You **join voice** in a chat.
+- If the count stays 0: (1) In the app, go to **Settings → Connections** and confirm the beacon URL is this beacon (e.g. `wss://beacon.pkcollection.net`). (2) Make sure you’re logged in and the status dot is green. (3) If you use a proxy/tunnel, ensure **WebSocket** traffic is forwarded to the same beacon as HTTP; some setups route HTTP and WebSocket to different backends.
+
 ### App Shows "Offline" Status
 
 1. **Verify signaling server is running:**

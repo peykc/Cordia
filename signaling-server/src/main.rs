@@ -584,6 +584,28 @@ async fn handle_request(
             .unwrap());
     }
 
+    // WebSocket upgrade MUST be checked before GET / so app connections to wss://host/ get 101, not 200 HTML
+    if hyper_tungstenite::is_upgrade_request(&req) {
+        match hyper_tungstenite::upgrade(&mut req, None) {
+            Ok((response, websocket)) => {
+                tokio::spawn(async move {
+                    if let Ok(ws) = websocket.await {
+                        let addr = "0.0.0.0:9001".parse().unwrap();
+                        handle_connection(ws, addr, state).await;
+                    }
+                });
+                return Ok(response);
+            }
+            Err(e) => {
+                error!("WebSocket upgrade error: {}", e);
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("Invalid WebSocket upgrade request"))
+                    .unwrap());
+            }
+        }
+    }
+
     // Live status page (GET / or GET /status) - shows concurrent connections, auto-refreshes
     if path == "/" || path == "/status" {
         const STATUS_HTML: &str = r#"<!DOCTYPE html>
@@ -603,6 +625,7 @@ async fn handle_request(
   <h1>Cordia Beacon</h1>
   <p id="count">—</p>
   <p class="muted">concurrent connections</p>
+  <p class="muted">(app opens a connection when logged in and connected, or when in voice)</p>
   <p class="muted">Updates every 3s</p>
   <script>
     function update() {
@@ -637,29 +660,6 @@ async fn handle_request(
         headers.insert("Access-Control-Allow-Methods", "GET, POST, OPTIONS".parse().unwrap());
         headers.insert("Access-Control-Allow-Headers", "Content-Type".parse().unwrap());
         return Ok(resp);
-    }
-
-    // WebSocket upgrade
-    if hyper_tungstenite::is_upgrade_request(&req) {
-        match hyper_tungstenite::upgrade(&mut req, None) {
-            Ok((response, websocket)) => {
-                // Spawn a task to handle the WebSocket connection
-                tokio::spawn(async move {
-                    if let Ok(ws) = websocket.await {
-                        let addr = "0.0.0.0:9001".parse().unwrap(); // Placeholder for actual client addr
-                        handle_connection(ws, addr, state).await;
-                    }
-                });
-                return Ok(response);
-            }
-            Err(e) => {
-                error!("WebSocket upgrade error: {}", e);
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from("Invalid WebSocket upgrade request"))
-                    .unwrap());
-            }
-        }
     }
 
     // Default response for other requests
