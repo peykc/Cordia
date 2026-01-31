@@ -1,6 +1,6 @@
 # Beacon Setup Guide
 
-This guide will help you set up your own beacon. **Note:** Cordia comes with a default beacon at `signal.pkcollection.net` that you can use immediately - no setup required!
+This guide will help you set up your own beacon. **Note:** Cordia comes with a default beacon at `beacon.pkcollection.net` that you can use immediately - no setup required!
 
 You only need to follow this guide if you want to:
 - Self-host your own beacon
@@ -9,10 +9,11 @@ You only need to follow this guide if you want to:
 
 ## Default Beacon
 
-Cordia includes a default beacon at **`signal.pkcollection.net`** that works out of the box. You can:
+Cordia includes a default beacon at **`beacon.pkcollection.net`** that works out of the box. You can:
 - Use it immediately with no configuration
 - Change it at any time in Settings → Connections
 - Use different beacons for different accounts
+- Visit **https://beacon.pkcollection.net** (or your beacon’s URL) in a browser to see a **live count of concurrent connections** (updates every few seconds)
 
 ## Privacy & Security
 
@@ -66,7 +67,7 @@ Once the app is running, check the connection status:
 - **🟡 Yellow "Checking"**: Checking connection status
 - **🔴 Red "Offline"**: Beacon offline - limited to single chat per server
 
-**Default Beacon:** The app connects to `signal.pkcollection.net` by default. You can change this in Settings → Connections at any time. Each account can use a different beacon.
+**Default Beacon:** The app connects to `beacon.pkcollection.net` by default. You can change this in Settings → Connections at any time. Each account can use a different beacon.
 
 ## Managing the Beacon
 

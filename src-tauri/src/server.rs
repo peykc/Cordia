@@ -216,7 +216,7 @@ impl Server {
         OsRng.fill_bytes(&mut symmetric_key);
 
         // Generate invite URI
-        let beacon = signaling_url.as_deref().unwrap_or("signal.pkcollection.net");
+        let beacon = signaling_url.as_deref().unwrap_or("beacon.pkcollection.net");
         let invite_uri = format!("cordia://{}@{}", signing_pubkey, beacon);
 
         // Create default "General" chat

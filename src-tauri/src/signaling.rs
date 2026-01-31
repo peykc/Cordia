@@ -65,5 +65,5 @@ pub async fn check_signaling_health(url: &str) -> Result<bool, SignalingError> {
 /// Get the default signaling server URL
 pub fn get_default_signaling_url() -> String {
     // Default public signaling server for end users (Discord-like out-of-box behavior)
-    "wss://signal.pkcollection.net".to_string()
+    "wss://beacon.pkcollection.net".to_string()
 }

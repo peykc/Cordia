@@ -25,10 +25,10 @@ A privacy-focused P2P voice hangout app with modern usability. Built with Tauri,
 
 ### 1. Beacon
 
-Cordia comes with a default beacon at `signal.pkcollection.net` that you can use immediately. No setup required!
+Cordia comes with a default beacon at `beacon.pkcollection.net` that you can use immediately. No setup required!
 
 **Option A: Use Default Beacon (Recommended for Quick Start)**
-- The app automatically connects to `signal.pkcollection.net`
+- The app automatically connects to `beacon.pkcollection.net`
 - No configuration needed
 - Full features available immediately
 - **Privacy:** The beacon cannot read your data - all server data is encrypted and stored locally
@@ -55,7 +55,7 @@ See **[QUICKSTART.md](QUICKSTART.md)** for detailed step-by-step instructions.
 Cordia uses a hybrid P2P model that gracefully degrades based on available infrastructure:
 
 - **Beacon** (optional): WebSocket server for peer discovery, chat metadata, and presence tracking
-  - **Default Beacon**: `signal.pkcollection.net` (hosted for your convenience)
+  - **Default Beacon**: `beacon.pkcollection.net` (hosted for your convenience)
   - **Self-Hosted**: Run your own beacon for full control (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
   - **Per-Account**: Each account can use a different beacon
   - **Privacy**: The beacon cannot read your user data - all server data and messages are encrypted and stored locally
@@ -158,7 +158,7 @@ docker-compose up
 npm run tauri dev
 ```
 
-**Note:** The app connects to `signal.pkcollection.net` by default. You can change this in Settings → Connections.
+**Note:** The app connects to `beacon.pkcollection.net` by default. You can change this in Settings → Connections.
 
 ### Build for Production
 

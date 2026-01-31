@@ -584,6 +584,44 @@ async fn handle_request(
             .unwrap());
     }
 
+    // Live status page (GET / or GET /status) - shows concurrent connections, auto-refreshes
+    if path == "/" || path == "/status" {
+        const STATUS_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cordia Beacon</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0f0f0f; color: #e0e0e0; }
+    h1 { font-weight: 300; font-size: 1.5rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.5rem; }
+    #count { font-size: 3rem; font-variant-numeric: tabular-nums; }
+    .muted { font-size: 0.875rem; color: #888; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Cordia Beacon</h1>
+  <p id="count">—</p>
+  <p class="muted">concurrent connections</p>
+  <p class="muted">Updates every 3s</p>
+  <script>
+    function update() {
+      fetch('/api/status').then(r => r.json()).then(d => {
+        document.getElementById('count').textContent = d.connections ?? '—';
+      }).catch(() => { document.getElementById('count').textContent = '—'; });
+    }
+    update();
+    setInterval(update, 3000);
+  </script>
+</body>
+</html>"#;
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .body(Body::from(STATUS_HTML))
+            .unwrap());
+    }
+
     // API endpoints (REST)
     if path.starts_with("/api/") {
         let mut resp = handle_api_request(req, state).await?;
@@ -620,7 +658,7 @@ async fn handle_request(
     // Default response for other requests
     Ok(Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not found. Use /health for health check, /api/* for REST API, or upgrade to WebSocket."))
+        .body(Body::from("Not found. Use / or /status for live connection count, /health for health check, /api/* for REST API, or upgrade to WebSocket."))
         .unwrap())
 }
 

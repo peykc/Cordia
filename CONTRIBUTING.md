@@ -33,7 +33,7 @@ See **[SETUP.md](SETUP.md)** for detailed platform-specific setup instructions.
    docker-compose up -d
    ```
    
-   **Note:** You can also use the default server at `signal.pkcollection.net` for development. No local server needed!
+   **Note:** You can also use the default server at `beacon.pkcollection.net` for development. No local server needed!
 
 4. **Start the development server:**
    ```bash
