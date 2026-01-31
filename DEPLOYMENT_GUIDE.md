@@ -2,7 +2,7 @@
 
 Simple guide for deploying your own Cordia beacon to your NAS or server.
 
-**Note:** Cordia comes with a default beacon at `signal.pkcollection.net` that you can use immediately. You only need to deploy your own beacon if you want full control over your infrastructure.
+**Note:** Cordia comes with a default beacon at `beacon.pkcollection.net` that you can use immediately. You only need to deploy your own beacon if you want full control over your infrastructure.
 
 **Privacy:** The beacon cannot read your user data. All server data, chat content, and messages are encrypted and stored locally on your device. The beacon only facilitates peer discovery and presence tracking. Your voice communication is direct peer-to-peer and never passes through the server.
 

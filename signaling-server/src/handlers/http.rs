@@ -35,6 +35,25 @@ pub async fn handle_api_request(
     }
 
     match path_parts[2] {
+        // GET /api/status - Live concurrent connection count (for beacon landing page)
+        "status" => {
+            if method == Method::GET && path_parts.len() == 3 {
+                let connections = {
+                    let signaling = state.signaling.lock().await;
+                    signaling.conn_peers.len()
+                };
+                let json = format!(r#"{{"connections":{}}}"#, connections);
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(json))
+                    .unwrap());
+            }
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Not found"))
+                .unwrap());
+        }
         // GET /api/invites/{code} - Fetch invite token (opaque encrypted payload)
         // POST /api/invites/{code}/redeem - Atomically redeem (decrement remaining_uses) and return payload
         // POST /api/invites/{code}/revoke - Revoke (delete) the invite token

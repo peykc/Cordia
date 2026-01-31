@@ -10,18 +10,18 @@ Before you begin, make sure you have:
 - ✅ **Rust** (latest stable) - [Install Rust](https://www.rust-lang.org/tools/install)
 - ✅ **Docker Desktop** (optional - only if you want to self-host your own beacon) - [Download Docker](https://docs.docker.com/desktop/)
 
-**Note:** Cordia includes a default beacon at `signal.pkcollection.net` that works immediately - no Docker needed!
+**Note:** Cordia includes a default beacon at `beacon.pkcollection.net` that works immediately - no Docker needed!
 
 ## Step 1: Beacon Setup
 
-Cordia comes with a **default beacon** at `signal.pkcollection.net` that works out of the box! No setup required.
+Cordia comes with a **default beacon** at `beacon.pkcollection.net` that works out of the box! No setup required.
 
 **Option A: Use Default Beacon (Easiest - Recommended)**
 - ✅ No configuration needed
 - ✅ Works immediately
 - ✅ Full features available
 - ✅ **Privacy:** The beacon cannot read your data - all server data is encrypted and stored locally
-- The app automatically connects to `signal.pkcollection.net`
+- The app automatically connects to `beacon.pkcollection.net`
 
 **Option B: Self-Host Your Own Beacon (Optional)**
 If you prefer to run your own beacon:
@@ -69,7 +69,7 @@ The app window will open automatically.
    - Look at the top bar
    - Should show 🟢 **"Connected"** status
    - This means the beacon is working and full features are available
-   - By default, it connects to `signal.pkcollection.net`
+   - By default, it connects to `beacon.pkcollection.net`
    - You can change this in Settings → Connections at any time
 
 4. **Create a Chat** (optional):
@@ -105,7 +105,7 @@ The app window will open automatically.
 
 **Problem:** Can't connect to the beacon.
 
-**If using default beacon (`signal.pkcollection.net`):**
+**If using default beacon (`beacon.pkcollection.net`):**
 - Check your internet connection
 - The default beacon may be temporarily unavailable
 - Try switching to a self-hosted beacon (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
@@ -128,7 +128,7 @@ docker-compose logs cordia-beacon
 **Change Beacon URL:**
 - Go to Settings → Connections
 - Update the beacon URL
-- You can switch between the default beacon (`signal.pkcollection.net`) and your own at any time
+- You can switch between the default beacon (`beacon.pkcollection.net`) and your own at any time
 
 ### ❌ Can't create chats?
 
@@ -136,7 +136,7 @@ docker-compose logs cordia-beacon
 
 **Solution:**
 - Check the connection status in the top bar
-- If using default beacon (`signal.pkcollection.net`), check your internet connection
+- If using default beacon (`beacon.pkcollection.net`), check your internet connection
 - If using self-hosted beacon and it shows red/offline, start it: `docker-compose up -d`
 - You can change beacons in Settings → Connections at any time
 - Restart the Cordia app if needed

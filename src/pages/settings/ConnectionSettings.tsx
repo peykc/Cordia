@@ -210,7 +210,7 @@ export function ConnectionSettings() {
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="wss://signal.pkcollection.net"
+              placeholder="wss://beacon.pkcollection.net"
               className="flex-1 font-mono text-sm h-11"
             />
             <Button
