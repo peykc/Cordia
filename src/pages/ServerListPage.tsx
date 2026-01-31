@@ -710,7 +710,7 @@ function ServerListPage() {
                                   <Users className="h-3 w-3" />
                                   {server.members.length} {server.members.length === 1 ? 'member' : 'members'}
                                 </span>
-                                <span>{server.rooms.length} {server.rooms.length === 1 ? 'chat' : 'chats'}</span>
+                                <span>{server.chats.length} {server.chats.length === 1 ? 'chat' : 'chats'}</span>
                               </div>
                               {server.members.length > 0 && (
                                 <div className="pt-1 min-w-0">

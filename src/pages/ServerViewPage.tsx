@@ -418,7 +418,7 @@ function ServerViewPage() {
                 </button>
               </div>
               <div className="space-y-1">
-                {server.rooms.map((chat) => {
+                {(server.chats ?? []).map((chat) => {
                   const voiceParticipants = voicePresence.getVoiceParticipants(server.signing_pubkey, chat.id)
                   // Include self if in voice in this chat
                   const allParticipants = identity && webrtcIsInVoice && currentRoomId === chat.id && !voiceParticipants.includes(identity.user_id)
@@ -505,7 +505,7 @@ function ServerViewPage() {
                             // Expanded view for selected chat
                             <div className="space-y-1">
                               {allParticipants.map((userId) => {
-                                const member = server.members.find(m => m.user_id === userId)
+                                const member = (server.members ?? []).find(m => m.user_id === userId)
                                 const displayName = member?.display_name || (userId === identity?.user_id ? identity.display_name : `User ${userId.slice(0, 8)}`)
                                 const isSelf = userId === identity?.user_id
                                 const level = getMemberLevel(
@@ -556,7 +556,7 @@ function ServerViewPage() {
                                   style={{ width: widthPx }}
                                 >
                                   {visible.map((userId, i) => {
-                                    const member = server.members.find(m => m.user_id === userId)
+                                    const member = (server.members ?? []).find(m => m.user_id === userId)
                                     const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
                                     const level = getMemberLevel(
                                       server.signing_pubkey,
@@ -683,10 +683,10 @@ function ServerViewPage() {
         <div className="w-64 border-l-2 border-border bg-card/50 flex flex-col">
           <div className="p-4 space-y-2 flex-1 overflow-y-auto">
             <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2">
-              Members — {server.members.length}
+              Members — {(server.members ?? []).length}
             </h2>
             <div className="space-y-1">
-              {server.members.map((member) => (
+              {(server.members ?? []).map((member) => (
                 <div
                   key={member.user_id}
                   className="px-3 py-2 rounded-md hover:bg-accent/50 transition-colors"

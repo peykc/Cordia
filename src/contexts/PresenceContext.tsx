@@ -22,9 +22,7 @@ interface PresenceContextType {
 
 const PresenceContext = createContext<PresenceContextType | null>(null)
 
-const DEBUG_LOG = (payload: Record<string, unknown>) => {
-  fetch('http://127.0.0.1:7242/ingest/dec2554b-ad65-4161-ac35-883cb77815a4', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, timestamp: Date.now(), sessionId: 'debug-session' }) }).catch(() => {})
-}
+const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug ingest removed */ }
 
 export function PresenceProvider({ children }: { children: ReactNode }) {
   const [byHouse, setByHouse] = useState<PresenceByHouse>({})

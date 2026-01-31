@@ -162,18 +162,25 @@ export class InputLevelMeter {
     this.onLevelUpdate = onLevelUpdate
 
     try {
+      // Prefer specified device but use ideal so we don't fail if device is unavailable
       const constraints: MediaStreamConstraints = {
-        audio: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          autoGainControl: false, // We control gain manually
-          echoCancellation: false, // Disabled
-          noiseSuppression: false, // Disabled
-          sampleRate: { ideal: 48000 }, // Use ideal instead of exact for compatibility
-          channelCount: 1,
-        } as MediaTrackConstraints, // Type assertion for browser compatibility
+        audio: deviceId
+          ? { deviceId: { ideal: deviceId }, autoGainControl: false, echoCancellation: false, noiseSuppression: false }
+          : { autoGainControl: false, echoCancellation: false, noiseSuppression: false },
       }
 
-      this.stream = await navigator.mediaDevices.getUserMedia(constraints)
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints)
+      } catch (err) {
+        // OverconstrainedError: device unavailable or constraints too strict; fall back to default mic
+        if (err instanceof Error && err.name === 'OverconstrainedError' && deviceId) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        } else {
+          throw err
+        }
+      }
+      this.stream = stream
 
       this.audioContext = new AudioContext()
 

@@ -69,7 +69,7 @@ export interface Server {
   id: string
   name: string
   created_at: string
-  rooms: Chat[]
+  chats: Chat[]
   members: ServerMember[]
 
   // Cryptographic fields (Ed25519 signing)
