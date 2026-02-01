@@ -632,7 +632,7 @@ async fn handle_request(
     .network-block { font-size: 0.875rem; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
     .network-row { display: flex; gap: 3.5rem; justify-content: center; }
     .network-label { color: #888; }
-    .network-val { font-variant-numeric: tabular-nums; min-width: 6em; text-align: center; }
+    .network-val { font-variant-numeric: tabular-nums; text-align: center; }
     .network-val.upload { color: #22c55e; }
     .network-val.download { color: #ef4444; }
     .resources-block { font-size: 0.875rem; margin-top: 0; display: flex; gap: 3rem; justify-content: center; flex-wrap: wrap; }
