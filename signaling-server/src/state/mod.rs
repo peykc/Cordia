@@ -34,6 +34,8 @@ pub struct AppState {
     pub started_at_utc: String,
     /// Duration of previous shutdown in seconds (from last-stop file), if any.
     pub downtime_secs: Option<u64>,
+    /// Previous network totals and time for rate calculation (rx_total, tx_total, at).
+    pub network_prev: Arc<Mutex<Option<(u64, u64, std::time::Instant)>>>,
 }
 
 impl AppState {
@@ -49,6 +51,7 @@ impl AppState {
             started_at: Instant::now(),
             started_at_utc: now_utc.to_rfc3339(),
             downtime_secs,
+            network_prev: Arc::new(Mutex::new(None)),
         }
     }
 

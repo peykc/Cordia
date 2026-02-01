@@ -622,17 +622,20 @@ async fn handle_request(
     h1 { font-weight: 300; font-size: 1.5rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.5rem; }
     #count { font-size: 3rem; font-variant-numeric: tabular-nums; }
     .muted { font-size: 0.875rem; color: #888; margin-top: 1rem; }
-    .uptime { font-size: 0.875rem; color: #22c55e; margin-top: 0.5rem; }
-    .downtime { font-size: 0.875rem; color: #ef4444; margin-top: 0.25rem; }
+    .time-block { font-size: 0.875rem; margin-top: 0.5rem; display: flex; gap: 1.5rem; align-items: baseline; flex-wrap: wrap; justify-content: center; }
+    .uptime { color: #22c55e; }
+    .downtime { color: #ef4444; }
     .time-val { display: inline-block; min-width: 5em; font-variant-numeric: tabular-nums; }
+    .network-block { font-size: 0.875rem; color: #888; margin-top: 0.35rem; display: flex; gap: 1.5rem; align-items: baseline; justify-content: center; }
+    .network-val { display: inline-block; min-width: 6em; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
   <h1>Cordia Beacon</h1>
   <p class="muted">Connections</p>
   <p id="count">—</p>
-  <p class="uptime">Uptime: <span id="uptime" class="time-val">—</span></p>
-  <p class="downtime">Downtime: <span id="downtime" class="time-val">—</span></p>
+  <p class="time-block"><span class="uptime">Uptime: <span id="uptime" class="time-val">—</span></span><span class="downtime">Downtime: <span id="downtime" class="time-val">—</span></span></p>
+  <p class="network-block"><span>↑ <span id="tx" class="network-val">—</span></span><span>↓ <span id="rx" class="network-val">—</span></span></p>
   <p id="sysinfo" class="muted">—</p>
   <script>
     function formatUptime(secs) {
@@ -643,6 +646,12 @@ async fn handle_request(
       var h = Math.floor((secs % 86400) / 3600);
       return d + 'd ' + h + 'h';
     }
+    function formatBps(bps) {
+      if (bps == null || bps === undefined) return '—';
+      if (bps >= 1048576) return (bps / 1048576).toFixed(2) + ' MB/s';
+      if (bps >= 1024) return (bps / 1024).toFixed(1) + ' KB/s';
+      return bps + ' B/s';
+    }
     function update() {
       fetch(window.location.origin + '/api/status').then(r => {
         if (!r.ok) throw new Error(r.status);
@@ -652,12 +661,16 @@ async fn handle_request(
         document.getElementById('count').style.color = '';
         document.getElementById('uptime').textContent = formatUptime(d.uptime_secs || 0);
         document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
+        document.getElementById('tx').textContent = formatBps(d.tx_bps);
+        document.getElementById('rx').textContent = formatBps(d.rx_bps);
         document.getElementById('sysinfo').textContent = 'RAM: ' + (d.memory_mb ?? '—') + ' MB  |  CPU: ' + (d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—');
       }).catch(() => {
         document.getElementById('count').textContent = '?';
         document.getElementById('count').style.color = '#888';
         document.getElementById('uptime').textContent = '—';
         document.getElementById('downtime').textContent = '—';
+        document.getElementById('tx').textContent = '—';
+        document.getElementById('rx').textContent = '—';
         document.getElementById('sysinfo').textContent = 'RAM: —  |  CPU: —';
       });
     }

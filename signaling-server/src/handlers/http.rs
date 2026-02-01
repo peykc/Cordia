@@ -1,7 +1,8 @@
 use chrono::Utc;
 use hyper::{Body, Method, Request, Response, StatusCode};
 use log::{info, warn};
-use sysinfo::{System, get_current_pid};
+use std::time::Instant as StdInstant;
+use sysinfo::{Networks, System, get_current_pid};
 use crate::{
     decode_path_segment, EncryptedServerHint, InviteTokenCreateRequest,
     ServerEvent, AckRequest,
@@ -54,13 +55,33 @@ pub async fn handle_api_request(
                         .map(|p| (p.memory() / 1024 / 1024, p.cpu_usage()))
                         .unwrap_or((0, 0.0))
                 };
+                let (rx_bps, tx_bps) = {
+                    let networks = Networks::new_with_refreshed_list();
+                    let cur_rx: u64 = networks.list().values().map(|d| d.total_received()).sum();
+                    let cur_tx: u64 = networks.list().values().map(|d| d.total_transmitted()).sum();
+                    let now = StdInstant::now();
+                    let mut prev_guard = state.network_prev.lock().await;
+                    let (rx_bps, tx_bps) = if let Some((prx, ptx, t)) = *prev_guard {
+                        let elapsed_secs = (now - t).as_secs().max(1);
+                        (
+                            (cur_rx.saturating_sub(prx) / elapsed_secs),
+                            (cur_tx.saturating_sub(ptx) / elapsed_secs),
+                        )
+                    } else {
+                        (0u64, 0u64)
+                    };
+                    *prev_guard = Some((cur_rx, cur_tx, now));
+                    (rx_bps, tx_bps)
+                };
                 let json = serde_json::json!({
                     "connections": connections,
                     "uptime_secs": uptime_secs,
                     "started_at_utc": started_at_utc,
                     "downtime_secs": state.downtime_secs,
                     "memory_mb": memory_mb,
-                    "cpu_percent": cpu_percent
+                    "cpu_percent": cpu_percent,
+                    "rx_bps": rx_bps,
+                    "tx_bps": tx_bps
                 })
                 .to_string();
                 return Ok(Response::builder()
