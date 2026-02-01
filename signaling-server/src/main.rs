@@ -466,12 +466,56 @@ const STATUS_HTML: &str = r#"<!DOCTYPE html>
       if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
       return bytes + ' B';
     }
+    var currentCount = null;
+    var countAnimationId = null;
+    var TICK_MS = 55;
+    var MAX_TICKS = 28;
+    function animateCount(el, from, to) {
+      if (countAnimationId) cancelAnimationFrame(countAnimationId);
+      var diff = to - from;
+      if (diff === 0) { currentCount = to; countAnimationId = null; return; }
+      var stepVal = diff > 0 ? Math.max(1, Math.ceil(diff / MAX_TICKS)) : Math.min(-1, Math.floor(diff / MAX_TICKS));
+      var display = from;
+      var lastTick = performance.now();
+      function tick(now) {
+        if (display === to) {
+          currentCount = to;
+          countAnimationId = null;
+          return;
+        }
+        if (now - lastTick >= TICK_MS) {
+          lastTick = now;
+          display += stepVal;
+          if (stepVal > 0 && display > to) display = to;
+          if (stepVal < 0 && display < to) display = to;
+          el.textContent = String(display);
+        }
+        countAnimationId = requestAnimationFrame(tick);
+      }
+      countAnimationId = requestAnimationFrame(tick);
+    }
+    function setCount(value) {
+      var el = document.getElementById('count');
+      if (value === null || value === undefined || typeof value !== 'number') {
+        el.textContent = value == null ? '—' : String(value);
+        currentCount = null;
+        return;
+      }
+      var target = Math.max(0, value);
+      if (currentCount === null) {
+        el.textContent = String(target);
+        currentCount = target;
+        return;
+      }
+      if (currentCount === target) return;
+      animateCount(el, currentCount, target);
+    }
     function update() {
       fetch(window.location.origin + '/api/status').then(r => {
         if (!r.ok) throw new Error(r.status);
         return r.json();
       }).then(d => {
-        document.getElementById('count').textContent = String(d.connections ?? '—');
+        setCount(d.connections);
         document.getElementById('count').style.color = '';
         document.getElementById('uptime').textContent = formatUptime(d.uptime_secs || 0);
         document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
@@ -480,6 +524,9 @@ const STATUS_HTML: &str = r#"<!DOCTYPE html>
         document.getElementById('ram').textContent = formatMemory(d.memory_bytes);
         document.getElementById('cpu').textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—';
       }).catch(() => {
+        if (countAnimationId) cancelAnimationFrame(countAnimationId);
+        countAnimationId = null;
+        currentCount = null;
         document.getElementById('count').textContent = '?';
         document.getElementById('count').style.color = '#888';
         document.getElementById('uptime').textContent = '—';
