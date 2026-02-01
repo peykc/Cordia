@@ -622,19 +622,23 @@ async fn handle_request(
     h1 { font-weight: 300; font-size: 1.5rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.5rem; }
     #count { font-size: 3rem; font-variant-numeric: tabular-nums; }
     .muted { font-size: 0.875rem; color: #888; margin-top: 1rem; }
-    .time-block { font-size: 0.875rem; margin-top: 0.5rem; display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; }
+    .time-block { font-size: 0.875rem; margin-top: 0.5rem; display: flex; gap: 3rem; justify-content: center; flex-wrap: wrap; }
     .time-col { display: flex; flex-direction: column; align-items: center; }
     .time-label { color: #888; margin-bottom: 0.15rem; }
     .time-val { font-variant-numeric: tabular-nums; min-width: 4em; text-align: center; }
     .time-val.uptime { color: #22c55e; }
     .time-val.downtime { color: #ef4444; }
-    .separator { width: 80%; max-width: 16rem; margin: 0.75rem auto; border: none; border-top: 1px solid #444; }
+    .separator { width: 50%; max-width: 10rem; margin: 0.75rem auto; border: none; border-top: 1px solid #444; }
     .network-block { font-size: 0.875rem; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
-    .network-row { display: flex; gap: 2rem; justify-content: center; }
+    .network-row { display: flex; gap: 3.5rem; justify-content: center; }
     .network-label { color: #888; }
     .network-val { font-variant-numeric: tabular-nums; min-width: 6em; text-align: center; }
     .network-val.upload { color: #22c55e; }
     .network-val.download { color: #ef4444; }
+    .resources-block { font-size: 0.875rem; margin-top: 0; display: flex; gap: 3rem; justify-content: center; flex-wrap: wrap; }
+    .resource-col { display: flex; flex-direction: column; align-items: center; }
+    .resource-label { color: #888; margin-bottom: 0.15rem; }
+    .resource-val { font-variant-numeric: tabular-nums; min-width: 4em; text-align: center; color: #e0e0e0; }
   </style>
 </head>
 <body>
@@ -650,7 +654,11 @@ async fn handle_request(
     <div class="network-row"><span class="network-label">Upload</span><span class="network-label">Download</span></div>
     <div class="network-row"><span id="tx" class="network-val upload">—</span><span id="rx" class="network-val download">—</span></div>
   </div>
-  <p id="sysinfo" class="muted">—</p>
+  <hr class="separator" />
+  <div class="resources-block">
+    <div class="resource-col"><span class="resource-label">RAM</span><span id="ram" class="resource-val">—</span></div>
+    <div class="resource-col"><span class="resource-label">CPU</span><span id="cpu" class="resource-val">—</span></div>
+  </div>
   <script>
     function formatUptime(secs) {
       if (secs < 60) return secs + 's';
@@ -677,7 +685,8 @@ async fn handle_request(
         document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
         document.getElementById('tx').textContent = '↑ ' + formatBps(d.tx_bps);
         document.getElementById('rx').textContent = '↓ ' + formatBps(d.rx_bps);
-        document.getElementById('sysinfo').textContent = 'RAM: ' + (d.memory_mb ?? '—') + ' MB  |  CPU: ' + (d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—');
+        document.getElementById('ram').textContent = d.memory_mb != null ? d.memory_mb + ' MB' : '—';
+        document.getElementById('cpu').textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—';
       }).catch(() => {
         document.getElementById('count').textContent = '?';
         document.getElementById('count').style.color = '#888';
@@ -685,7 +694,8 @@ async fn handle_request(
         document.getElementById('downtime').textContent = '—';
         document.getElementById('tx').textContent = '—';
         document.getElementById('rx').textContent = '—';
-        document.getElementById('sysinfo').textContent = 'RAM: —  |  CPU: —';
+        document.getElementById('ram').textContent = '—';
+        document.getElementById('cpu').textContent = '—';
       });
     }
     update();
