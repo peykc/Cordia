@@ -33,15 +33,16 @@ pub async fn get_status(State(state): State<SharedState>) -> impl IntoResponse {
     };
     let uptime_secs = state.started_at.elapsed().as_secs();
     let started_at_utc = state.started_at_utc.clone();
-    let (memory_bytes, cpu_percent) = {
+    let memory_bytes = {
         let mut sys = System::new_all();
         sys.refresh_all();
         get_current_pid()
             .ok()
             .and_then(|pid| sys.process(pid))
-            .map(|p| (p.memory(), p.cpu_usage()))
-            .unwrap_or((0, 0.0))
+            .map(|p| p.memory())
+            .unwrap_or(0)
     };
+    let cpu_percent = *state.cpu_percent_cache.lock().await;
     let (rx_bps, tx_bps) = {
         let networks = Networks::new_with_refreshed_list();
         let cur_rx: u64 = networks.list().values().map(|d| d.total_received()).sum();

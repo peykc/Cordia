@@ -673,6 +673,31 @@ async fn main() {
         }
     });
 
+    // Background CPU sampling (sysinfo needs two refreshes with delay for non-zero process CPU)
+    let cpu_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let cpu = tokio::task::spawn_blocking(|| {
+                use sysinfo::{System, MINIMUM_CPU_UPDATE_INTERVAL};
+                let mut sys = System::new_all();
+                sys.refresh_all();
+                std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+                sys.refresh_all();
+                sysinfo::get_current_pid()
+                    .ok()
+                    .and_then(|pid| sys.process(pid))
+                    .map(|p| p.cpu_usage())
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(c) = cpu {
+                *cpu_state.cpu_percent_cache.lock().await = Some(c);
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+    });
+
     #[cfg(feature = "redis-backend")]
     {
         let refresh_state = state.clone();

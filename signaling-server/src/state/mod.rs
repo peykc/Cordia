@@ -36,6 +36,8 @@ pub struct AppState {
     pub downtime_secs: Option<u64>,
     /// Previous network totals and time for rate calculation (rx_total, tx_total, at).
     pub network_prev: Arc<Mutex<Option<(u64, u64, std::time::Instant)>>>,
+    /// Cached process CPU % (updated by background task; needs two refreshes with delay to be non-zero).
+    pub cpu_percent_cache: Arc<Mutex<Option<f32>>>,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
             started_at_utc: now_utc.to_rfc3339(),
             downtime_secs,
             network_prev: Arc::new(Mutex::new(None)),
+            cpu_percent_cache: Arc::new(Mutex::new(None)),
         }
     }
 

@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev --features windows-registry",
     "tauri:build": "tauri build --features windows-registry",
-    "generate-key-icon": "node generate-key-icon.js"
+    "generate-key-icon": "node generate-key-icon.js",
+    "stress-test": "node stress-test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.8",
@@ -24,6 +25,7 @@
     "tailwind-merge": "^2.1.0"
   },
   "devDependencies": {
+    "ws": "^8.18.0",
     "@tauri-apps/cli": "^1.5.0",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
