@@ -674,6 +674,13 @@ async fn handle_request(
       if (bps >= 1024) return (bps / 1024).toFixed(1) + ' KB/s';
       return bps + ' B/s';
     }
+    function formatMemory(bytes) {
+      if (bytes == null || bytes === undefined) return '—';
+      if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+      if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+      return bytes + ' B';
+    }
     function update() {
       fetch(window.location.origin + '/api/status').then(r => {
         if (!r.ok) throw new Error(r.status);
@@ -685,7 +692,7 @@ async fn handle_request(
         document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
         document.getElementById('tx').textContent = '↑ ' + formatBps(d.tx_bps);
         document.getElementById('rx').textContent = '↓ ' + formatBps(d.rx_bps);
-        document.getElementById('ram').textContent = d.memory_mb != null ? d.memory_mb + ' MB' : '—';
+        document.getElementById('ram').textContent = formatMemory(d.memory_bytes);
         document.getElementById('cpu').textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—';
       }).catch(() => {
         document.getElementById('count').textContent = '?';

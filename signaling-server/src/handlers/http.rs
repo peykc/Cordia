@@ -41,18 +41,18 @@ pub async fn handle_api_request(
         "status" => {
             if method == Method::GET && path_parts.len() == 3 {
                 let connections = {
-                    let signaling = state.signaling.lock().await;
-                    signaling.conn_peers.len()
+                    let presence = state.presence.lock().await;
+                    presence.presence_users.len()
                 };
                 let uptime_secs = state.started_at.elapsed().as_secs();
                 let started_at_utc = state.started_at_utc.clone();
-                let (memory_mb, cpu_percent) = {
+                let (memory_bytes, cpu_percent) = {
                     let mut sys = System::new_all();
                     sys.refresh_all();
                     get_current_pid()
                         .ok()
                         .and_then(|pid| sys.process(pid))
-                        .map(|p| (p.memory() / 1024 / 1024, p.cpu_usage()))
+                        .map(|p| (p.memory(), p.cpu_usage()))
                         .unwrap_or((0, 0.0))
                 };
                 let (rx_bps, tx_bps) = {
@@ -78,7 +78,7 @@ pub async fn handle_api_request(
                     "uptime_secs": uptime_secs,
                     "started_at_utc": started_at_utc,
                     "downtime_secs": state.downtime_secs,
-                    "memory_mb": memory_mb,
+                    "memory_bytes": memory_bytes,
                     "cpu_percent": cpu_percent,
                     "rx_bps": rx_bps,
                     "tx_bps": tx_bps
