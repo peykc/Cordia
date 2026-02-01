@@ -624,14 +624,15 @@ async fn handle_request(
     .muted { font-size: 0.875rem; color: #888; margin-top: 1rem; }
     .uptime { font-size: 0.875rem; color: #22c55e; margin-top: 0.5rem; }
     .downtime { font-size: 0.875rem; color: #ef4444; margin-top: 0.25rem; }
+    .time-val { display: inline-block; min-width: 5em; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
   <h1>Cordia Beacon</h1>
-  <p id="count">—</p>
   <p class="muted">Connections</p>
-  <p id="uptime" class="uptime">—</p>
-  <p id="downtime" class="downtime">—</p>
+  <p id="count">—</p>
+  <p class="uptime">Uptime: <span id="uptime" class="time-val">—</span></p>
+  <p class="downtime">Downtime: <span id="downtime" class="time-val">—</span></p>
   <p id="sysinfo" class="muted">—</p>
   <script>
     function formatUptime(secs) {
@@ -649,14 +650,14 @@ async fn handle_request(
       }).then(d => {
         document.getElementById('count').textContent = String(d.connections ?? '—');
         document.getElementById('count').style.color = '';
-        document.getElementById('uptime').textContent = 'Uptime: ' + formatUptime(d.uptime_secs || 0);
-        document.getElementById('downtime').textContent = d.downtime_secs != null ? 'Downtime: ' + formatUptime(d.downtime_secs) : 'Downtime: —';
+        document.getElementById('uptime').textContent = formatUptime(d.uptime_secs || 0);
+        document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
         document.getElementById('sysinfo').textContent = 'RAM: ' + (d.memory_mb ?? '—') + ' MB  |  CPU: ' + (d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—');
       }).catch(() => {
         document.getElementById('count').textContent = '?';
         document.getElementById('count').style.color = '#888';
-        document.getElementById('uptime').textContent = 'Uptime: —';
-        document.getElementById('downtime').textContent = 'Downtime: —';
+        document.getElementById('uptime').textContent = '—';
+        document.getElementById('downtime').textContent = '—';
         document.getElementById('sysinfo').textContent = 'RAM: —  |  CPU: —';
       });
     }
