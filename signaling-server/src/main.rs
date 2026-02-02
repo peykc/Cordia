@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::Html,
     routing::get,
     Router,
@@ -18,14 +18,17 @@ use chrono::{DateTime, Duration, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tower_http::cors::CorsLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
+use axum::middleware;
 
 #[cfg(feature = "postgres")]
 use sqlx::postgres::PgPoolOptions;
 
 pub mod state;
 pub mod handlers;
+pub mod security;
 
 pub type PeerId = String;
 pub type ServerId = String;
@@ -428,7 +431,7 @@ const STATUS_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
   <h1>Cordia Beacon</h1>
-  <p class="muted">Connections</p>
+  <p class="muted">Active Connections</p>
   <p id="count">—</p>
   <div class="time-block">
     <div class="time-col"><span class="time-label">Uptime</span><span id="uptime" class="time-val uptime">—</span></div>
@@ -583,9 +586,22 @@ async fn main() {
 
     env_logger::init();
 
+    let security_config = security::SecurityConfig::from_env();
+    let connection_tracker = Arc::new(tokio::sync::RwLock::new(security::ConnectionTracker::new(
+        security_config.max_ws_connections,
+        security_config.max_ws_per_ip,
+    )));
+    if security_config.max_ws_connections > 0 || security_config.max_ws_per_ip > 0 {
+        info!(
+            "Connection limits: max_ws={}, max_ws_per_ip={}",
+            security_config.max_ws_connections,
+            security_config.max_ws_per_ip
+        );
+    }
+
     let downtime_secs = read_downtime_secs();
     let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");
-    let state = Arc::new(AppState::new(downtime_secs));
+    let state = Arc::new(AppState::new(downtime_secs, connection_tracker));
 
     // Optional Postgres durability (profiles first; others later)
     #[cfg(feature = "postgres")]
@@ -758,7 +774,17 @@ async fn main() {
         .route("/status", get(status_page_handler))
         .route("/ws", get(handlers::ws::ws_handler))
         .fallback(|| async { (StatusCode::NOT_FOUND, "Not found. Use / or /status, /health, /api/*, or /ws for WebSocket.") })
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(security::client_ip_middleware))
+        .layer(security::build_cors_layer(&security_config))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(RequestBodyLimitLayer::new(security_config.max_body_bytes.max(1)))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

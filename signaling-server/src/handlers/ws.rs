@@ -1,11 +1,14 @@
 use axum::extract::ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{State, Extension};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::handlers::message::handle_message;
+use crate::security::ClientIp;
 use crate::state::AppState;
 use crate::{ConnId, SignalingMessage};
 
@@ -29,11 +32,22 @@ fn tungstenite_to_axum(msg: tokio_tungstenite::tungstenite::Message) -> AxumMess
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<SharedState>,
+    Extension(ClientIp(client_ip)): Extension<ClientIp>,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |socket| handle_connection_axum(socket, state))
+    {
+        let tracker = state.connection_tracker.read().await;
+        if !tracker.can_accept(&client_ip) {
+            return (StatusCode::SERVICE_UNAVAILABLE, "Connection limit reached").into_response();
+        }
+    }
+    ws.on_upgrade(move |socket| handle_connection_axum(socket, state, client_ip))
 }
 
-async fn handle_connection_axum(socket: WebSocket, state: SharedState) {
+async fn handle_connection_axum(socket: WebSocket, state: SharedState, client_ip: String) {
+    if state.connection_tracker.write().await.try_register(&client_ip).is_err() {
+        return;
+    }
+
     info!("WebSocket connection established");
 
     let conn_id: ConnId = uuid::Uuid::new_v4().to_string();
@@ -177,4 +191,6 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState) {
     }
 
     send_task.abort();
+
+    state.connection_tracker.write().await.unregister(&client_ip);
 }

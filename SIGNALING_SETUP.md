@@ -151,6 +151,28 @@ environment:
   - TZ=Your/Timezone
 ```
 
+### Security (beacon)
+
+When the beacon is reachable from the internet (e.g. behind Cloudflare Zero Trust), you can tighten it with env vars. All are optional; defaults are permissive so existing setups keep working.
+
+| Env var | Default | Description |
+|--------|---------|-------------|
+| `BEACON_CORS_ORIGINS` | (all) | Comma-separated allowed CORS origins, e.g. `https://app.example.com,https://cordia.example.com`. Unset or `*` = allow all. |
+| `BEACON_MAX_BODY_BYTES` | 1000000 | Max request body size in bytes for REST (1 MiB). |
+| `BEACON_MAX_WS_CONNECTIONS` | 0 (unlimited) | Max total WebSocket connections. |
+| `BEACON_MAX_WS_PER_IP` | 0 (unlimited) | Max WebSocket connections per client IP. |
+
+Client IP is taken from **CF-Connecting-IP** (Cloudflare) or **X-Forwarded-For** when behind a proxy; otherwise the direct peer is used. The beacon also sets **X-Content-Type-Options: nosniff** and **X-Frame-Options: DENY** on responses.
+
+Example (Docker):
+
+```yaml
+environment:
+  - BEACON_CORS_ORIGINS=https://your-app.example.com
+  - BEACON_MAX_WS_CONNECTIONS=5000
+  - BEACON_MAX_WS_PER_IP=100
+```
+
 ### Cloudflare Tunnel / Reverse proxy
 
 If you expose the beacon with **Cloudflare Tunnel** (or any reverse proxy):

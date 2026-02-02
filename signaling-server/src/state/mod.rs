@@ -37,10 +37,12 @@ pub struct AppState {
     pub network_prev: Arc<Mutex<Option<(u64, u64, std::time::Instant)>>>,
     /// Cached process CPU % (updated by background task; needs two refreshes with delay to be non-zero).
     pub cpu_percent_cache: Arc<Mutex<Option<f32>>>,
+    /// WebSocket connection limits (global and per-IP). Always present; limits 0 = no cap.
+    pub connection_tracker: crate::security::SharedConnectionTracker,
 }
 
 impl AppState {
-    pub fn new(downtime_secs: Option<u64>) -> Self {
+    pub fn new(downtime_secs: Option<u64>, connection_tracker: crate::security::SharedConnectionTracker) -> Self {
         let now_utc = chrono::Utc::now();
         Self {
             signaling: Arc::new(RwLock::new(SignalingState::new())),
@@ -54,6 +56,7 @@ impl AppState {
             downtime_secs,
             network_prev: Arc::new(Mutex::new(None)),
             cpu_percent_cache: Arc::new(Mutex::new(None)),
+            connection_tracker,
         }
     }
 

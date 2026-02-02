@@ -20,7 +20,7 @@ sysinfo = "0.31"
 
 axum = { version = "0.7", features = ["ws", "macros", "json"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "limit", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
