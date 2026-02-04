@@ -47,8 +47,7 @@ pub(crate) fn decode_path_segment(seg: &str) -> String {
     }
 }
 
-/// Middleware for /api/friends/*: verify Ed25519-signed request, then insert Extension(verified_user_id).
-/// Request path is stripped by Nest, so use full path for verification (client signs /api/friends/...).
+/// Middleware for /api/friends/*: verify Ed25519-signed request, then insert VerifiedFriendUserId into request extensions.
 async fn friend_auth_middleware(request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
     let body_bytes = match body.collect().await {
@@ -57,7 +56,8 @@ async fn friend_auth_middleware(request: Request, next: Next) -> Response {
             return (StatusCode::INTERNAL_SERVER_ERROR, "Body read failed").into_response();
         }
     };
-    let path = format!("/api/friends{}", parts.uri.path());
+    // Full path as received (we use merge not nest, so path is e.g. /api/friends/requests)
+    let path = parts.uri.path().to_string();
     let method = parts.method.clone();
     let verified_user_id = match handlers::friends::verify_friend_sig_ed25519(
         &method,
@@ -68,9 +68,8 @@ async fn friend_auth_middleware(request: Request, next: Next) -> Response {
         Ok(uid) => uid,
         Err((code, msg)) => return (code, msg).into_response(),
     };
-    parts.extensions.insert(axum::extract::Extension(
-        handlers::friends::VerifiedFriendUserId(verified_user_id),
-    ));
+    // Insert the inner type T; Extension<T> extractor looks up extensions.get::<T>(), not Extension<T>
+    parts.extensions.insert(handlers::friends::VerifiedFriendUserId(verified_user_id));
     let request = Request::from_parts(parts, Body::from(body_bytes));
     next.run(request).await
 }
@@ -870,15 +869,17 @@ async fn main() {
         .route("/events/ack", axum::routing::post(handlers::http::ack_events))
         .route("/ack", axum::routing::post(handlers::http::ack_events));
 
+    // Friend routes with full paths and auth middleware. Merge (don't nest) so the same request
+    // with extensions reaches the handler (nest was stripping and forwarding a new request).
     let friend_routes = Router::new()
-        .route("/requests", axum::routing::post(handlers::friends::send_friend_request))
-        .route("/requests/accept", axum::routing::post(handlers::friends::accept_friend_request))
-        .route("/requests/decline", axum::routing::post(handlers::friends::decline_friend_request))
-        .route("/codes", axum::routing::post(handlers::friends::create_friend_code))
-        .route("/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
-        .route("/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
-        .route("/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
-        .route("/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
+        .route("/api/friends/requests", axum::routing::post(handlers::friends::send_friend_request))
+        .route("/api/friends/requests/accept", axum::routing::post(handlers::friends::accept_friend_request))
+        .route("/api/friends/requests/decline", axum::routing::post(handlers::friends::decline_friend_request))
+        .route("/api/friends/codes", axum::routing::post(handlers::friends::create_friend_code))
+        .route("/api/friends/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
+        .route("/api/friends/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
+        .route("/api/friends/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
+        .route("/api/friends/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
         .layer(middleware::from_fn(friend_auth_middleware));
 
     let app = Router::new()
@@ -886,7 +887,7 @@ async fn main() {
         .route("/api/invites/:code", get(handlers::http::get_invite))
         .route("/api/invites/:code/redeem", axum::routing::post(handlers::http::redeem_invite))
         .route("/api/invites/:code/revoke", axum::routing::post(handlers::http::revoke_invite))
-        .nest("/api/friends", friend_routes)
+        .merge(friend_routes)
         .nest("/api/servers/:signing_pubkey", server_routes)
         .route("/health", get(|| async { "ok" }))
         .route("/", get(status_page_handler))
