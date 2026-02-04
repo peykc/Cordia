@@ -68,7 +68,9 @@ async fn friend_auth_middleware(request: Request, next: Next) -> Response {
         Ok(uid) => uid,
         Err((code, msg)) => return (code, msg).into_response(),
     };
-    parts.extensions.insert(axum::extract::Extension(verified_user_id));
+    parts.extensions.insert(axum::extract::Extension(
+        handlers::friends::VerifiedFriendUserId(verified_user_id),
+    ));
     let request = Request::from_parts(parts, Body::from(body_bytes));
     next.run(request).await
 }

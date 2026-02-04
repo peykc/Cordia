@@ -18,8 +18,16 @@ use crate::SignalingMessage;
 
 type SharedState = Arc<AppState>;
 
-/// Verified friend API user id (set by middleware). Use as `Extension(uid): Extension<String>` in handlers.
-pub type VerifiedFriendUserId = Extension<String>;
+/// Verified friend API user id (set by middleware). Newtype so Extension is uniquely keyed.
+#[derive(Clone)]
+pub struct VerifiedFriendUserId(pub String);
+
+impl std::ops::Deref for VerifiedFriendUserId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Verify Ed25519-signed friend API request. Envelope: method + "\n" + path + "\n" + timestamp + "\n" + sha256(body).hex().
 /// Returns verified user_id or error. No shared secret; mailbox-style.
@@ -129,7 +137,7 @@ pub struct AcceptDeclineRedemptionBody {
 /// POST /api/friends/requests — send a friend request. Mutual auto-accept: if B already sent to A, accept both.
 pub async fn send_friend_request(
     State(state): State<SharedState>,
-    Extension(from_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(from_user_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<SendFriendRequestBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
@@ -195,7 +203,7 @@ pub async fn send_friend_request(
 /// POST /api/friends/requests/accept
 pub async fn accept_friend_request(
     State(state): State<SharedState>,
-    Extension(to_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(to_user_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<AcceptDeclineBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
@@ -223,7 +231,7 @@ pub async fn accept_friend_request(
 /// POST /api/friends/requests/decline
 pub async fn decline_friend_request(
     State(state): State<SharedState>,
-    Extension(to_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(to_user_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<AcceptDeclineBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
@@ -251,7 +259,7 @@ pub async fn decline_friend_request(
 /// POST /api/friends/codes — create (or get existing) friend code.
 pub async fn create_friend_code(
     State(state): State<SharedState>,
-    Extension(owner_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(owner_user_id)): Extension<VerifiedFriendUserId>,
 ) -> impl IntoResponse {
     const CODE_LEN: usize = 8;
     let code: String = (0..CODE_LEN)
@@ -283,7 +291,7 @@ pub async fn create_friend_code(
 /// POST /api/friends/codes/revoke
 pub async fn revoke_friend_code(
     State(state): State<SharedState>,
-    Extension(owner_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(owner_user_id)): Extension<VerifiedFriendUserId>,
 ) -> impl IntoResponse {
     let mut friends = state.friends.write().await;
     let mut revoked = false;
@@ -300,7 +308,7 @@ pub async fn revoke_friend_code(
 /// POST /api/friends/codes/redeem — use someone's code; they get a pending redemption.
 pub async fn redeem_friend_code(
     State(state): State<SharedState>,
-    Extension(_redeemer_user_id): Extension<String>,
+    Extension(VerifiedFriendUserId(_redeemer_user_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<RedeemCodeBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
@@ -354,7 +362,7 @@ pub async fn redeem_friend_code(
 /// POST /api/friends/codes/redemptions/accept
 pub async fn accept_code_redemption(
     State(state): State<SharedState>,
-    Extension(code_owner_id): Extension<String>,
+    Extension(VerifiedFriendUserId(code_owner_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<AcceptDeclineRedemptionBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
@@ -388,7 +396,7 @@ pub async fn accept_code_redemption(
 /// POST /api/friends/codes/redemptions/decline
 pub async fn decline_code_redemption(
     State(state): State<SharedState>,
-    Extension(code_owner_id): Extension<String>,
+    Extension(VerifiedFriendUserId(code_owner_id)): Extension<VerifiedFriendUserId>,
     body: Result<Json<AcceptDeclineRedemptionBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
