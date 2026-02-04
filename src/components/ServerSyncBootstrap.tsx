@@ -18,7 +18,7 @@ const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug inges
  * haven't opened the server yet. It intentionally only updates metadata (no secrets).
  */
 export function ServerSyncBootstrap() {
-  const { sessionLoaded, currentAccountId } = useAccount()
+  const { sessionLoaded, currentAccountId, accountInfoMap } = useAccount()
   const { identity } = useIdentity()
   const presence = usePresence()
   const voicePresence = useVoicePresence()
@@ -31,6 +31,8 @@ export function ServerSyncBootstrap() {
   const wsRef = useRef<WebSocket | null>(null)
   const subscribedSigningPubkeysRef = useRef<Set<string>>(new Set())
   const activeSigningPubkeyRef = useRef<string | null>(null)
+  const profilePushRef = useRef({ profile, identity, accountInfoMap, currentAccountId })
+  profilePushRef.current = { profile, identity, accountInfoMap, currentAccountId }
 
   // Request microphone permission once when user is logged in so the prompt appears in one place
   useEffect(() => {
@@ -161,6 +163,41 @@ export function ServerSyncBootstrap() {
         }
       }
 
+      /** Push profile (including PFP) to friends via signaling as messenger only; server does not store */
+      const sendProfilePush = async (override?: {
+        display_name?: string | null
+        real_name?: string | null
+        show_real_name?: boolean
+        updated_at?: string | null
+        avatar_data_url?: string | null
+        avatar_rev?: number
+      }) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        const { profile: p, identity: id, accountInfoMap: am, currentAccountId: cid } = profilePushRef.current
+        if (!id?.user_id) return
+        try {
+          const friends = await listFriends()
+          if (friends.length === 0) return
+          const rev = override?.updated_at != null ? Date.parse(override.updated_at) : (p?.updated_at ? Date.parse(p.updated_at) : 0)
+          const accountCreatedAt = cid && am[cid]?.created_at ? am[cid].created_at : null
+          ws.send(
+            JSON.stringify({
+              type: 'ProfilePush',
+              to_user_ids: friends,
+              display_name: override?.display_name ?? p?.display_name ?? id?.display_name ?? null,
+              real_name: override?.show_real_name ? (override?.real_name ?? p?.real_name ?? null) : (p?.show_real_name ? (p?.real_name ?? null) : null),
+              show_real_name: override?.show_real_name ?? Boolean(p?.show_real_name),
+              rev: Number.isFinite(rev) ? rev : 0,
+              avatar_data_url: override?.avatar_data_url !== undefined ? override.avatar_data_url : (p?.avatar_data_url ?? null),
+              avatar_rev: override?.avatar_rev !== undefined ? override.avatar_rev : (p?.avatar_rev ?? null),
+              account_created_at: accountCreatedAt,
+            })
+          )
+        } catch {
+          // ignore
+        }
+      }
+
       const sendPresenceHello = async (fromLabel: string) => {
         if (!identity?.user_id) return
         if (ws.readyState !== WebSocket.OPEN) return
@@ -234,6 +271,7 @@ export function ServerSyncBootstrap() {
           await sendPresenceHello('ws.onopen')
           await sendProfileAnnounce()
           await sendProfileHello()
+          await sendProfilePush()
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to subscribe servers over WS:', e)
         }
@@ -310,6 +348,20 @@ export function ServerSyncBootstrap() {
             return
           }
 
+          if (msg.type === 'ProfilePushIncoming') {
+            remoteProfiles.applyUpdate({
+              user_id: String(msg.from_user_id),
+              display_name: String(msg.display_name ?? ''),
+              secondary_name: msg.show_real_name ? (msg.real_name ?? null) : null,
+              show_secondary: Boolean(msg.show_real_name),
+              rev: Number(msg.rev ?? 0),
+              account_created_at: msg.account_created_at ?? undefined,
+              avatar_data_url: msg.avatar_data_url ?? undefined,
+              avatar_rev: msg.avatar_rev ?? undefined,
+            })
+            return
+          }
+
           if (msg.type === 'ProfileUpdate') {
             remoteProfiles.applyUpdate({
               user_id: String(msg.user_id),
@@ -354,6 +406,7 @@ export function ServerSyncBootstrap() {
                 detail: {
                   from_user_id: msg.from_user_id,
                   from_display_name: msg.from_display_name ?? null,
+                  from_account_created_at: msg.from_account_created_at ?? null,
                 },
               })
             )
@@ -366,6 +419,7 @@ export function ServerSyncBootstrap() {
                   from_user_id: msg.from_user_id,
                   to_user_id: msg.to_user_id,
                   from_display_name: msg.from_display_name ?? null,
+                  from_account_created_at: msg.from_account_created_at ?? null,
                 },
               })
             )
@@ -385,6 +439,7 @@ export function ServerSyncBootstrap() {
                 detail: {
                   redeemer_user_id: msg.redeemer_user_id,
                   redeemer_display_name: msg.redeemer_display_name ?? '',
+                  redeemer_account_created_at: msg.redeemer_account_created_at ?? null,
                 },
               })
             )
@@ -397,6 +452,7 @@ export function ServerSyncBootstrap() {
                   code_owner_id: msg.code_owner_id,
                   redeemer_user_id: msg.redeemer_user_id,
                   code_owner_display_name: msg.code_owner_display_name ?? null,
+                  code_owner_account_created_at: msg.code_owner_account_created_at ?? null,
                 },
               })
             )
@@ -483,9 +539,18 @@ export function ServerSyncBootstrap() {
             show_real_name: Boolean(detail.show_real_name),
             updated_at: detail.updated_at ?? null,
           })
+          sendProfilePush({
+            display_name: detail.display_name,
+            real_name: detail.real_name,
+            show_real_name: detail.show_real_name,
+            updated_at: detail.updated_at,
+            avatar_data_url: detail.avatar_data_url,
+            avatar_rev: detail.avatar_rev,
+          })
         } else {
           // Fallback: send whatever the current context has (may be slightly delayed)
           setTimeout(() => sendProfileAnnounce(), 0)
+          setTimeout(() => sendProfilePush(), 0)
         }
         // Re-announce presence so other clients see us (fixes gray dot after reconnect; also on settings save)
         sendPresenceHello('profile-updated')

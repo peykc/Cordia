@@ -7,6 +7,10 @@ export type RemoteProfile = {
   secondary_name: string | null
   show_secondary: boolean
   rev: number
+  account_created_at: string | null
+  /** From ProfilePush (signaling as messenger only; server does not store) */
+  avatar_data_url: string | null
+  avatar_rev: number
 }
 
 type RemoteProfilesContextType = {
@@ -17,6 +21,9 @@ type RemoteProfilesContextType = {
     secondary_name: string | null
     show_secondary: boolean
     rev: number
+    account_created_at?: string | null
+    avatar_data_url?: string | null
+    avatar_rev?: number
   }) => void
   getProfile: (userId: string) => RemoteProfile | undefined
 }
@@ -36,14 +43,21 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
     setProfiles((prev) => {
       const next = new Map(prev)
       const existing = next.get(u.user_id)
-      if (existing && u.rev <= existing.rev) return prev
-      next.set(u.user_id, {
+      const revNewer = !existing || u.rev >= existing.rev
+      const avatarRevNewer =
+        u.avatar_rev !== undefined &&
+        (existing?.avatar_rev == null || u.avatar_rev >= existing.avatar_rev)
+      const merged = {
         user_id: u.user_id,
-        display_name: u.display_name,
-        secondary_name: u.secondary_name ?? null,
-        show_secondary: Boolean(u.show_secondary),
-        rev: u.rev,
-      })
+        display_name: revNewer ? u.display_name : (existing?.display_name ?? u.display_name),
+        secondary_name: revNewer ? (u.secondary_name ?? null) : (existing?.secondary_name ?? null),
+        show_secondary: revNewer ? Boolean(u.show_secondary) : (existing?.show_secondary ?? false),
+        rev: revNewer ? u.rev : (existing?.rev ?? 0),
+        account_created_at: u.account_created_at !== undefined ? (u.account_created_at ?? null) : (existing?.account_created_at ?? null),
+        avatar_data_url: avatarRevNewer && u.avatar_data_url !== undefined ? (u.avatar_data_url ?? null) : (existing?.avatar_data_url ?? null),
+        avatar_rev: avatarRevNewer && u.avatar_rev !== undefined ? u.avatar_rev : (existing?.avatar_rev ?? 0),
+      }
+      next.set(u.user_id, merged)
       return next
     })
   }

@@ -46,22 +46,32 @@ export interface SendFriendRequestResult {
 export async function sendFriendRequest(
   signalingUrl: string,
   toUserId: string,
-  fromDisplayName?: string
+  fromDisplayName?: string,
+  fromAccountCreatedAt?: string | null
 ): Promise<SendFriendRequestResult> {
   return friendFetch(signalingUrl, '/requests', {
     method: 'POST',
-    body: { to_user_id: toUserId, from_display_name: fromDisplayName ?? null },
+    body: {
+      to_user_id: toUserId,
+      from_display_name: fromDisplayName ?? null,
+      from_account_created_at: fromAccountCreatedAt ?? null,
+    },
   }) as Promise<SendFriendRequestResult>
 }
 
 export async function acceptFriendRequest(
   signalingUrl: string,
   fromUserId: string,
-  accepterDisplayName?: string
+  accepterDisplayName?: string,
+  accepterAccountCreatedAt?: string | null
 ): Promise<{ accepted: boolean }> {
   return friendFetch(signalingUrl, '/requests/accept', {
     method: 'POST',
-    body: { from_user_id: fromUserId, from_display_name: accepterDisplayName ?? null },
+    body: {
+      from_user_id: fromUserId,
+      from_display_name: accepterDisplayName ?? null,
+      from_account_created_at: accepterAccountCreatedAt ?? null,
+    },
   }) as Promise<{ accepted: boolean }>
 }
 
@@ -96,7 +106,8 @@ export async function redeemFriendCode(
   signalingUrl: string,
   code: string,
   redeemerUserId: string,
-  redeemerDisplayName: string
+  redeemerDisplayName: string,
+  redeemerAccountCreatedAt?: string | null
 ): Promise<{ pending: boolean }> {
   return friendFetch(signalingUrl, '/codes/redeem', {
     method: 'POST',
@@ -104,6 +115,7 @@ export async function redeemFriendCode(
       code: code.trim().toUpperCase(),
       redeemer_user_id: redeemerUserId,
       redeemer_display_name: redeemerDisplayName,
+      redeemer_account_created_at: redeemerAccountCreatedAt ?? null,
     },
   }) as Promise<{ pending: boolean }>
 }
@@ -111,11 +123,16 @@ export async function redeemFriendCode(
 export async function acceptCodeRedemption(
   signalingUrl: string,
   redeemerUserId: string,
-  codeOwnerDisplayName?: string
+  codeOwnerDisplayName?: string,
+  codeOwnerAccountCreatedAt?: string | null
 ): Promise<{ accepted: boolean }> {
   return friendFetch(signalingUrl, '/codes/redemptions/accept', {
     method: 'POST',
-    body: { redeemer_user_id: redeemerUserId, code_owner_display_name: codeOwnerDisplayName ?? null },
+    body: {
+      redeemer_user_id: redeemerUserId,
+      code_owner_display_name: codeOwnerDisplayName ?? null,
+      code_owner_account_created_at: codeOwnerAccountCreatedAt ?? null,
+    },
   }) as Promise<{ accepted: boolean }>
 }
 

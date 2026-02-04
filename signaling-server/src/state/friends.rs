@@ -14,6 +14,8 @@ pub struct FriendRequest {
     pub to_user_id: String,
     #[serde(default)]
     pub from_display_name: Option<String>,
+    #[serde(default)]
+    pub from_account_created_at: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -32,6 +34,8 @@ pub struct CodeRedemption {
     pub code_owner_id: String,
     pub redeemer_user_id: String,
     pub redeemer_display_name: String,
+    #[serde(default)]
+    pub redeemer_account_created_at: Option<String>,
     pub code: String,
     pub created_at: DateTime<Utc>,
 }
@@ -84,5 +88,15 @@ impl FriendState {
                 let _ = sender.send(msg.clone());
             }
         }
+    }
+
+    /// Resolve sender user_id from conn_id (for ProfilePush).
+    pub fn get_user_id_for_conn(&self, conn_id: &ConnId) -> Option<String> {
+        for (user_id, conns) in &self.user_connections {
+            if conns.contains_key(conn_id) {
+                return Some(user_id.clone());
+            }
+        }
+        None
     }
 }

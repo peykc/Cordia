@@ -11,6 +11,7 @@ export function UserProfileCard({
   initials,
   displayName,
   secondaryName,
+  accountCreatedAt = null,
   isSelf = false,
   isFriend = false,
   isPendingOutgoing = false,
@@ -25,6 +26,8 @@ export function UserProfileCard({
   initials: string
   displayName: string
   secondaryName: string | null
+  /** ISO date string; from local account for self, or via DHT for others when available */
+  accountCreatedAt?: string | null
   isSelf?: boolean
   isFriend?: boolean
   isPendingOutgoing?: boolean
@@ -42,15 +45,29 @@ export function UserProfileCard({
 
   const pos = useMemo(() => {
     if (!open || !anchorRect) return null
-    const cardW = 260
+    const cardW = 180
     const margin = 10
     const left = Math.min(
       Math.max(anchorRect.left + anchorRect.width / 2 - cardW / 2, margin),
       window.innerWidth - cardW - margin
     )
-    const top = Math.min(anchorRect.bottom + 10, window.innerHeight - 160 - margin)
+    const top = Math.min(anchorRect.bottom + 10, window.innerHeight - 260 - margin)
     return { left, top, width: cardW }
   }, [open, anchorRect])
+
+  const createdLabel = accountCreatedAt
+    ? (() => {
+        try {
+          const d = new Date(accountCreatedAt)
+          if (Number.isNaN(d.getTime())) return null
+          return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+        } catch {
+          return null
+        }
+      })()
+    : null
+
+  const showFriendAction = !isSelf && (onSendFriendRequest || onRemoveFriend || isPendingOutgoing)
 
   if (!open || !pos) return null
 
@@ -62,61 +79,76 @@ export function UserProfileCard({
         style={{ left: pos.left, top: pos.top, width: pos.width }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="border-2 border-border bg-card/80 backdrop-blur-sm rounded-lg p-3 shadow-lg space-y-3">
-          <div className="flex items-center gap-3">
+        <div className="border-2 border-border bg-card/80 backdrop-blur-sm rounded-lg p-3 shadow-lg flex flex-col gap-3 min-h-[200px]">
+          {/* Top row: PFP top-left, name to the right */}
+          <div className="flex items-start gap-3">
             {avatarDataUrl ? (
               <img
                 src={avatarDataUrl}
                 alt={displayName}
-                className="h-12 w-12 border-2 border-border rounded-none object-cover"
+                className="h-14 w-14 shrink-0 border-2 border-border rounded-none object-cover"
               />
             ) : (
               <div
-                className="h-12 w-12 border-2 border-border rounded-none grid place-items-center text-[10px] font-mono tracking-wider"
+                className="h-14 w-14 shrink-0 border-2 border-border rounded-none grid place-items-center text-xs font-mono tracking-wider"
                 style={fallbackColorStyle}
               >
                 {initials}
               </div>
             )}
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1 pt-0.5">
               <p className="text-sm font-light truncate">{displayName}</p>
               {secondaryName ? (
                 <p className="text-xs text-muted-foreground font-light truncate">{secondaryName}</p>
               ) : null}
             </div>
           </div>
-          {!isSelf && (onSendFriendRequest || onRemoveFriend || isPendingOutgoing) && (
-            <div className="pt-2 border-t border-border">
+
+          {/* Account created (when available from self or DHT) */}
+          {createdLabel ? (
+            <p className="text-xs text-muted-foreground font-light">
+              Account created {createdLabel}
+            </p>
+          ) : null}
+
+          {/* Bottom row: spacer left, square action right */}
+          {showFriendAction && (
+            <div className="pt-2 border-t border-border flex items-center justify-end">
               {isFriend && onRemoveFriend ? (
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="w-full justify-start gap-2 font-light text-muted-foreground"
+                  size="icon"
+                  className="shrink-0 font-light text-muted-foreground"
+                  title="Remove from friends"
                   onClick={() => {
                     onRemoveFriend()
                     onClose()
                   }}
                 >
-                  <UserMinus className="h-3.5 w-3.5" />
-                  Remove from friends
+                  <UserMinus className="h-4 w-4" />
                 </Button>
               ) : isPendingOutgoing ? (
-                <div className="flex items-center gap-2 px-3 py-2 text-sm font-light text-muted-foreground">
-                  <Clock className="h-3.5 w-3.5 shrink-0" />
-                  Pending
-                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0 font-light text-muted-foreground"
+                  title="Pending"
+                  disabled
+                >
+                  <Clock className="h-4 w-4" />
+                </Button>
               ) : onSendFriendRequest ? (
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="w-full justify-start gap-2 font-light"
+                  size="icon"
+                  className="shrink-0 font-light"
+                  title="Send friend request"
                   onClick={() => {
                     onSendFriendRequest()
                     onClose()
                   }}
                 >
-                  <UserPlus className="h-3.5 w-3.5" />
-                  Send friend request
+                  <UserPlus className="h-4 w-4" />
                 </Button>
               ) : null}
             </div>
@@ -126,4 +158,3 @@ export function UserProfileCard({
     </>
   )
 }
-

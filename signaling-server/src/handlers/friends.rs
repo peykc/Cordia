@@ -113,6 +113,8 @@ pub struct SendFriendRequestBody {
     pub to_user_id: String,
     #[serde(default)]
     pub from_display_name: Option<String>,
+    #[serde(default)]
+    pub from_account_created_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +122,8 @@ pub struct AcceptDeclineBody {
     pub from_user_id: String,
     #[serde(default)]
     pub from_display_name: Option<String>,
+    #[serde(default)]
+    pub from_account_created_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +131,8 @@ pub struct RedeemCodeBody {
     pub code: String,
     pub redeemer_user_id: String,
     pub redeemer_display_name: String,
+    #[serde(default)]
+    pub redeemer_account_created_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +140,8 @@ pub struct AcceptDeclineRedemptionBody {
     pub redeemer_user_id: String,
     #[serde(default)]
     pub code_owner_display_name: Option<String>,
+    #[serde(default)]
+    pub code_owner_account_created_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,12 +180,14 @@ pub async fn send_friend_request(
             from_user_id: from_user_id.clone(),
             to_user_id: to_user_id.clone(),
             from_display_name: body.from_display_name.clone(),
+            from_account_created_at: body.from_account_created_at.clone(),
         };
-        // To A: "B accepted you" so A adds B; we don't have B's name here (B didn't send it)
+        // To A: "B accepted you" so A adds B; we don't have B's name/account_created here (B didn't send it)
         let msg_to_a = SignalingMessage::FriendRequestAccepted {
             from_user_id: to_user_id.clone(),
             to_user_id: from_user_id.clone(),
             from_display_name: None,
+            from_account_created_at: None,
         };
         if let Ok(jb) = serde_json::to_string(&msg_to_b) {
             state.friends.read().await.send_to_user(&to_user_id, &jb);
@@ -196,6 +206,7 @@ pub async fn send_friend_request(
         from_user_id: from_user_id.clone(),
         to_user_id: to_user_id.clone(),
         from_display_name: body.from_display_name.clone(),
+        from_account_created_at: body.from_account_created_at.clone(),
         created_at: Utc::now(),
     };
     friends.friend_requests.insert(key_ab.clone(), req.clone());
@@ -205,6 +216,7 @@ pub async fn send_friend_request(
     let incoming = SignalingMessage::FriendRequestIncoming {
         from_user_id: from_user_id.clone(),
         from_display_name: req.from_display_name.clone(),
+        from_account_created_at: req.from_account_created_at.clone(),
         created_at: req.created_at.to_rfc3339(),
     };
     if let Ok(json) = serde_json::to_string(&incoming) {
@@ -237,6 +249,7 @@ pub async fn accept_friend_request(
         from_user_id: to_user_id.clone(),
         to_user_id: from_user_id.clone(),
         from_display_name: body.from_display_name.clone(),
+        from_account_created_at: body.from_account_created_at.clone(),
     };
     if let Ok(json) = serde_json::to_string(&msg_to_requester) {
         state.friends.read().await.send_to_user(&from_user_id, &json);
@@ -382,6 +395,7 @@ pub async fn redeem_friend_code(
         code_owner_id: code_owner_id.clone(),
         redeemer_user_id: redeemer_user_id.clone(),
         redeemer_display_name: redeemer_display_name.clone(),
+        redeemer_account_created_at: body.redeemer_account_created_at.clone(),
         code: code.clone(),
         created_at: now,
     });
@@ -390,6 +404,7 @@ pub async fn redeem_friend_code(
     let incoming = SignalingMessage::FriendCodeRedemptionIncoming {
         redeemer_user_id: redeemer_user_id.clone(),
         redeemer_display_name: redeemer_display_name.clone(),
+        redeemer_account_created_at: body.redeemer_account_created_at.clone(),
         code: code.clone(),
         created_at: now.to_rfc3339(),
     };
@@ -427,6 +442,7 @@ pub async fn accept_code_redemption(
         code_owner_id: code_owner_id.clone(),
         redeemer_user_id: redeemer_user_id.clone(),
         code_owner_display_name: body.code_owner_display_name.clone(),
+        code_owner_account_created_at: body.code_owner_account_created_at.clone(),
     };
     if let Ok(json) = serde_json::to_string(&msg) {
         state.friends.read().await.send_to_user(&redeemer_user_id, &json);

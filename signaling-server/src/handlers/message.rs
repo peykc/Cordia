@@ -188,6 +188,7 @@ pub async fn handle_message(
                     .map(|(_, req)| FriendRequestIncomingItem {
                         from_user_id: req.from_user_id.clone(),
                         from_display_name: req.from_display_name.clone(),
+                        from_account_created_at: req.from_account_created_at.clone(),
                         created_at: req.created_at.to_rfc3339(),
                     })
                     .collect();
@@ -205,6 +206,7 @@ pub async fn handle_message(
                             .map(|r| CodeRedemptionItem {
                                 redeemer_user_id: r.redeemer_user_id.clone(),
                                 redeemer_display_name: r.redeemer_display_name.clone(),
+                                redeemer_account_created_at: r.redeemer_account_created_at.clone(),
                                 code: r.code.clone(),
                                 created_at: r.created_at.to_rfc3339(),
                             })
@@ -664,6 +666,34 @@ pub async fn handle_message(
 
         SignalingMessage::Pong => {
             // Server shouldn't receive Pong, ignore
+            Ok(())
+        }
+
+        SignalingMessage::ProfilePush { to_user_ids, display_name, real_name, show_real_name, rev, avatar_data_url, avatar_rev, account_created_at } => {
+            const MAX_PROFILE_PUSH_RECIPIENTS: usize = 500;
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("ProfilePush requires PresenceHello first".to_string()),
+            };
+            let incoming = SignalingMessage::ProfilePushIncoming {
+                from_user_id: from_user_id.clone(),
+                display_name: display_name.clone(),
+                real_name: real_name.clone(),
+                show_real_name,
+                rev,
+                avatar_data_url: avatar_data_url.clone(),
+                avatar_rev,
+                account_created_at: account_created_at.clone(),
+            };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize ProfilePushIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            for to_id in to_user_ids.into_iter().take(MAX_PROFILE_PUSH_RECIPIENTS) {
+                if to_id.is_empty() || to_id == from_user_id {
+                    continue;
+                }
+                friends.send_to_user(&to_id, &json);
+            }
             Ok(())
         }
 

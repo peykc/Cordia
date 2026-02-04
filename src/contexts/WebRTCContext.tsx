@@ -13,6 +13,10 @@ import {
 import { useSignaling } from './SignalingContext'
 import { useVoicePresence } from './VoicePresenceContext'
 import { useSpeaking } from './SpeakingContext'
+import { useIdentity } from './IdentityContext'
+import { useProfile } from './ProfileContext'
+import { useAccount } from './AccountContext'
+import { useRemoteProfiles } from './RemoteProfilesContext'
 import { RemoteAudioAnalyzer } from '../lib/remoteAudioAnalyzer'
 import { loadAudioSettings } from '../lib/tauri'
 
@@ -69,10 +73,16 @@ interface WebRTCContextType {
 
 const WebRTCContext = createContext<WebRTCContextType | null>(null)
 
+const PROFILE_P2P_CHANNEL = 'cordia-profile'
+
 export function WebRTCProvider({ children }: { children: ReactNode }) {
   const { signalingUrl } = useSignaling()
   const voicePresence = useVoicePresence()
   const { setUserSpeaking } = useSpeaking()
+  const { identity } = useIdentity()
+  const { profile } = useProfile()
+  const { currentAccountId, accountInfoMap } = useAccount()
+  const { applyUpdate: applyRemoteProfile } = useRemoteProfiles()
 
   // State
   const [isInVoice, setIsInVoice] = useState(false)
@@ -98,6 +108,28 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const signalingConnectedRef = useRef<boolean>(false)   // Track signaling state separately from media
   const localAudioAnalyzerRef = useRef<RemoteAudioAnalyzer | null>(null)  // For self-speaking detection
   const cleanedPeersRef = useRef<Set<string>>(new Set())  // Track cleaned peers to prevent double cleanup
+  const profileP2PRef = useRef<{ user_id: string; display_name: string; real_name: string | null; show_real_name: boolean; rev: number; account_created_at: string | null } | null>(null)
+
+  // Keep profile payload for P2P send (avoid stale closure when data channel opens)
+  useEffect(() => {
+    if (!identity?.user_id) {
+      profileP2PRef.current = null
+      return
+    }
+    const dn = profile?.display_name ?? identity.display_name ?? ''
+    const show = Boolean(profile?.show_real_name)
+    const rn = show ? (profile?.real_name ?? null) : null
+    const rev = profile?.updated_at ? Date.parse(profile.updated_at) : 0
+    const accountCreatedAt = currentAccountId && accountInfoMap[currentAccountId]?.created_at ? accountInfoMap[currentAccountId].created_at : null
+    profileP2PRef.current = {
+      user_id: identity.user_id,
+      display_name: dn,
+      real_name: rn,
+      show_real_name: show,
+      rev: Number.isFinite(rev) ? rev : 0,
+      account_created_at: accountCreatedAt ?? null,
+    }
+  }, [identity?.user_id, identity?.display_name, profile?.display_name, profile?.show_real_name, profile?.real_name, profile?.updated_at, currentAccountId, accountInfoMap])
 
   // Keep peersRef in sync with state
   useEffect(() => {
@@ -435,6 +467,47 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     const pc = createPeerConnection()
     const roomId = currentRoomRef.current
 
+    // P2P profile channel: receive peer profile (account_created_at, etc.) without using signaling server
+    pc.ondatachannel = (e) => {
+      const channel = e.channel
+      if (channel.label !== PROFILE_P2P_CHANNEL) return
+      channel.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data as string)
+          if (msg.type !== 'ProfileP2P' || !msg.user_id) return
+          applyRemoteProfile({
+            user_id: String(msg.user_id),
+            display_name: String(msg.display_name ?? ''),
+            secondary_name: msg.show_real_name ? (msg.real_name ?? null) : null,
+            show_secondary: Boolean(msg.show_real_name),
+            rev: Number(msg.rev ?? 0),
+            account_created_at: msg.account_created_at ?? null,
+          })
+        } catch (_) {
+          // ignore parse errors
+        }
+      }
+      // Answerer also sends our profile when channel opens so peer gets account_created_at etc.
+      channel.onopen = () => {
+        const payload = profileP2PRef.current
+        if (payload) {
+          try {
+            channel.send(JSON.stringify({
+              type: 'ProfileP2P',
+              user_id: payload.user_id,
+              display_name: payload.display_name,
+              real_name: payload.real_name,
+              show_real_name: payload.show_real_name,
+              rev: payload.rev,
+              account_created_at: payload.account_created_at,
+            }))
+          } catch (_) {
+            // ignore
+          }
+        }
+      }
+    }
+
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -653,7 +726,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     return pc
-  }, [])
+  }, [applyRemoteProfile])
 
   const handlePeerDisconnect = useCallback((remotePeerId: string) => {
     console.log(`[Media] Peer ${remotePeerId} disconnected - cleaning up connection`)
@@ -692,8 +765,29 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             handlePeerDisconnect(existingByUserId.peerId)
           }
 
-          try {
+            try {
             const pc = await createPeerConnectionForPeer(remotePeerId, remoteUserId)
+
+            // P2P profile channel: we're the offerer, so we create the channel and send our profile when open
+            const profileDc = pc.createDataChannel(PROFILE_P2P_CHANNEL)
+            profileDc.onopen = () => {
+              const payload = profileP2PRef.current
+              if (payload) {
+                try {
+                  profileDc.send(JSON.stringify({
+                    type: 'ProfileP2P',
+                    user_id: payload.user_id,
+                    display_name: payload.display_name,
+                    real_name: payload.real_name,
+                    show_real_name: payload.show_real_name,
+                    rev: payload.rev,
+                    account_created_at: payload.account_created_at,
+                  }))
+                } catch (_) {
+                  // ignore
+                }
+              }
+            }
 
             setPeers(prev => {
               const updated = new Map(prev)

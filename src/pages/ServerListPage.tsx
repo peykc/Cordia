@@ -20,7 +20,7 @@ import { useFriends } from '../contexts/FriendsContext'
 function ServerListPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
-  const { currentAccountId } = useAccount()
+  const { currentAccountId, accountInfoMap } = useAccount()
   const { getLevel } = usePresence()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const { profile } = useProfile()
@@ -1077,8 +1077,8 @@ function ServerListPage() {
                             >
                               <button
                                 type="button"
-                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none ${pending ? 'grayscale' : ''}`}
-                                style={avatarStyleForUser(userId)}
+                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none overflow-hidden ${pending ? 'grayscale' : ''}`}
+                                style={!rp?.avatar_data_url ? avatarStyleForUser(userId) : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setProfileCardUserId(userId)
@@ -1086,7 +1086,11 @@ function ServerListPage() {
                                 }}
                                 aria-label={displayName}
                               >
-                                <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                {rp?.avatar_data_url ? (
+                                  <img src={rp.avatar_data_url} alt="" className="w-full h-full object-cover" />
+                                ) : (
+                                  <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                )}
                                 <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
                                   {bestLevel === 'in_call' ? (
                                     <div className="h-1.5 w-1.5 bg-blue-500 ring-2 ring-background" />
@@ -1128,7 +1132,7 @@ function ServerListPage() {
                             {onlineFriends.map((f) => renderRow(f))}
                             {hasOfflineSep && (
                               <div className="flex w-full items-center py-0.5" aria-hidden>
-                                <div className="h-px w-full shrink-0 bg-muted-foreground/80" />
+                                <div className="h-px w-full shrink-0 bg-muted-foreground/60" />
                               </div>
                             )}
                             {offlineFriends.map((f) => renderRow(f))}
@@ -1242,7 +1246,13 @@ function ServerListPage() {
           setProfileCardUserId(null)
           setProfileCardAnchor(null)
         }}
-        avatarDataUrl={profileCardUserId && identity?.user_id === profileCardUserId ? profile.avatar_data_url : null}
+        avatarDataUrl={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId
+              ? profile.avatar_data_url
+              : remoteProfiles.getProfile(profileCardUserId)?.avatar_data_url ?? null
+            : null
+        }
         fallbackColorStyle={profileCardUserId ? avatarStyleForUser(profileCardUserId) : undefined}
         initials={getInitials(
           profileCardUserId
@@ -1267,6 +1277,13 @@ function ServerListPage() {
               : remoteProfiles.getProfile(profileCardUserId)?.show_secondary
                 ? remoteProfiles.getProfile(profileCardUserId)?.secondary_name ?? null
                 : null
+            : null
+        }
+        accountCreatedAt={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId && currentAccountId
+              ? accountInfoMap[currentAccountId]?.created_at ?? null
+              : remoteProfiles.getProfile(profileCardUserId)?.account_created_at ?? null
             : null
         }
         isSelf={identity?.user_id === profileCardUserId}

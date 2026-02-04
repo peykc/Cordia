@@ -130,6 +130,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
           real_name: next.real_name,
           show_real_name: next.show_real_name,
           updated_at: next.updated_at,
+          avatar_data_url: next.avatar_data_url,
+          avatar_rev: next.avatar_rev,
         },
       })
     )

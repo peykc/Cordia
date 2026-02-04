@@ -306,6 +306,8 @@ pub enum SignalingMessage {
     FriendRequestIncoming {
         from_user_id: String,
         from_display_name: Option<String>,
+        #[serde(default)]
+        from_account_created_at: Option<String>,
         created_at: String,
     },
 
@@ -316,6 +318,8 @@ pub enum SignalingMessage {
         to_user_id: String,
         #[serde(default)]
         from_display_name: Option<String>,
+        #[serde(default)]
+        from_account_created_at: Option<String>,
     },
 
     /// Your friend request was declined.
@@ -328,6 +332,8 @@ pub enum SignalingMessage {
     FriendCodeRedemptionIncoming {
         redeemer_user_id: String,
         redeemer_display_name: String,
+        #[serde(default)]
+        redeemer_account_created_at: Option<String>,
         code: String,
         created_at: String,
     },
@@ -339,6 +345,8 @@ pub enum SignalingMessage {
         redeemer_user_id: String,
         #[serde(default)]
         code_owner_display_name: Option<String>,
+        #[serde(default)]
+        code_owner_account_created_at: Option<String>,
     },
 
     /// Code owner declined you.
@@ -351,12 +359,44 @@ pub enum SignalingMessage {
     FriendRemoved {
         from_user_id: String,
     },
+
+    /// Client asks server to forward profile (including PFP) to specific users. Server does not store; relay only.
+    ProfilePush {
+        to_user_ids: Vec<String>,
+        display_name: Option<String>,
+        real_name: Option<String>,
+        show_real_name: bool,
+        rev: i64,
+        #[serde(default)]
+        avatar_data_url: Option<String>,
+        #[serde(default)]
+        avatar_rev: Option<i64>,
+        #[serde(default)]
+        account_created_at: Option<String>,
+    },
+
+    /// Delivered to recipient of ProfilePush (from_user_id is the sender).
+    ProfilePushIncoming {
+        from_user_id: String,
+        display_name: Option<String>,
+        real_name: Option<String>,
+        show_real_name: bool,
+        rev: i64,
+        #[serde(default)]
+        avatar_data_url: Option<String>,
+        #[serde(default)]
+        avatar_rev: Option<i64>,
+        #[serde(default)]
+        account_created_at: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FriendRequestIncomingItem {
     pub from_user_id: String,
     pub from_display_name: Option<String>,
+    #[serde(default)]
+    pub from_account_created_at: Option<String>,
     pub created_at: String,
 }
 
@@ -364,6 +404,8 @@ pub struct FriendRequestIncomingItem {
 pub struct CodeRedemptionItem {
     pub redeemer_user_id: String,
     pub redeemer_display_name: String,
+    #[serde(default)]
+    pub redeemer_account_created_at: Option<String>,
     pub code: String,
     pub created_at: String,
 }
