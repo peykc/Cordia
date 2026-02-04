@@ -20,6 +20,10 @@ sysinfo = "0.31"
 
 axum = { version = "0.7", features = ["ws", "macros", "json"] }
 tower = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
 tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "limit", "set-header"] }
 governor = "0.6"
 tracing = "0.1"

@@ -4,6 +4,7 @@ pub mod presence;
 pub mod profiles;
 pub mod events;
 pub mod backends;
+pub mod friends;
 
 pub use signaling::SignalingState;
 pub use voice::VoiceState;
@@ -11,6 +12,7 @@ pub use presence::PresenceState;
 pub use profiles::ProfileState;
 pub use events::EventState;
 pub use backends::BackendState;
+pub use friends::FriendState;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +29,7 @@ pub struct AppState {
     pub profiles: Arc<RwLock<ProfileState>>,
     pub events: Arc<RwLock<EventState>>,
     pub backends: Arc<RwLock<BackendState>>,
+    pub friends: Arc<RwLock<FriendState>>,
     /// When the beacon process started (for uptime / status page).
     pub started_at: Instant,
     /// ISO8601 timestamp when the beacon started (for status).
@@ -41,6 +44,8 @@ pub struct AppState {
     pub connection_tracker: crate::security::SharedConnectionTracker,
     /// Per-IP WebSocket message rate limiter; None = no limit.
     pub ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
+    /// Shared secret for friend API HMAC auth (env SIGNALING_FRIEND_API_SECRET). None = friend API disabled.
+    pub friend_api_secret: Option<String>,
 }
 
 impl AppState {
@@ -48,6 +53,7 @@ impl AppState {
         downtime_secs: Option<u64>,
         connection_tracker: crate::security::SharedConnectionTracker,
         ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
+        friend_api_secret: Option<String>,
     ) -> Self {
         let now_utc = chrono::Utc::now();
         Self {
@@ -57,6 +63,7 @@ impl AppState {
             profiles: Arc::new(RwLock::new(ProfileState::new())),
             events: Arc::new(RwLock::new(EventState::new())),
             backends: Arc::new(RwLock::new(BackendState::new())),
+            friends: Arc::new(RwLock::new(FriendState::new())),
             started_at: Instant::now(),
             started_at_utc: now_utc.to_rfc3339(),
             downtime_secs,
@@ -64,6 +71,7 @@ impl AppState {
             cpu_percent_cache: Arc::new(Mutex::new(None)),
             connection_tracker,
             ws_rate_limiter,
+            friend_api_secret,
         }
     }
 

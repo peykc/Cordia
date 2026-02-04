@@ -256,6 +256,71 @@ pub enum SignalingMessage {
 
     /// Server pong response
     Pong,
+
+    // ============================
+    // Friends (requests + codes)
+    // ============================
+
+    /// Snapshot of all pending friend data for the connected user (sent after PresenceHello).
+    FriendPendingSnapshot {
+        pending_incoming: Vec<FriendRequestIncomingItem>,
+        pending_outgoing: Vec<String>,
+        pending_code_redemptions: Vec<CodeRedemptionItem>,
+    },
+
+    /// Someone sent you a friend request (also in snapshot).
+    FriendRequestIncoming {
+        from_user_id: String,
+        from_display_name: Option<String>,
+        created_at: String,
+    },
+
+    /// Your friend request was accepted (add to_user_id to local friends).
+    FriendRequestAccepted {
+        from_user_id: String,
+        to_user_id: String,
+    },
+
+    /// Your friend request was declined.
+    FriendRequestDeclined {
+        from_user_id: String,
+        to_user_id: String,
+    },
+
+    /// Someone used your friend code (also in snapshot).
+    FriendCodeRedemptionIncoming {
+        redeemer_user_id: String,
+        redeemer_display_name: String,
+        code: String,
+        created_at: String,
+    },
+
+    /// Code owner accepted you (add code_owner_id to local friends).
+    FriendCodeRedemptionAccepted {
+        code_owner_id: String,
+        redeemer_user_id: String,
+    },
+
+    /// Code owner declined you.
+    FriendCodeRedemptionDeclined {
+        code_owner_id: String,
+        redeemer_user_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendRequestIncomingItem {
+    pub from_user_id: String,
+    pub from_display_name: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeRedemptionItem {
+    pub redeemer_user_id: String,
+    pub redeemer_display_name: String,
+    pub code: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -610,8 +675,9 @@ async fn main() {
     }
 
     let downtime_secs = read_downtime_secs();
+    let friend_api_secret = std::env::var("SIGNALING_FRIEND_API_SECRET").ok();
     let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");
-    let state = Arc::new(AppState::new(downtime_secs, connection_tracker, ws_rate_limiter));
+    let state = Arc::new(AppState::new(downtime_secs, connection_tracker, ws_rate_limiter, friend_api_secret));
 
     // Optional Postgres durability (profiles first; others later)
     #[cfg(feature = "postgres")]
@@ -778,6 +844,14 @@ async fn main() {
         .route("/api/invites/:code", get(handlers::http::get_invite))
         .route("/api/invites/:code/redeem", axum::routing::post(handlers::http::redeem_invite))
         .route("/api/invites/:code/revoke", axum::routing::post(handlers::http::revoke_invite))
+        .route("/api/friends/requests", axum::routing::post(handlers::friends::send_friend_request))
+        .route("/api/friends/requests/accept", axum::routing::post(handlers::friends::accept_friend_request))
+        .route("/api/friends/requests/decline", axum::routing::post(handlers::friends::decline_friend_request))
+        .route("/api/friends/codes", axum::routing::post(handlers::friends::create_friend_code))
+        .route("/api/friends/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
+        .route("/api/friends/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
+        .route("/api/friends/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
+        .route("/api/friends/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
         .nest("/api/servers/:signing_pubkey", server_routes)
         .route("/health", get(|| async { "ok" }))
         .route("/", get(status_page_handler))

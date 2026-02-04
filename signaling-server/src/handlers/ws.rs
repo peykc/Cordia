@@ -187,6 +187,8 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState, client_ip
     }
 
     if let Some((user_id, spks)) = presence_removed {
+        state.friends.write().await.unregister_connection(&user_id, &conn_id);
+
         #[cfg(feature = "redis-backend")]
         if let Some(client) = redis_client.as_ref() {
             if let Err(e) = redis_presence_disconnect(client, &user_id, &spks).await {

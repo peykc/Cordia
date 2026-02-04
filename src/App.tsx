@@ -9,6 +9,7 @@ import { ProfileProvider } from './contexts/ProfileContext'
 import { RemoteProfilesProvider } from './contexts/RemoteProfilesContext'
 import { WebRTCProvider } from './contexts/WebRTCContext'
 import { ServersProvider } from './contexts/ServersContext'
+import { FriendsProvider } from './contexts/FriendsContext'
 import { SidebarWidthProvider, useSidebarWidth } from './contexts/SidebarWidthContext'
 import { ActiveServerProvider } from './contexts/ActiveServerContext'
 import TitleBar from './components/TitleBar'
@@ -74,6 +75,7 @@ function App() {
                   <ProfileProvider>
                     <WebRTCProvider>
                       <ServersProvider>
+                        <FriendsProvider>
                         <SidebarWidthProvider>
                           <ActiveServerProvider>
                             <ServerSyncBootstrap />
@@ -122,6 +124,7 @@ function App() {
                             </Router>
                           </ActiveServerProvider>
                         </SidebarWidthProvider>
+                        </FriendsProvider>
                       </ServersProvider>
                     </WebRTCProvider>
                   </ProfileProvider>

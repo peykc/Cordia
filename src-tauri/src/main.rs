@@ -289,7 +289,7 @@ fn export_full_identity_for_account(
         }
     }
 
-    // Get signaling server URL from account info
+    // Get signaling server URL and friends from account
     let account_manager = AccountManager::new()
         .map_err(|e| format!("Failed to access account manager: {}", e))?;
     let account_info = account_manager.get_account_info(&account_id)
@@ -301,8 +301,9 @@ fn export_full_identity_for_account(
             signaling_server_url: None,
         });
     let signaling_server_url = account_info.signaling_server_url;
+    let friends = account_manager.load_friends(&account_id).unwrap_or_default();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -347,7 +348,7 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
         }
     }
 
-    // Get signaling server URL from current account
+    // Get signaling server URL and friends from current account
     let account_manager = AccountManager::new()
         .map_err(|e| format!("Failed to access account manager: {}", e))?;
     let current_account_id = account_manager.get_current_account_id()
@@ -356,14 +357,15 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
     let account_info = account_manager.get_account_info(&current_account_id)
         .map_err(|e| format!("Failed to get account info: {}", e))?
         .unwrap_or_else(|| AccountInfo {
-            account_id: current_account_id,
+            account_id: current_account_id.clone(),
             display_name: String::new(),
             created_at: String::new(),
             signaling_server_url: None,
         });
     let signaling_server_url = account_info.signaling_server_url;
+    let friends = account_manager.load_friends(&current_account_id).unwrap_or_default();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -458,8 +460,8 @@ struct ImportResult {
 fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
     // NO GUARD: Bootstrap command - works without session for initial setup
     
-    // Import .roo format
-    let (identity, profile_json, server_data, signaling_server_url) = IdentityManager::import_key_format_static(&data)
+    // Import .key format
+    let (identity, profile_json, server_data, signaling_server_url, friends) = IdentityManager::import_key_format_static(&data)
         .map_err(|e| format!("Failed to import .key file: {}", e))?;
     
     // Create account container if it doesn't exist
@@ -581,6 +583,12 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
             return Err(format!("Server restoration incomplete: expected {} servers, got {}", 
                 server_count, restored_servers.len()));
         }
+    }
+
+    // Restore friends list to account
+    if !friends.is_empty() {
+        account_manager.save_friends(&user_id, &friends)
+            .map_err(|e| format!("Failed to save friends: {}", e))?;
     }
     
     // Return identity and profile data so frontend can restore profile to localStorage
@@ -1218,6 +1226,66 @@ fn delete_account(account_id: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to delete account: {}", e))
 }
 
+#[tauri::command]
+fn list_friends() -> Result<Vec<String>, String> {
+    let account_id = require_session()?;
+    let manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    manager.load_friends(&account_id)
+        .map_err(|e| format!("Failed to load friends: {}", e))
+}
+
+#[tauri::command]
+fn add_friend(user_id: String) -> Result<(), String> {
+    let account_id = require_session()?;
+    let manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    let mut friends = manager.load_friends(&account_id)
+        .map_err(|e| format!("Failed to load friends: {}", e))?;
+    if !friends.contains(&user_id) {
+        friends.push(user_id);
+        manager.save_friends(&account_id, &friends)
+            .map_err(|e| format!("Failed to save friends: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_friend(user_id: String) -> Result<(), String> {
+    let account_id = require_session()?;
+    let manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    let mut friends = manager.load_friends(&account_id)
+        .map_err(|e| format!("Failed to load friends: {}", e))?;
+    friends.retain(|id| id != &user_id);
+    manager.save_friends(&account_id, &friends)
+        .map_err(|e| format!("Failed to save friends: {}", e))
+}
+
+/// Returns headers for friend API auth (X-User-Id + X-Timestamp + HMAC X-Signature).
+/// Requires env FRIEND_API_SECRET to match the signaling server's SIGNALING_FRIEND_API_SECRET.
+#[tauri::command]
+fn get_friend_auth_headers() -> Result<std::collections::HashMap<String, String>, String> {
+    use hmac::Mac;
+
+    let user_id = require_session()?;
+    let secret = std::env::var("FRIEND_API_SECRET")
+        .map_err(|_| "Friend API secret not set (set FRIEND_API_SECRET to match server)")?;
+    let timestamp = chrono::Utc::now().timestamp();
+    let payload = format!("{}{}", user_id, timestamp);
+    let mut mac = <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .map_err(|e| format!("HMAC init failed: {}", e))?;
+    mac.update(payload.as_bytes());
+    let result = mac.finalize();
+    let signature = hex::encode(result.into_bytes());
+
+    let mut headers = std::collections::HashMap::new();
+    headers.insert("X-User-Id".to_string(), user_id);
+    headers.insert("X-Timestamp".to_string(), timestamp.to_string());
+    headers.insert("X-Signature".to_string(), signature);
+    Ok(headers)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1240,6 +1308,10 @@ fn main() {
             logout_account,
             get_current_account_id,
             delete_account,
+            list_friends,
+            add_friend,
+            remove_friend,
+            get_friend_auth_headers,
             register_key_file_association_command,
             // Audio settings commands
             load_audio_settings,

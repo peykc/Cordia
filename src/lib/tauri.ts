@@ -250,6 +250,26 @@ export async function deleteAccount(accountId: string): Promise<void> {
   return await invoke('delete_account', { accountId })
 }
 
+export async function listFriends(): Promise<string[]> {
+  return await invoke('list_friends')
+}
+
+export async function addFriend(userId: string): Promise<void> {
+  return await invoke('add_friend', { userId })
+}
+
+export async function removeFriend(userId: string): Promise<void> {
+  return await invoke('remove_friend', { userId })
+}
+
+/**
+ * Headers for friend API auth (X-User-Id + X-Timestamp + HMAC X-Signature).
+ * Requires FRIEND_API_SECRET env to match server's SIGNALING_FRIEND_API_SECRET.
+ */
+export async function getFriendAuthHeaders(): Promise<Record<string, string>> {
+  return await invoke<Record<string, string>>('get_friend_auth_headers')
+}
+
 export async function registerKeyFileAssociation(): Promise<void> {
   return await invoke('register_key_file_association_command')
 }

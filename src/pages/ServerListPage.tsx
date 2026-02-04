@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { Plus, Users, Trash2, Star, CornerDownLeft } from 'lucide-react'
+import { Plus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
@@ -15,6 +15,7 @@ import { useAccount } from '../contexts/AccountContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useServers } from '../contexts/ServersContext'
+import { useFriends } from '../contexts/FriendsContext'
 
 function ServerListPage() {
   const navigate = useNavigate()
@@ -24,7 +25,26 @@ function ServerListPage() {
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
-  const { servers, refreshServers } = useServers()
+  const { servers, refreshServers, getServerById } = useServers()
+  const voicePresence = useVoicePresence()
+  const {
+    friends,
+    removeFriend,
+    isFriend,
+    hasPendingOutgoing,
+    sendFriendRequest,
+    pendingIncoming,
+    pendingOutgoing,
+    redemptions,
+    acceptFriendRequest,
+    declineFriendRequest,
+    acceptCodeRedemption,
+    declineCodeRedemption,
+    createFriendCode,
+    revokeFriendCode,
+    redeemFriendCode,
+    myFriendCode,
+  } = useFriends()
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null)
@@ -38,6 +58,11 @@ function ServerListPage() {
   const [favoriteServerIds, setFavoriteServerIds] = useState<Set<string>>(new Set())
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
+  const [showFriendCodePopover, setShowFriendCodePopover] = useState(false)
+  const [friendCodeInput, setFriendCodeInput] = useState('')
+  const [friendCodeError, setFriendCodeError] = useState('')
+  const [isRedeemingCode, setIsRedeemingCode] = useState(false)
+  const [isCreatingCode, setIsCreatingCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
   const [exitingServerId, setExitingServerId] = useState<string | null>(null)
   const exitIconsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -395,6 +420,44 @@ function ServerListPage() {
     // Stable-ish: fall back to name for deterministic order
     return a.name.localeCompare(b.name)
   })
+
+  const friendAndPendingIds = useMemo(() => {
+    const set = new Set(friends)
+    pendingOutgoing.forEach((id) => set.add(id))
+    return Array.from(set)
+  }, [friends, pendingOutgoing])
+
+  const sortedFriendsWithPresence = useMemo(() => {
+    return friendAndPendingIds
+      .map(userId => {
+        let bestLevel: PresenceLevel = 'offline'
+        let activeServer: Server | null = null
+        for (const server of servers) {
+          const inVoice = voicePresence.isUserInVoice(server.signing_pubkey, userId)
+          const level = getLevel(server.signing_pubkey, userId, inVoice)
+          if (PRESENCE_ORDER[level] < PRESENCE_ORDER[bestLevel]) {
+            bestLevel = level
+            if (level === 'active' || level === 'in_call') activeServer = server
+          } else if ((level === 'active' || level === 'in_call') && !activeServer) {
+            activeServer = server
+          }
+        }
+        const displayName = remoteProfiles.getProfile(userId)?.display_name ?? (() => {
+          for (const s of servers) {
+            const m = s.members.find(mm => mm.user_id === userId)
+            if (m?.display_name) return m.display_name
+          }
+          return 'Unknown'
+        })()
+        return { userId, bestLevel, activeServer, displayName }
+      })
+      .sort((a, b) => {
+        const oa = PRESENCE_ORDER[a.bestLevel]
+        const ob = PRESENCE_ORDER[b.bestLevel]
+        if (oa !== ob) return oa - ob
+        return a.displayName.localeCompare(b.displayName)
+      })
+  }, [friendAndPendingIds, servers, getLevel, voicePresence, remoteProfiles])
 
   const handleCreateServer = async () => {
     if (!identity || !serverName.trim()) return
@@ -759,19 +822,302 @@ function ServerListPage() {
                 )}
               </div>
             </section>
-
-            {/* Right: Neighbors (placeholder) */}
-            <aside className="hidden md:block md:col-span-3 h-full min-h-0">
-              <div className="border-2 border-border bg-card/50 rounded-lg p-4">
-                <div className="space-y-2">
+            {/* Right: Friends */}
+            <aside className="hidden md:block md:col-span-3 h-full min-h-0 flex flex-col">
+              <div className="border-2 border-border bg-card/50 rounded-lg p-4 flex flex-col min-h-0 h-full">
+                <div className="flex items-center justify-between shrink-0">
                   <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground">Friends</h3>
-                  <p className="text-sm font-light leading-relaxed text-muted-foreground">
-                    Friends list is coming soon. This panel will show who’s online and what server they’re in.
+                  <div className="relative">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => setShowFriendCodePopover((v) => !v)}
+                      title="Friend code"
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    {showFriendCodePopover && (
+                      <div className="absolute right-0 top-full mt-1 z-50 w-72 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
+                        {myFriendCode ? (
+                          <>
+                            <p className="text-xs text-muted-foreground font-light">Your code</p>
+                            <div className="flex items-center gap-2">
+                              <code className="flex-1 px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider truncate">
+                                {myFriendCode}
+                              </code>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-8 w-8 shrink-0"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(myFriendCode ?? '')
+                                }}
+                                title="Copy"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                                onClick={async () => {
+                                  await revokeFriendCode()
+                                }}
+                                title="Revoke"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full justify-start gap-2 font-light"
+                            disabled={isCreatingCode}
+                            onClick={async () => {
+                              setIsCreatingCode(true)
+                              try {
+                                await createFriendCode()
+                              } catch (e) {
+                                console.warn(e)
+                              } finally {
+                                setIsCreatingCode(false)
+                              }
+                            }}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            {isCreatingCode ? 'Creating...' : 'Create friend code'}
+                          </Button>
+                        )}
+                        <div className="border-t border-border pt-2">
+                          <p className="text-xs text-muted-foreground font-light mb-1">Add by code</p>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={friendCodeInput}
+                              onChange={(e) => {
+                                setFriendCodeInput(e.target.value.toUpperCase())
+                                setFriendCodeError('')
+                              }}
+                              placeholder="XXXX-XXXX"
+                              className="flex-1 px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
+                              spellCheck={false}
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isRedeemingCode || !friendCodeInput.trim()}
+                              onClick={async () => {
+                                setFriendCodeError('')
+                                setIsRedeemingCode(true)
+                                try {
+                                  await redeemFriendCode(
+                                    friendCodeInput.trim(),
+                                    profile?.display_name ?? identity?.display_name ?? 'Unknown'
+                                  )
+                                  setFriendCodeInput('')
+                                } catch (e) {
+                                  setFriendCodeError(e instanceof Error ? e.message : 'Failed')
+                                } finally {
+                                  setIsRedeemingCode(false)
+                                }
+                              }}
+                            >
+                              {isRedeemingCode ? '...' : 'Add'}
+                            </Button>
+                          </div>
+                          {friendCodeError && (
+                            <p className="text-xs text-destructive mt-1">{friendCodeError}</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => setShowFriendCodePopover(false)}
+                        >
+                          Close
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+                  {pendingIncoming.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
+                        Incoming
+                      </p>
+                      <div className="space-y-1">
+                        {pendingIncoming.map((r) => (
+                          <div
+                            key={r.from_user_id}
+                            className="flex items-center gap-2 py-2 px-2 rounded-md bg-accent/20 min-w-0"
+                          >
+                            <div
+                              className="h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
+                              style={avatarStyleForUser(r.from_user_id)}
+                            >
+                              <span className="text-[10px] font-mono tracking-wider">
+                                {getInitials(remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? '?')}
+                              </span>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-light truncate">
+                                {remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? 'Unknown'}
+                              </p>
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-green-600"
+                                onClick={() => acceptFriendRequest(r.from_user_id)}
+                                title="Accept"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive"
+                                onClick={() => declineFriendRequest(r.from_user_id)}
+                                title="Decline"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {redemptions.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
+                        Code used
+                      </p>
+                      <div className="space-y-1">
+                        {redemptions.map((r) => (
+                          <div
+                            key={r.redeemer_user_id}
+                            className="flex items-center gap-2 py-2 px-2 rounded-md bg-accent/20 min-w-0"
+                          >
+                            <div
+                              className="h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
+                              style={avatarStyleForUser(r.redeemer_user_id)}
+                            >
+                              <span className="text-[10px] font-mono tracking-wider">
+                                {getInitials(r.redeemer_display_name)}
+                              </span>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-light truncate">{r.redeemer_display_name}</p>
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-green-600"
+                                onClick={() => acceptCodeRedemption(r.redeemer_user_id)}
+                                title="Accept"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive"
+                                onClick={() => declineCodeRedemption(r.redeemer_user_id)}
+                                title="Decline"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {friends.length === 0 && pendingIncoming.length === 0 && redemptions.length === 0 ? (
+                    <p className="text-sm font-light leading-relaxed text-muted-foreground">
+                      Add friends from server members: open their profile and choose Send friend request. Or create a
+                      friend code to share.
+                    </p>
+                  ) : (
+                    <div className="space-y-1">
+                      {pendingOutgoing.length > 0 && (
+                        <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
+                          Pending
+                        </p>
+                      )}
+                      {sortedFriendsWithPresence.map(({ userId, bestLevel, activeServer, displayName }) => {
+                        const rp = remoteProfiles.getProfile(userId)
+                        const secondaryName = rp?.show_secondary ? rp.secondary_name : null
+                        const canJoin = activeServer && getServerById(activeServer.id)
+                        const pending = hasPendingOutgoing(userId)
+                        return (
+                          <div
+                            key={userId}
+                            className="flex items-center gap-2 py-2 px-2 rounded-md hover:bg-accent/30 min-w-0"
+                          >
+                            <button
+                              type="button"
+                              className="relative h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none"
+                              style={avatarStyleForUser(userId)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setProfileCardUserId(userId)
+                                setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                              }}
+                              aria-label={displayName}
+                            >
+                              <span className="text-[10px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                              <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
+                                {bestLevel === 'in_call' ? (
+                                  <div className="h-2 w-2 bg-blue-500 ring-2 ring-background rounded-full" />
+                                ) : bestLevel === 'active' ? (
+                                  <div className="h-2 w-2 bg-green-500 ring-2 ring-background rounded-full" />
+                                ) : bestLevel === 'online' ? (
+                                  <div className="h-2 w-2 bg-amber-500 ring-2 ring-background rounded-full" />
+                                ) : (
+                                  <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background rounded-full" />
+                                )}
+                              </div>
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-light truncate">{displayName}</p>
+                              {pending ? (
+                                <p className="text-xs text-muted-foreground truncate">Pending</p>
+                              ) : activeServer ? (
+                                <p className="text-xs text-muted-foreground truncate">{activeServer.name}</p>
+                              ) : secondaryName ? (
+                                <p className="text-xs text-muted-foreground truncate">{secondaryName}</p>
+                              ) : null}
+                            </div>
+                            {canJoin && !pending && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="shrink-0 h-8 px-2 text-xs font-light"
+                                onClick={() => navigate(`/home/${activeServer!.id}`, { state: { server: activeServer } })}
+                                title={'Join ' + activeServer!.name}
+                              >
+                                <LogIn className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                {(friends.length > 0 || pendingIncoming.length > 0) && (
+                  <p className="mt-2 text-xs font-mono text-muted-foreground shrink-0">
+                    {sortedFriendsWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
                   </p>
-                </div>
-                <div className="mt-4 border border-border/60 bg-background/40 rounded-md p-3">
-                  <p className="text-xs font-mono text-muted-foreground">0 online</p>
-                </div>
+                )}
               </div>
             </aside>
           </div>
@@ -898,6 +1244,15 @@ function ServerListPage() {
                 : null
             : null
         }
+        isSelf={identity?.user_id === profileCardUserId}
+        isFriend={profileCardUserId ? isFriend(profileCardUserId) : false}
+        isPendingOutgoing={profileCardUserId ? hasPendingOutgoing(profileCardUserId) : false}
+        onSendFriendRequest={
+          profileCardUserId && !isFriend(profileCardUserId) && !hasPendingOutgoing(profileCardUserId)
+            ? () => sendFriendRequest(profileCardUserId, profile?.display_name ?? identity?.display_name)
+            : undefined
+        }
+        onRemoveFriend={profileCardUserId ? () => removeFriend(profileCardUserId) : undefined}
       />
     </div>
   )

@@ -310,6 +310,74 @@ export function ServerSyncBootstrap() {
             }
             return
           }
+
+          // Friend-related messages: dispatch for FriendsContext
+          if (msg.type === 'FriendPendingSnapshot') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-pending-snapshot', {
+                detail: {
+                  pending_incoming: msg.pending_incoming ?? [],
+                  pending_outgoing: msg.pending_outgoing ?? [],
+                  pending_code_redemptions: msg.pending_code_redemptions ?? [],
+                },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendRequestIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-request-incoming', {
+                detail: {
+                  from_user_id: msg.from_user_id,
+                  from_display_name: msg.from_display_name ?? null,
+                },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendRequestAccepted') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-request-accepted', {
+                detail: { from_user_id: msg.from_user_id, to_user_id: msg.to_user_id },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendRequestDeclined') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-request-declined', {
+                detail: { from_user_id: msg.from_user_id, to_user_id: msg.to_user_id },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendCodeRedemptionIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-code-redemption-incoming', {
+                detail: {
+                  redeemer_user_id: msg.redeemer_user_id,
+                  redeemer_display_name: msg.redeemer_display_name ?? '',
+                },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendCodeRedemptionAccepted') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-code-redemption-accepted', {
+                detail: { code_owner_id: msg.code_owner_id, redeemer_user_id: msg.redeemer_user_id },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendCodeRedemptionDeclined') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-code-redemption-declined', {
+                detail: { code_owner_id: msg.code_owner_id, redeemer_user_id: msg.redeemer_user_id },
+              })
+            )
+            return
+          }
         } catch (e) {
           // Ignore malformed/unrelated messages
         }

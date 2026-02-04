@@ -274,6 +274,27 @@ impl AccountManager {
     pub fn get_base_data_dir(&self) -> &PathBuf {
         &self.data_dir
     }
+
+    /// Load friends list for an account (user_id strings). Returns empty vec if file missing.
+    pub fn load_friends(&self, account_id: &str) -> Result<Vec<String>, AccountError> {
+        let path = self.get_account_dir(account_id).join("friends.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(path)?;
+        let list: Vec<String> = serde_json::from_str(&content)?;
+        Ok(list)
+    }
+
+    /// Save friends list for an account.
+    pub fn save_friends(&self, account_id: &str, friends: &[String]) -> Result<(), AccountError> {
+        let account_dir = self.get_account_dir(account_id);
+        fs::create_dir_all(&account_dir)?;
+        let path = account_dir.join("friends.json");
+        let json = serde_json::to_string_pretty(friends)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

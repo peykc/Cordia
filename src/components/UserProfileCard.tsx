@@ -1,4 +1,6 @@
 import { useEffect, useMemo } from 'react'
+import { UserPlus, UserMinus, Clock } from 'lucide-react'
+import { Button } from './ui/button'
 
 export function UserProfileCard({
   open,
@@ -9,6 +11,11 @@ export function UserProfileCard({
   initials,
   displayName,
   secondaryName,
+  isSelf = false,
+  isFriend = false,
+  isPendingOutgoing = false,
+  onSendFriendRequest,
+  onRemoveFriend,
 }: {
   open: boolean
   anchorRect: DOMRect | null
@@ -18,6 +25,11 @@ export function UserProfileCard({
   initials: string
   displayName: string
   secondaryName: string | null
+  isSelf?: boolean
+  isFriend?: boolean
+  isPendingOutgoing?: boolean
+  onSendFriendRequest?: () => void
+  onRemoveFriend?: () => void
 }) {
   useEffect(() => {
     if (!open) return
@@ -73,6 +85,42 @@ export function UserProfileCard({
               ) : null}
             </div>
           </div>
+          {!isSelf && (onSendFriendRequest || onRemoveFriend || isPendingOutgoing) && (
+            <div className="pt-2 border-t border-border">
+              {isFriend && onRemoveFriend ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start gap-2 font-light text-muted-foreground"
+                  onClick={() => {
+                    onRemoveFriend()
+                    onClose()
+                  }}
+                >
+                  <UserMinus className="h-3.5 w-3.5" />
+                  Remove from friends
+                </Button>
+              ) : isPendingOutgoing ? (
+                <div className="flex items-center gap-2 px-3 py-2 text-sm font-light text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5 shrink-0" />
+                  Pending
+                </div>
+              ) : onSendFriendRequest ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start gap-2 font-light"
+                  onClick={() => {
+                    onSendFriendRequest()
+                    onClose()
+                  }}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Send friend request
+                </Button>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
     </>

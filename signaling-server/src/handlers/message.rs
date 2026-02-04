@@ -3,6 +3,7 @@ use log::{info, warn};
 use crate::{
     SignalingMessage, ConnId, ServerId, SigningPubkey, WebSocketSender,
     ProfileRecord, ProfileSnapshotRecord,
+    FriendRequestIncomingItem, CodeRedemptionItem,
     state::AppState,
     state::presence::PresenceUserStatus,
 };
@@ -126,6 +127,51 @@ pub async fn handle_message(
             // Broadcast this user's presence to relevant houses
             for spk in affected_spks {
                 state.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone()).await;
+            }
+
+            // Register this connection for friend delivery and send pending snapshot
+            {
+                let mut friends = state.friends.write().await;
+                friends.register_connection(&user_id, conn_id.clone(), sender.clone());
+                let pending_incoming: Vec<FriendRequestIncomingItem> = friends
+                    .friend_requests
+                    .iter()
+                    .filter(|((_, to), _)| to == &user_id)
+                    .map(|(_, req)| FriendRequestIncomingItem {
+                        from_user_id: req.from_user_id.clone(),
+                        from_display_name: req.from_display_name.clone(),
+                        created_at: req.created_at.to_rfc3339(),
+                    })
+                    .collect();
+                let pending_outgoing: Vec<String> = friends
+                    .friend_requests
+                    .iter()
+                    .filter(|((from, _), _)| from == &user_id)
+                    .map(|((_, to), _)| to.clone())
+                    .collect();
+                let pending_code_redemptions: Vec<CodeRedemptionItem> = friends
+                    .code_redemptions
+                    .get(&user_id)
+                    .map(|v| {
+                        v.iter()
+                            .map(|r| CodeRedemptionItem {
+                                redeemer_user_id: r.redeemer_user_id.clone(),
+                                redeemer_display_name: r.redeemer_display_name.clone(),
+                                code: r.code.clone(),
+                                created_at: r.created_at.to_rfc3339(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                drop(friends);
+                let snap = SignalingMessage::FriendPendingSnapshot {
+                    pending_incoming,
+                    pending_outgoing,
+                    pending_code_redemptions,
+                };
+                if let Ok(json) = serde_json::to_string(&snap) {
+                    let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
+                }
             }
 
             Ok(())
