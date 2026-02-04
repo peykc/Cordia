@@ -201,6 +201,7 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState, client_ip
                 .broadcast_presence_update(&spk, &user_id, false, None)
                 .await;
         }
+        state.broadcast_friend_presence_update(&user_id, false, None).await;
     }
 
     send_task.abort();

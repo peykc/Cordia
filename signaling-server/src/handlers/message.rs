@@ -6,6 +6,7 @@ use crate::{
     FriendRequestIncomingItem, CodeRedemptionItem,
     state::AppState,
     state::presence::PresenceUserStatus,
+    state::signaling::{FRIENDS_PEER_PREFIX, FRIENDS_SIGNING_PUBKEY},
 };
 
 type SharedState = Arc<AppState>;
@@ -46,7 +47,7 @@ pub async fn handle_message(
 
             Ok(())
         }
-        SignalingMessage::PresenceHello { user_id, signing_pubkeys, active_signing_pubkey } => {
+        SignalingMessage::PresenceHello { user_id, signing_pubkeys, active_signing_pubkey, friend_user_ids } => {
             let (affected_spks, redis_client, redis_ttl, local_snaps) = {
                 let mut presence = state.presence.write().await;
                 // Upsert presence
@@ -127,6 +128,53 @@ pub async fn handle_message(
             // Broadcast this user's presence to relevant houses
             for spk in affected_spks {
                 state.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone()).await;
+            }
+
+            // Friend-scoped presence: subscribe this connection to friend_user_ids and broadcast this user to friends
+            const MAX_FRIEND_IDS: usize = 1000;
+            let friend_user_ids: Vec<String> = friend_user_ids.into_iter().take(MAX_FRIEND_IDS).collect();
+            if !friend_user_ids.is_empty() {
+                let friend_snap: Vec<PresenceUserStatus> = {
+                    let presence = state.presence.read().await;
+                    friend_user_ids
+                        .iter()
+                        .filter_map(|uid| {
+                            presence.presence_users.get(uid).map(|u| PresenceUserStatus {
+                                user_id: uid.clone(),
+                                active_signing_pubkey: u.active_signing_pubkey.clone(),
+                            })
+                        })
+                        .collect()
+                };
+                let friend_ids_set: std::collections::HashSet<String> = friend_user_ids.iter().cloned().collect();
+                let mut signaling = state.signaling.write().await;
+                let friends_peer_id = format!("{}{}", FRIENDS_PEER_PREFIX, conn_id);
+                // If this conn already had a friend subscription, remove it before re-adding (e.g. friends list changed)
+                if let Some(old_ids) = signaling.conn_friend_ids.remove(conn_id) {
+                    for uid in &old_ids {
+                        if let Some(subs) = signaling.friend_presence_subscribers.get_mut(uid) {
+                            subs.remove(&friends_peer_id);
+                            if subs.is_empty() {
+                                signaling.friend_presence_subscribers.remove(uid);
+                            }
+                        }
+                    }
+                }
+                signaling.peer_senders.insert(friends_peer_id.clone(), sender.clone());
+                signaling.conn_peers.entry(conn_id.clone()).or_default().insert(friends_peer_id.clone());
+                signaling.conn_friend_ids.insert(conn_id.clone(), friend_ids_set.clone());
+                for uid in &friend_ids_set {
+                    signaling.friend_presence_subscribers.entry(uid.clone()).or_default().insert(friends_peer_id.clone());
+                }
+                drop(signaling);
+                let snap = SignalingMessage::PresenceSnapshot {
+                    signing_pubkey: FRIENDS_SIGNING_PUBKEY.to_string(),
+                    users: friend_snap,
+                };
+                if let Ok(json) = serde_json::to_string(&snap) {
+                    let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
+                }
+                state.broadcast_friend_presence_update(&user_id, true, active_signing_pubkey.clone()).await;
             }
 
             // Register this connection for friend delivery and send pending snapshot
@@ -211,6 +259,7 @@ pub async fn handle_message(
                     state.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone()).await;
                 }
             }
+            state.broadcast_friend_presence_update(&user_id, true, active_signing_pubkey.clone()).await;
             Ok(())
         }
         SignalingMessage::ProfileAnnounce { user_id, display_name, real_name, show_real_name, rev, signing_pubkeys } => {
@@ -236,11 +285,12 @@ pub async fn handle_message(
                 let rec = profiles.profiles.get(&user_id).cloned();
                 drop(profiles);
                 
-                // Broadcast profile updates
+                // Broadcast profile updates to servers and to friends
                 if let Some(ref r) = rec {
                     for spk in signing_pubkeys.iter() {
                         state.broadcast_profile_update(spk, &user_id, r).await;
                     }
+                    state.broadcast_profile_update_to_friends(&user_id, r).await;
                 }
 
                 // LOCK BOUNDARY: Extract data here, unlock before IO

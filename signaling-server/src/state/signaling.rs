@@ -2,6 +2,11 @@ use std::collections::{HashMap, HashSet};
 use crate::{PeerId, ServerId, SigningPubkey, WebSocketSender, ConnId, PeerConnection, EncryptedServerHint, SignalingMessage};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Synthetic peer_id prefix for friend-scoped presence subscriptions (one per connection).
+pub const FRIENDS_PEER_PREFIX: &str = "friends:";
+/// Signing pubkey value used for friend-scoped presence/profile messages (client merges by user_id).
+pub const FRIENDS_SIGNING_PUBKEY: &str = "_friends";
+
 /// WebSocket signaling state (peer ↔ peer)
 pub struct SignalingState {
     /// Map of peer_id -> PeerConnection
@@ -14,6 +19,10 @@ pub struct SignalingState {
     pub peer_senders: HashMap<PeerId, WebSocketSender>,
     /// Map of conn_id -> peer_ids registered on that websocket connection (allows correct cleanup)
     pub conn_peers: HashMap<ConnId, HashSet<PeerId>>,
+    /// Friend presence: conn_id -> set of user_ids this connection cares about (for cleanup on disconnect)
+    pub conn_friend_ids: HashMap<ConnId, HashSet<String>>,
+    /// Friend presence: target user_id -> set of peer_ids (friends:conn_id) that want this user's presence
+    pub friend_presence_subscribers: HashMap<String, HashSet<PeerId>>,
 }
 
 impl SignalingState {
@@ -24,6 +33,8 @@ impl SignalingState {
             signing_servers: HashMap::new(),
             peer_senders: HashMap::new(),
             conn_peers: HashMap::new(),
+            conn_friend_ids: HashMap::new(),
+            friend_presence_subscribers: HashMap::new(),
         }
     }
 
@@ -94,7 +105,20 @@ impl SignalingState {
     }
 
     pub fn unregister_peer(&mut self, peer_id: &PeerId) {
-        if let Some(conn) = self.peers.remove(peer_id) {
+        // Friend-scoped synthetic peer: clean up conn_friend_ids and friend_presence_subscribers
+        if peer_id.starts_with(FRIENDS_PEER_PREFIX) {
+            let conn_id = peer_id.strip_prefix(FRIENDS_PEER_PREFIX).unwrap_or(peer_id);
+            if let Some(user_ids) = self.conn_friend_ids.remove(conn_id) {
+                for uid in &user_ids {
+                    if let Some(subs) = self.friend_presence_subscribers.get_mut(uid) {
+                        subs.remove(peer_id);
+                        if subs.is_empty() {
+                            self.friend_presence_subscribers.remove(uid);
+                        }
+                    }
+                }
+            }
+        } else if let Some(conn) = self.peers.remove(peer_id) {
             // Remove from server list
             if let Some(peers_in_server) = self.servers.get_mut(&conn.server_id) {
                 peers_in_server.remove(peer_id);

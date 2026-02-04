@@ -137,11 +137,14 @@ pub enum SignalingMessage {
     // ============================
 
     /// Client declares it is online for a set of servers and optionally which server is currently active.
+    /// friend_user_ids: user_ids this connection cares about for presence (friends list); they get this user's updates.
     PresenceHello {
         user_id: String,
         signing_pubkeys: Vec<SigningPubkey>,
         #[serde(default)]
         active_signing_pubkey: Option<SigningPubkey>,
+        #[serde(default)]
+        friend_user_ids: Vec<String>,
     },
 
     /// Client updates which server is currently active (or clears it to indicate "home").

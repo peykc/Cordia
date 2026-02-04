@@ -20,6 +20,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::{SigningPubkey, SignalingMessage, ProfileRecord, PeerId, ServerId, WebSocketSender};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::state::signaling::FRIENDS_SIGNING_PUBKEY;
+
 /// Main application state wrapping all subsystems.
 /// Read-heavy state uses RwLock so multiple readers don't block each other; caches use Mutex.
 pub struct AppState {
@@ -190,6 +192,58 @@ impl AppState {
         };
 
         // Send to all peer connections subscribed to this house (same mechanism as presence updates)
+        for peer_id in peers {
+            if let Some(sender) = signaling.peer_senders.get(peer_id) {
+                let _ = sender.send(Message::Text(json.clone()));
+            }
+        }
+    }
+
+    /// Broadcast a presence update to all peers that have this user_id in their friend list.
+    pub async fn broadcast_friend_presence_update(&self, user_id: &str, online: bool, active: Option<SigningPubkey>) {
+        let signaling = self.signaling.read().await;
+        let Some(peers) = signaling.friend_presence_subscribers.get(user_id) else {
+            return;
+        };
+
+        let msg = SignalingMessage::PresenceUpdate {
+            signing_pubkey: FRIENDS_SIGNING_PUBKEY.to_string(),
+            user_id: user_id.to_string(),
+            online,
+            active_signing_pubkey: active,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
+        for peer_id in peers {
+            if let Some(sender) = signaling.peer_senders.get(peer_id) {
+                let _ = sender.send(Message::Text(json.clone()));
+            }
+        }
+    }
+
+    /// Broadcast a profile update to all peers that have this user_id in their friend list.
+    pub async fn broadcast_profile_update_to_friends(&self, user_id: &str, rec: &ProfileRecord) {
+        let signaling = self.signaling.read().await;
+        let Some(peers) = signaling.friend_presence_subscribers.get(user_id) else {
+            return;
+        };
+
+        let msg = SignalingMessage::ProfileUpdate {
+            signing_pubkey: FRIENDS_SIGNING_PUBKEY.to_string(),
+            user_id: user_id.to_string(),
+            display_name: rec.display_name.clone(),
+            real_name: rec.real_name.clone(),
+            show_real_name: rec.show_real_name,
+            rev: rec.rev,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
         for peer_id in peers {
             if let Some(sender) = signaling.peer_senders.get(peer_id) {
                 let _ = sender.send(Message::Text(json.clone()));

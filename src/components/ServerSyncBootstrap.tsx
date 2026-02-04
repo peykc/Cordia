@@ -6,7 +6,7 @@ import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSignaling } from '../contexts/SignalingContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
-import { fetchAndImportServerHintOpaque, listServers } from '../lib/tauri'
+import { fetchAndImportServerHintOpaque, listServers, listFriends } from '../lib/tauri'
 import { requestMicrophonePermission } from '../lib/audio'
 
 const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug ingest removed */ }
@@ -140,6 +140,27 @@ export function ServerSyncBootstrap() {
         }
       }
 
+      const FRIENDS_SIGNING_PUBKEY = '_friends'
+      const MAX_FRIEND_IDS = 100
+
+      const sendProfileHelloForFriends = async () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        try {
+          const friends = await listFriends()
+          const userIds = Array.from(new Set(friends)).slice(0, MAX_FRIEND_IDS)
+          if (userIds.length === 0) return
+          ws.send(
+            JSON.stringify({
+              type: 'ProfileHello',
+              signing_pubkey: FRIENDS_SIGNING_PUBKEY,
+              user_ids: userIds,
+            })
+          )
+        } catch {
+          // ignore
+        }
+      }
+
       const sendPresenceHello = async (fromLabel: string) => {
         if (!identity?.user_id) return
         if (ws.readyState !== WebSocket.OPEN) return
@@ -147,16 +168,19 @@ export function ServerSyncBootstrap() {
         DEBUG_LOG({ location: 'ServerSyncBootstrap.tsx:sendPresenceHello', message: 'sendPresenceHello invoked', data: { from: fromLabel, readyState: ws.readyState }, hypothesisId: 'H2a' })
         // #endregion
         try {
-          const servers = await listServers()
+          const [servers, friends] = await Promise.all([listServers(), listFriends()])
           const signingPubkeys = servers.map(s => s.signing_pubkey)
+          const friend_user_ids = Array.from(new Set(friends)).slice(0, MAX_FRIEND_IDS)
           ws.send(
             JSON.stringify({
               type: 'PresenceHello',
               user_id: identity.user_id,
               signing_pubkeys: signingPubkeys,
               active_signing_pubkey: activeSigningPubkeyRef.current,
+              friend_user_ids,
             })
           )
+          await sendProfileHelloForFriends()
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to send presence hello:', e)
         }
@@ -181,7 +205,7 @@ export function ServerSyncBootstrap() {
           }
           subscribedSigningPubkeysRef.current = nextSet
           // Presence set may have changed (new server joined/imported)
-          sendPresenceHello('subscribeMissingServers')
+          await sendPresenceHello('subscribeMissingServers')
           sendProfileAnnounce()
           sendProfileHello()
         } catch (e) {
@@ -446,6 +470,10 @@ export function ServerSyncBootstrap() {
 
       window.addEventListener('cordia:server-removed', onServerRemoved)
       window.addEventListener('cordia:servers-updated', onServersUpdated)
+      const onFriendsUpdated = () => {
+        sendPresenceHello('friends-updated').catch(() => {})
+      }
+      window.addEventListener('cordia:friends-updated', onFriendsUpdated)
       const onProfileUpdated = (ev: Event) => {
         const detail = (ev as CustomEvent<any>).detail
         if (detail && typeof detail === 'object') {
@@ -469,6 +497,7 @@ export function ServerSyncBootstrap() {
       const cleanupListeners = () => {
         window.removeEventListener('cordia:server-removed', onServerRemoved)
         window.removeEventListener('cordia:servers-updated', onServersUpdated)
+        window.removeEventListener('cordia:friends-updated', onFriendsUpdated)
         window.removeEventListener('cordia:profile-updated', onProfileUpdated as any)
         window.removeEventListener('cordia:active-server-changed', onActiveServerChanged as any)
       }

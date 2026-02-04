@@ -165,6 +165,7 @@ function ServerListPage() {
     }
   }
 
+  const FRIENDS_PRESENCE_KEY = '_friends'
   const PRESENCE_ORDER: Record<PresenceLevel, number> = {
     in_call: 0,
     active: 1,
@@ -472,6 +473,11 @@ function ServerListPage() {
           } else if ((level === 'active' || level === 'in_call') && !activeServer) {
             activeServer = server
           }
+        }
+        const friendsLevel = getLevel(FRIENDS_PRESENCE_KEY, userId, false)
+        if (PRESENCE_ORDER[friendsLevel] < PRESENCE_ORDER[bestLevel]) {
+          bestLevel = friendsLevel
+          activeServer = null
         }
         const displayName = remoteProfiles.getProfile(userId)?.display_name ?? (() => {
           for (const s of servers) {

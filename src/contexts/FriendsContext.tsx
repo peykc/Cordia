@@ -81,6 +81,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const addFriend = useCallback(async (userId: string) => {
     await addFriendTauri(userId)
     await refreshFriends()
+    window.dispatchEvent(new Event('cordia:friends-updated'))
   }, [refreshFriends])
 
   const removeFriend = useCallback(
@@ -94,6 +95,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       }
       await removeFriendTauri(userId)
       await refreshFriends()
+      window.dispatchEvent(new Event('cordia:friends-updated'))
     },
     [refreshFriends, signalingUrl]
   )
