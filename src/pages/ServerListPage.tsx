@@ -1052,70 +1052,89 @@ function ServerListPage() {
                       friend code to share.
                     </p>
                   ) : (
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       {pendingOutgoing.length > 0 && (
                         <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
                           Pending
                         </p>
                       )}
-                      {sortedFriendsWithPresence.map(({ userId, bestLevel, activeServer, displayName }) => {
-                        const rp = remoteProfiles.getProfile(userId)
-                        const secondaryName = rp?.show_secondary ? rp.secondary_name : null
-                        const canJoin = activeServer && getServerById(activeServer.id)
-                        const pending = hasPendingOutgoing(userId)
-                        return (
-                          <div
-                            key={userId}
-                            className={`flex items-center gap-2 py-2 px-2 rounded-md hover:bg-accent/30 min-w-0 ${pending ? 'opacity-75' : ''}`}
-                          >
-                            <button
-                              type="button"
-                              className={`relative h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none ${pending ? 'grayscale' : ''}`}
-                              style={avatarStyleForUser(userId)}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setProfileCardUserId(userId)
-                                setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
-                              }}
-                              aria-label={displayName}
+                      {(() => {
+                        const offlineStartIndex = sortedFriendsWithPresence.findIndex((f) => f.bestLevel === 'offline')
+                        const hasOfflineSep = offlineStartIndex > 0 && offlineStartIndex < sortedFriendsWithPresence.length
+                        const onlineFriends = hasOfflineSep
+                          ? sortedFriendsWithPresence.slice(0, offlineStartIndex)
+                          : sortedFriendsWithPresence
+                        const offlineFriends = hasOfflineSep ? sortedFriendsWithPresence.slice(offlineStartIndex) : []
+                        const renderRow = ({ userId, bestLevel, activeServer, displayName }: { userId: string; bestLevel: PresenceLevel; activeServer: Server | null; displayName: string }) => {
+                          const rp = remoteProfiles.getProfile(userId)
+                          const secondaryName = rp?.show_secondary ? rp.secondary_name : null
+                          const canJoin = activeServer && getServerById(activeServer.id)
+                          const pending = hasPendingOutgoing(userId)
+                          return (
+                            <div
+                              key={userId}
+                              className={`flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 ${pending ? 'opacity-75' : ''}`}
                             >
-                              <span className="text-[10px] font-mono tracking-wider">{getInitials(displayName)}</span>
-                              <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
-                                {bestLevel === 'in_call' ? (
-                                  <div className="h-2 w-2 bg-blue-500 ring-2 ring-background rounded-full" />
-                                ) : bestLevel === 'active' ? (
-                                  <div className="h-2 w-2 bg-green-500 ring-2 ring-background rounded-full" />
-                                ) : bestLevel === 'online' ? (
-                                  <div className="h-2 w-2 bg-amber-500 ring-2 ring-background rounded-full" />
-                                ) : (
-                                  <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background rounded-full" />
-                                )}
-                              </div>
-                            </button>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-light truncate">{displayName}</p>
-                              {pending ? (
-                                <p className="text-xs text-muted-foreground truncate">Pending</p>
-                              ) : activeServer ? (
-                                <p className="text-xs text-muted-foreground truncate">{activeServer.name}</p>
-                              ) : secondaryName ? (
-                                <p className="text-xs text-muted-foreground truncate">{secondaryName}</p>
-                              ) : null}
-                            </div>
-                            {canJoin && !pending && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="shrink-0 h-8 px-2 text-xs font-light"
-                                onClick={() => navigate(`/home/${activeServer!.id}`, { state: { server: activeServer } })}
-                                title={'Join ' + activeServer!.name}
+                              <button
+                                type="button"
+                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none ${pending ? 'grayscale' : ''}`}
+                                style={avatarStyleForUser(userId)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setProfileCardUserId(userId)
+                                  setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                                }}
+                                aria-label={displayName}
                               >
-                                <LogIn className="h-3.5 w-3.5" />
-                              </Button>
+                                <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
+                                  {bestLevel === 'in_call' ? (
+                                    <div className="h-1.5 w-1.5 bg-blue-500 ring-2 ring-background" />
+                                  ) : bestLevel === 'active' ? (
+                                    <div className="h-1.5 w-1.5 bg-green-500 ring-2 ring-background" />
+                                  ) : bestLevel === 'online' ? (
+                                    <div className="h-1.5 w-1.5 bg-amber-500 ring-2 ring-background" />
+                                  ) : (
+                                    <div className="h-1.5 w-1.5 bg-muted-foreground ring-2 ring-background" />
+                                  )}
+                                </div>
+                              </button>
+                              <div className="min-w-0 flex-1 min-h-[1.75rem] flex flex-col justify-center">
+                                <p className="text-xs font-light truncate">{displayName}</p>
+                                {pending ? (
+                                  <p className="text-[11px] text-muted-foreground truncate">Pending</p>
+                                ) : activeServer ? (
+                                  <p className="text-[11px] text-muted-foreground truncate">{activeServer.name}</p>
+                                ) : secondaryName ? (
+                                  <p className="text-[11px] text-muted-foreground truncate">{secondaryName}</p>
+                                ) : null}
+                              </div>
+                              {canJoin && !pending && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="shrink-0 h-7 px-1.5 text-[11px] font-light"
+                                  onClick={() => navigate(`/home/${activeServer!.id}`, { state: { server: activeServer } })}
+                                  title={'Join ' + activeServer!.name}
+                                >
+                                  <LogIn className="h-3 w-3" />
+                                </Button>
+                              )}
+                            </div>
+                          )
+                        }
+                        return (
+                          <>
+                            {onlineFriends.map((f) => renderRow(f))}
+                            {hasOfflineSep && (
+                              <div className="flex w-full items-center py-0.5" aria-hidden>
+                                <div className="h-px w-full shrink-0 bg-muted-foreground/80" />
+                              </div>
                             )}
-                          </div>
+                            {offlineFriends.map((f) => renderRow(f))}
+                          </>
                         )
-                      })}
+                      })()}
                     </div>
                   )}
                 </div>
