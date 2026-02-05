@@ -16,6 +16,8 @@ export type RemoteProfile = {
 
 type RemoteProfilesContextType = {
   profiles: Map<string, RemoteProfile>
+  /** True after first loadKnownProfiles() has completed for current account; use to avoid showing "Unknown" before cache is ready */
+  hydrated: boolean
   applyUpdate: (u: {
     user_id: string
     display_name: string
@@ -59,15 +61,25 @@ function remoteToKnown(p: RemoteProfile): KnownProfile {
 export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
   const { currentAccountId } = useAccount()
   const [profiles, setProfiles] = useState<Map<string, RemoteProfile>>(new Map())
+  const [hydrated, setHydrated] = useState(false)
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Hydrate from persisted known_profiles on load / account switch so we never show "Unknown"
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:hydrate-effect',message:'hydrate effect run',data:{currentAccountId:currentAccountId ?? null},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
     if (!currentAccountId) {
       setProfiles(new Map())
+      setHydrated(false)
       return
     }
+    setHydrated(false)
     setProfiles(new Map()) // clear first so we don't show previous account's names
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:after-clear',message:'cleared profiles before load',data:{currentAccountId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H2'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:before-load',message:'calling loadKnownProfiles',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4'})}).catch(()=>{});
+    // #endregion
     let cancelled = false
     loadKnownProfiles()
       .then((map) => {
@@ -78,9 +90,15 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
             next.set(userId, knownToRemote(userId, k))
           }
         }
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:load-resolved',message:'loadKnownProfiles resolved',data:{count:Object.keys(map).length,nextSize:next.size},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
+        // #endregion
         setProfiles(next)
+        setHydrated(true)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setHydrated(true)
+      })
     return () => {
       cancelled = true
     }
@@ -134,10 +152,11 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
   const value = useMemo<RemoteProfilesContextType>(() => {
     return {
       profiles,
+      hydrated,
       applyUpdate,
       getProfile: (userId) => profiles.get(userId),
     }
-  }, [profiles])
+  }, [profiles, hydrated])
 
   return <RemoteProfilesContext.Provider value={value}>{children}</RemoteProfilesContext.Provider>
 }

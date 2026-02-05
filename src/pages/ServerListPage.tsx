@@ -72,7 +72,7 @@ function ServerListPage() {
       const m = s.members.find(mm => mm.user_id === userId)
       if (m?.display_name) return m.display_name
     }
-    return 'Unknown'
+    return remoteProfiles.hydrated ? 'Unknown' : ''
   }
 
   // Servers are now managed by ServersContext, no need to load here
@@ -434,11 +434,12 @@ function ServerListPage() {
       string,
       { userId: string; displayName: string; fromRequest: boolean; fromRedemption: boolean }
     >()
+    const namePlaceholder = remoteProfiles.hydrated ? 'Unknown' : ''
     for (const r of pendingIncoming) {
       byId.set(r.from_user_id, {
         userId: r.from_user_id,
         displayName:
-          remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? 'Unknown',
+          remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? namePlaceholder,
         fromRequest: true,
         fromRedemption: false,
       })
@@ -451,7 +452,7 @@ function ServerListPage() {
           existing?.displayName ??
           remoteProfiles.getProfile(r.redeemer_user_id)?.display_name ??
           r.redeemer_display_name ??
-          'Unknown',
+          namePlaceholder,
         fromRequest: existing?.fromRequest ?? false,
         fromRedemption: true,
       })
@@ -460,7 +461,8 @@ function ServerListPage() {
   }, [pendingIncoming, redemptions, remoteProfiles])
 
   const sortedFriendsWithPresence = useMemo(() => {
-    return friendAndPendingIds
+    const profilesSize = remoteProfiles.profiles?.size ?? 0
+    const result = friendAndPendingIds
       .map(userId => {
         let bestLevel: PresenceLevel = 'offline'
         let activeServer: Server | null = null
@@ -484,7 +486,7 @@ function ServerListPage() {
             const m = s.members.find(mm => mm.user_id === userId)
             if (m?.display_name) return m.display_name
           }
-          return 'Unknown'
+          return remoteProfiles.hydrated ? 'Unknown' : ''
         })()
         return { userId, bestLevel, activeServer, displayName }
       })
@@ -494,6 +496,13 @@ function ServerListPage() {
         if (oa !== ob) return oa - ob
         return a.displayName.localeCompare(b.displayName)
       })
+    // #region agent log
+    const unknownCount = result.filter(r => r.displayName === 'Unknown').length
+    if (unknownCount > 0) {
+      fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServerListPage.tsx:sortedFriendsWithPresence',message:'friends list has Unknown display names',data:{unknownCount,profilesSize,friendCount:friendAndPendingIds.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
+    }
+    // #endregion
+    return result
   }, [friendAndPendingIds, servers, getLevel, voicePresence, remoteProfiles])
 
   const handleCreateServer = async () => {

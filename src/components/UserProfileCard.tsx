@@ -104,55 +104,58 @@ export function UserProfileCard({
             </div>
           </div>
 
-          {/* Account created (when available from self or DHT) */}
-          {createdLabel ? (
-            <p className="text-xs text-muted-foreground font-light">
-              Account created {createdLabel}
-            </p>
-          ) : null}
-
-          {/* Bottom row: spacer left, square action right */}
-          {showFriendAction && (
-            <div className="pt-2 border-t border-border flex items-center justify-end">
-              {isFriend && onRemoveFriend ? (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0 font-light text-muted-foreground"
-                  title="Remove from friends"
-                  onClick={() => {
-                    onRemoveFriend()
-                    onClose()
-                  }}
-                >
-                  <UserMinus className="h-4 w-4" />
-                </Button>
-              ) : isPendingOutgoing ? (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0 font-light text-muted-foreground"
-                  title="Pending"
-                  disabled
-                >
-                  <Clock className="h-4 w-4" />
-                </Button>
-              ) : onSendFriendRequest ? (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0 font-light"
-                  title="Send friend request"
-                  onClick={() => {
-                    onSendFriendRequest()
-                    onClose()
-                  }}
-                >
-                  <UserPlus className="h-4 w-4" />
-                </Button>
-              ) : null}
-            </div>
-          )}
+          {/* Bottom: stamp bottom-left, add/remove friend button bottom-right corner */}
+          <div className="relative mt-auto pt-3 border-t border-border min-h-[45px]">
+            {createdLabel ? (
+              <span
+                className="absolute left-0 bottom-0.0 text-[10px] text-muted-foreground opacity-60 italic font-light"
+                aria-hidden
+              >
+                Account created: <br/> {createdLabel}
+              </span>
+            ) : null}
+            {showFriendAction && (
+              <div className="absolute right-0 bottom-0">
+                {isFriend && onRemoveFriend ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
+                    title="Remove from friends"
+                    onClick={() => {
+                      onRemoveFriend()
+                      onClose()
+                    }}
+                  >
+                    <UserMinus className="h-4 w-4" />
+                  </Button>
+                ) : isPendingOutgoing ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
+                    title="Pending"
+                    disabled
+                  >
+                    <Clock className="h-4 w-4" />
+                  </Button>
+                ) : onSendFriendRequest ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 rounded-none font-light"
+                    title="Send friend request"
+                    onClick={() => {
+                      onSendFriendRequest()
+                      onClose()
+                    }}
+                  >
+                    <UserPlus className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </>
