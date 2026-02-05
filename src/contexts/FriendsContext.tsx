@@ -214,18 +214,21 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const cancelPendingTo = useCallback(
     async (userId: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
+      const clearPending = () => setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
       try {
         await friendApi.cancelFriendRequest(signalingUrl, userId)
-        setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+        clearPending()
         return
       } catch {
-        // not a direct request, try redemption
+        // not a direct request or 404 (e.g. beacon restarted / no cancel route), try redemption
       }
       try {
         await friendApi.cancelCodeRedemption(signalingUrl, userId)
-        setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+        clearPending()
+        return
       } catch {
-        // neither found
+        // neither found or server 404 — clear UI anyway so user isn't stuck (e.g. in-memory state lost)
+        clearPending()
       }
     },
     [signalingUrl]

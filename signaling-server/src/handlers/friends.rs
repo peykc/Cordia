@@ -285,17 +285,17 @@ pub async fn cancel_friend_request(
     let mut friends = state.friends.write().await;
     let existed = friends.friend_requests.remove(&key).is_some();
     drop(friends);
-    if !existed {
-        return (StatusCode::NOT_FOUND, "Friend request not found").into_response();
+    if existed {
+        let msg = SignalingMessage::FriendRequestCancelled {
+            from_user_id: from_user_id.clone(),
+            to_user_id: to_user_id.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            state.friends.read().await.send_to_user(&to_user_id, &json);
+        }
     }
-    let msg = SignalingMessage::FriendRequestCancelled {
-        from_user_id: from_user_id.clone(),
-        to_user_id: to_user_id.clone(),
-    };
-    if let Ok(json) = serde_json::to_string(&msg) {
-        state.friends.read().await.send_to_user(&to_user_id, &json);
-    }
-    (StatusCode::OK, Json(serde_json::json!({ "cancelled": true }))).into_response()
+    // Idempotent: return 200 even when not found (e.g. server restarted, or already cancelled)
+    (StatusCode::OK, Json(serde_json::json!({ "cancelled": existed }))).into_response()
 }
 
 /// POST /api/friends/requests/decline
@@ -356,17 +356,17 @@ pub async fn cancel_code_redemption(
         friends.code_redemptions.remove(&code_owner_id);
     }
     drop(friends);
-    if !removed {
-        return (StatusCode::NOT_FOUND, "Redemption not found").into_response();
+    if removed {
+        let msg = SignalingMessage::FriendCodeRedemptionCancelled {
+            code_owner_id: code_owner_id.clone(),
+            redeemer_user_id: redeemer_user_id.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            state.friends.read().await.send_to_user(&code_owner_id, &json);
+        }
     }
-    let msg = SignalingMessage::FriendCodeRedemptionCancelled {
-        code_owner_id: code_owner_id.clone(),
-        redeemer_user_id: redeemer_user_id.clone(),
-    };
-    if let Ok(json) = serde_json::to_string(&msg) {
-        state.friends.read().await.send_to_user(&code_owner_id, &json);
-    }
-    (StatusCode::OK, Json(serde_json::json!({ "cancelled": true }))).into_response()
+    // Idempotent: return 200 even when not found (e.g. server restarted, or already cancelled)
+    (StatusCode::OK, Json(serde_json::json!({ "cancelled": removed }))).into_response()
 }
 
 /// POST /api/friends/remove — remove a friend; notifies the other user so they remove you too (mutual unfriend).

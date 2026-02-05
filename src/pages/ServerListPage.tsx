@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { Plus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
+import { Plus, Minus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
@@ -890,9 +890,9 @@ function ServerListPage() {
                       size="icon"
                       className="h-8 w-8"
                       onClick={() => setShowFriendCodePopover((v) => !v)}
-                      title="Friend code"
+                      title={showFriendCodePopover ? 'Close friend code' : 'Friend code'}
                     >
-                      <Plus className="h-4 w-4" />
+                      {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     </Button>
                     {showFriendCodePopover && (
                       <div className="absolute right-0 top-full mt-1 z-50 w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
@@ -937,7 +937,7 @@ function ServerListPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="w-full justify-start gap-2 font-light"
+                            className="w-full justify-start gap-2 font-light bg-white text-black border-white hover:bg-white/90 hover:text-black"
                             disabled={isCreatingCode}
                             onClick={async () => {
                               setIsCreatingCode(true)
@@ -1009,7 +1009,8 @@ function ServerListPage() {
                             <Button
                               variant="outline"
                               size="sm"
-                              disabled={isRedeemingCode || !friendCodeInput.trim()}
+                              className={friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}
+                              disabled={isRedeemingCode || friendCodeInput.trim().length < 8}
                               onClick={async () => {
                                 setFriendCodeError('')
                                 setIsRedeemingCode(true)
@@ -1019,6 +1020,7 @@ function ServerListPage() {
                                     profile?.display_name ?? identity?.display_name ?? 'Unknown'
                                   )
                                   setFriendCodeInput('')
+                                  setShowFriendCodePopover(false)
                                 } catch (e) {
                                   setFriendCodeError(e instanceof Error ? e.message : 'Failed')
                                 } finally {
