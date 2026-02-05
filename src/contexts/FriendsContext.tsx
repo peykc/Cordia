@@ -56,6 +56,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const { identity } = useIdentity()
   const { applyUpdate: applyRemoteProfile } = useRemoteProfiles()
   const identityUserIdRef = useRef<string | null>(null)
+  const recentlyCancelledOutgoingRef = useRef<Set<string>>(new Set())
+  const recentlyCancelledTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   useEffect(() => {
     identityUserIdRef.current = identity?.user_id ?? null
@@ -214,7 +216,19 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const cancelPendingTo = useCallback(
     async (userId: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
-      const clearPending = () => setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+      const clearPending = () => {
+        setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+        recentlyCancelledOutgoingRef.current.add(userId)
+        const existing = recentlyCancelledTimeoutsRef.current.get(userId)
+        if (existing) clearTimeout(existing)
+        recentlyCancelledTimeoutsRef.current.set(
+          userId,
+          setTimeout(() => {
+            recentlyCancelledOutgoingRef.current.delete(userId)
+            recentlyCancelledTimeoutsRef.current.delete(userId)
+          }, 15000)
+        )
+      }
       try {
         await friendApi.cancelFriendRequest(signalingUrl, userId)
         clearPending()
@@ -251,7 +265,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
             from_account_created_at: x.from_account_created_at ?? null,
           }))
         )
-        setPendingOutgoing(d.pending_outgoing ?? [])
+        setPendingOutgoing(
+          (d.pending_outgoing ?? []).filter((id) => !recentlyCancelledOutgoingRef.current.has(id))
+        )
         setRedemptions(
           (d.pending_code_redemptions ?? []).map((x) => ({
             redeemer_user_id: x.redeemer_user_id,

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { Plus, Minus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
+import { Plus, Minus, Users, Bell, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
@@ -73,6 +73,8 @@ function ServerListPage() {
   const [isCreatingCode, setIsCreatingCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
   const [exitingServerId, setExitingServerId] = useState<string | null>(null)
+  const [friendsPaneMode, setFriendsPaneMode] = useState<'friends' | 'pending'>('friends')
+  const [pendingViewFilter, setPendingViewFilter] = useState<'outgoing' | 'incoming'>('outgoing')
   const exitIconsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fallbackNameForUser = (userId: string) => {
@@ -430,12 +432,6 @@ function ServerListPage() {
     return a.name.localeCompare(b.name)
   })
 
-  const friendAndPendingIds = useMemo(() => {
-    const set = new Set(friends)
-    pendingOutgoing.forEach((id) => set.add(id))
-    return Array.from(set)
-  }, [friends, pendingOutgoing])
-
   // Merge incoming requests and code redemptions by user_id so the same user doesn't appear twice
   const mergedIncoming = useMemo(() => {
     const byId = new Map<
@@ -468,9 +464,11 @@ function ServerListPage() {
     return Array.from(byId.values())
   }, [pendingIncoming, redemptions, remoteProfiles])
 
-  const sortedFriendsWithPresence = useMemo(() => {
-    const profilesSize = remoteProfiles.profiles?.size ?? 0
-    const result = friendAndPendingIds
+  const pendingInvitesCount = pendingOutgoing.length + mergedIncoming.length
+
+  // Friends-only list for the main friends pane (pending outgoing only on notification pane)
+  const sortedFriendsOnlyWithPresence = useMemo(() => {
+    const result = friends
       .map(userId => {
         let bestLevel: PresenceLevel = 'offline'
         let activeServer: Server | null = null
@@ -504,14 +502,35 @@ function ServerListPage() {
         if (oa !== ob) return oa - ob
         return a.displayName.localeCompare(b.displayName)
       })
-    // #region agent log
-    const unknownCount = result.filter(r => r.displayName === 'Unknown').length
-    if (unknownCount > 0) {
-      fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServerListPage.tsx:sortedFriendsWithPresence',message:'friends list has Unknown display names',data:{unknownCount,profilesSize,friendCount:friendAndPendingIds.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
-    }
-    // #endregion
     return result
-  }, [friendAndPendingIds, servers, getLevel, voicePresence, remoteProfiles])
+  }, [friends, servers, getLevel, voicePresence, remoteProfiles])
+
+  // Presence for user ids on the notification pane (outgoing + incoming)
+  const pendingPresenceMap = useMemo(() => {
+    const userIds = [...new Set([...pendingOutgoing, ...mergedIncoming.map((e) => e.userId)])]
+    const map = new Map<string, { bestLevel: PresenceLevel; activeServer: Server | null }>()
+    for (const userId of userIds) {
+      let bestLevel: PresenceLevel = 'offline'
+      let activeServer: Server | null = null
+      for (const server of servers) {
+        const inVoice = voicePresence.isUserInVoice(server.signing_pubkey, userId)
+        const level = getLevel(server.signing_pubkey, userId, inVoice)
+        if (PRESENCE_ORDER[level] < PRESENCE_ORDER[bestLevel]) {
+          bestLevel = level
+          if (level === 'active' || level === 'in_call') activeServer = server
+        } else if ((level === 'active' || level === 'in_call') && !activeServer) {
+          activeServer = server
+        }
+      }
+      const friendsLevel = getLevel(FRIENDS_PRESENCE_KEY, userId, false)
+      if (PRESENCE_ORDER[friendsLevel] < PRESENCE_ORDER[bestLevel]) {
+        bestLevel = friendsLevel
+        activeServer = null
+      }
+      map.set(userId, { bestLevel, activeServer })
+    }
+    return map
+  }, [pendingOutgoing, mergedIncoming, servers, getLevel, voicePresence])
 
   const handleCreateServer = async () => {
     if (!identity || !serverName.trim()) return
@@ -879,21 +898,62 @@ function ServerListPage() {
                 )}
               </div>
             </section>
-            {/* Right: Friends */}
+            {/* Right: Friends / Pending */}
             <aside className="hidden md:block md:col-span-3 h-full min-h-0 flex flex-col">
               <div className="border-2 border-border bg-card/50 rounded-lg p-4 flex flex-col min-h-0 h-full">
                 <div className="flex items-center justify-between shrink-0">
-                  <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground">Friends</h3>
-                  <div className="relative">
+                  <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground">
+                    {friendsPaneMode === 'friends' ? 'Friends' : 'Pending invites'}
+                  </h3>
+                  <div className="flex items-center gap-0.5">
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8"
-                      onClick={() => setShowFriendCodePopover((v) => !v)}
-                      title={showFriendCodePopover ? 'Close friend code' : 'Friend code'}
+                      className="h-8 w-8 relative"
+                      onClick={() => {
+                        if (friendsPaneMode === 'friends') {
+                          setShowFriendCodePopover(false)
+                          setFriendsPaneMode('pending')
+                        } else {
+                          setFriendsPaneMode('friends')
+                        }
+                      }}
+                      title={friendsPaneMode === 'friends' ? 'Pending invites' : 'Back to friends'}
                     >
-                      {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {friendsPaneMode === 'friends' ? (
+                        <>
+                          <Bell className="h-4 w-4" />
+                          {pendingOutgoing.length > 0 && (
+                            <span
+                              className="absolute -top-0.5 left-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-gray-500 text-black border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${pendingOutgoing.length} outgoing`}
+                            >
+                              {pendingOutgoing.length > 99 ? '99+' : pendingOutgoing.length}
+                            </span>
+                          )}
+                          {mergedIncoming.length > 0 && (
+                            <span
+                              className="absolute -top-0.5 right-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-green-500 text-white border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${mergedIncoming.length} incoming`}
+                            >
+                              {mergedIncoming.length > 99 ? '99+' : mergedIncoming.length}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <Users className="h-4 w-4" />
+                      )}
                     </Button>
+                    <div className="relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => setShowFriendCodePopover((v) => !v)}
+                        title={showFriendCodePopover ? 'Close friend code' : 'Friend code'}
+                      >
+                        {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      </Button>
                     {showFriendCodePopover && (
                       <div className="absolute right-0 top-full mt-1 z-50 w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
                         {myFriendCode ? (
@@ -1044,103 +1104,227 @@ function ServerListPage() {
                         </button>
                       </div>
                     )}
+                    </div>
                   </div>
                 </div>
                 <div className="mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
-                  {mergedIncoming.length > 0 && (
-                    <div>
-                      <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
-                        Incoming
-                      </p>
-                      <div className="space-y-1">
-                        {mergedIncoming.map((entry) => (
-                          <div
-                            key={entry.userId}
-                            className="flex items-center gap-2 py-2 px-2 rounded-md bg-accent/20 min-w-0"
-                          >
-                            <div
-                              className="h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
-                              style={avatarStyleForUser(entry.userId)}
+                  {friendsPaneMode === 'pending' ? (
+                    <>
+                      <div className="flex gap-1 mb-2 pt-5">
+                        <Button
+                          variant={pendingViewFilter === 'outgoing' ? 'default' : 'ghost'}
+                          size="sm"
+                          className="text-xs font-light relative overflow-visible"
+                          onClick={() => setPendingViewFilter('outgoing')}
+                        >
+                          Outgoing
+                          {pendingOutgoing.length > 0 && (
+                            <span
+                              className="absolute -top-1 -right-1 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-gray-500 text-black border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${pendingOutgoing.length} outgoing`}
                             >
-                              <span className="text-[10px] font-mono tracking-wider">
-                                {getInitials(entry.displayName)}
-                              </span>
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-light truncate">{entry.displayName}</p>
-                            </div>
-                            <div className="flex gap-1 shrink-0">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-green-600"
-                                title="Accept"
-                                onClick={async () => {
-                                  // Seed remote profile so friends list shows correct name (for users not in shared servers)
-                                  remoteProfiles.applyUpdate({
-                                    user_id: entry.userId,
-                                    display_name: entry.displayName,
-                                    secondary_name: null,
-                                    show_secondary: false,
-                                    rev: 1,
-                                  })
-                                  const myDisplayName = identity?.display_name ?? profile?.display_name ?? undefined
-                                  if (entry.fromRequest) await acceptFriendRequest(entry.userId, myDisplayName).catch(() => {})
-                                  if (entry.fromRedemption) await acceptCodeRedemption(entry.userId, myDisplayName).catch(() => {})
-                                }}
-                              >
-                                <Check className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive"
-                                title="Decline"
-                                onClick={async () => {
-                                  if (entry.fromRequest) await declineFriendRequest(entry.userId).catch(() => {})
-                                  if (entry.fromRedemption) await declineCodeRedemption(entry.userId).catch(() => {})
-                                }}
-                              >
-                                <XCircle className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
+                              {pendingOutgoing.length > 99 ? '99+' : pendingOutgoing.length}
+                            </span>
+                          )}
+                        </Button>
+                        <Button
+                          variant={pendingViewFilter === 'incoming' ? 'default' : 'ghost'}
+                          size="sm"
+                          className="text-xs font-light relative overflow-visible"
+                          onClick={() => setPendingViewFilter('incoming')}
+                        >
+                          Incoming
+                          {mergedIncoming.length > 0 && (
+                            <span
+                              className="absolute -top-1 -right-1 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-green-500 text-white border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${mergedIncoming.length} incoming`}
+                            >
+                              {mergedIncoming.length > 99 ? '99+' : mergedIncoming.length}
+                            </span>
+                          )}
+                        </Button>
                       </div>
-                    </div>
-                  )}
-                  {friends.length === 0 && mergedIncoming.length === 0 && pendingOutgoing.length === 0 ? (
+                      {pendingViewFilter === 'outgoing' ? (
+                        pendingOutgoing.length === 0 ? (
+                          <p className="text-sm font-light text-muted-foreground">No pending invites you sent.</p>
+                        ) : (
+                          <div className="space-y-0.5">
+                            {pendingOutgoing.map((userId) => {
+                              const rp = remoteProfiles.getProfile(userId)
+                              const presence = pendingPresenceMap.get(userId)
+                              const bestLevel = presence?.bestLevel ?? 'offline'
+                              const displayName = rp?.display_name ?? (() => {
+                                for (const s of servers) {
+                                  const m = s.members.find((mm) => mm.user_id === userId)
+                                  if (m?.display_name) return m.display_name
+                                }
+                                return 'Unknown'
+                              })()
+                              return (
+                                <div
+                                  key={userId}
+                                  className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
+                                >
+                                  <button
+                                    type="button"
+                                    className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-visible"
+                                    style={!rp?.avatar_data_url ? avatarStyleForUser(userId) : undefined}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setProfileCardUserId(userId)
+                                      setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                                    }}
+                                    aria-label={displayName}
+                                  >
+                                    {rp?.avatar_data_url ? (
+                                      <img src={rp.avatar_data_url} alt="" className="w-full h-full object-cover" />
+                                    ) : (
+                                      <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                    )}
+                                    <div className="absolute -top-1 left-1/2 -translate-x-1/2">
+                                      {bestLevel === 'in_call' ? (
+                                        <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+                                      ) : bestLevel === 'active' ? (
+                                        <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+                                      ) : bestLevel === 'online' ? (
+                                        <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+                                      ) : (
+                                        <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
+                                      )}
+                                    </div>
+                                  </button>
+                                  <div className="min-w-0 flex-1 min-h-[1.75rem] flex flex-col justify-center">
+                                    <p className="text-xs font-light truncate">{displayName}</p>
+                                    <p className="text-[11px] text-muted-foreground truncate">Pending</p>
+                                  </div>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="shrink-0 h-7 px-1.5 text-muted-foreground hover:text-destructive"
+                                    onClick={() => cancelPendingTo(userId)}
+                                    title="Cancel pending invite"
+                                  >
+                                    <XCircle className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )
+                      ) : mergedIncoming.length === 0 ? (
+                        <p className="text-sm font-light text-muted-foreground">No incoming requests.</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {mergedIncoming.map((entry) => {
+                            const presence = pendingPresenceMap.get(entry.userId)
+                            const bestLevel = presence?.bestLevel ?? 'offline'
+                            const rp = remoteProfiles.getProfile(entry.userId)
+                            return (
+                              <div
+                                key={entry.userId}
+                                className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
+                              >
+                                <button
+                                  type="button"
+                                  className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-visible"
+                                  style={!rp?.avatar_data_url ? avatarStyleForUser(entry.userId) : undefined}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setProfileCardUserId(entry.userId)
+                                    setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                                  }}
+                                  aria-label={entry.displayName}
+                                >
+                                  {rp?.avatar_data_url ? (
+                                    <img src={rp.avatar_data_url} alt="" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <span className="text-[9px] font-mono tracking-wider">
+                                      {getInitials(entry.displayName)}
+                                    </span>
+                                  )}
+                                  <div className="absolute -top-1 left-1/2 -translate-x-1/2">
+                                    {bestLevel === 'in_call' ? (
+                                      <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+                                    ) : bestLevel === 'active' ? (
+                                      <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+                                    ) : bestLevel === 'online' ? (
+                                      <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+                                    ) : (
+                                      <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
+                                    )}
+                                  </div>
+                                </button>
+                                <div className="min-w-0 flex-1 min-h-[1.75rem] flex flex-col justify-center">
+                                  <p className="text-xs font-light truncate">{entry.displayName}</p>
+                                  <p className="text-[11px] text-muted-foreground truncate">Incoming</p>
+                                </div>
+                                <div className="flex gap-1 shrink-0">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-green-600"
+                                    title="Accept"
+                                    onClick={async () => {
+                                      remoteProfiles.applyUpdate({
+                                        user_id: entry.userId,
+                                        display_name: entry.displayName,
+                                        secondary_name: null,
+                                        show_secondary: false,
+                                        rev: 1,
+                                      })
+                                      const myDisplayName = identity?.display_name ?? profile?.display_name ?? undefined
+                                      if (entry.fromRequest) await acceptFriendRequest(entry.userId, myDisplayName).catch(() => {})
+                                      if (entry.fromRedemption) await acceptCodeRedemption(entry.userId, myDisplayName).catch(() => {})
+                                    }}
+                                  >
+                                    <Check className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-destructive"
+                                    title="Decline"
+                                    onClick={async () => {
+                                      if (entry.fromRequest) await declineFriendRequest(entry.userId).catch(() => {})
+                                      if (entry.fromRedemption) await declineCodeRedemption(entry.userId).catch(() => {})
+                                    }}
+                                  >
+                                    <XCircle className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                  <>
+                  {friends.length === 0 ? (
                     <p className="text-sm font-light leading-relaxed text-muted-foreground">
                       Add friends from server members: open their profile and choose Send friend request. Or create a
                       friend code to share.
                     </p>
                   ) : (
                     <div className="space-y-0.5">
-                      {pendingOutgoing.length > 0 && (
-                        <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
-                          Pending
-                        </p>
-                      )}
                       {(() => {
-                        const offlineStartIndex = sortedFriendsWithPresence.findIndex((f) => f.bestLevel === 'offline')
-                        const hasOfflineSep = offlineStartIndex > 0 && offlineStartIndex < sortedFriendsWithPresence.length
-                        const onlineFriends = hasOfflineSep
-                          ? sortedFriendsWithPresence.slice(0, offlineStartIndex)
-                          : sortedFriendsWithPresence
-                        const offlineFriends = hasOfflineSep ? sortedFriendsWithPresence.slice(offlineStartIndex) : []
+                        const list = sortedFriendsOnlyWithPresence
+                        const offlineStartIndex = list.findIndex((f) => f.bestLevel === 'offline')
+                        const hasOfflineSep = offlineStartIndex > 0 && offlineStartIndex < list.length
+                        const onlineFriends = hasOfflineSep ? list.slice(0, offlineStartIndex) : list
+                        const offlineFriends = hasOfflineSep ? list.slice(offlineStartIndex) : []
                         const renderRow = ({ userId, bestLevel, activeServer, displayName }: { userId: string; bestLevel: PresenceLevel; activeServer: Server | null; displayName: string }) => {
                           const rp = remoteProfiles.getProfile(userId)
                           const secondaryName = rp?.show_secondary ? rp.secondary_name : null
                           const canJoin = activeServer && getServerById(activeServer.id)
-                          const pending = hasPendingOutgoing(userId)
                           return (
                             <div
                               key={userId}
-                              className={`flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible ${pending ? 'opacity-75' : ''}`}
+                              className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
                             >
                               <button
                                 type="button"
-                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-visible ${pending ? 'grayscale' : ''}`}
+                                className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-visible"
                                 style={!rp?.avatar_data_url ? avatarStyleForUser(userId) : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1168,26 +1352,13 @@ function ServerListPage() {
                               </button>
                               <div className="min-w-0 flex-1 min-h-[1.75rem] flex flex-col justify-center">
                                 <p className="text-xs font-light truncate">{displayName}</p>
-                                {pending ? (
-                                  <p className="text-[11px] text-muted-foreground truncate">Pending</p>
-                                ) : activeServer ? (
+                                {activeServer ? (
                                   <p className="text-[11px] text-muted-foreground truncate">{activeServer.name}</p>
                                 ) : secondaryName ? (
                                   <p className="text-[11px] text-muted-foreground truncate">{secondaryName}</p>
                                 ) : null}
                               </div>
-                              {pending && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="shrink-0 h-7 px-1.5 text-[11px] font-light text-muted-foreground hover:text-destructive"
-                                  onClick={() => cancelPendingTo(userId)}
-                                  title="Cancel pending invite"
-                                >
-                                  <XCircle className="h-3 w-3" />
-                                </Button>
-                              )}
-                              {canJoin && !pending && (
+                              {canJoin && (
                                 <Button
                                   variant="ghost"
                                   size="sm"
@@ -1215,10 +1386,18 @@ function ServerListPage() {
                       })()}
                     </div>
                   )}
+                  </>
+                  )}
                 </div>
-                {(friends.length > 0 || mergedIncoming.length > 0 || pendingOutgoing.length > 0) && (
+                {friendsPaneMode === 'pending' ? (
+                  pendingInvitesCount > 0 && (
+                    <p className="mt-2 text-xs font-mono text-muted-foreground shrink-0">
+                      {pendingInvitesCount} pending
+                    </p>
+                  )
+                ) : friends.length > 0 && (
                   <p className="mt-2 text-xs font-mono text-muted-foreground shrink-0">
-                    {sortedFriendsWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
+                    {sortedFriendsOnlyWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
                   </p>
                 )}
               </div>
