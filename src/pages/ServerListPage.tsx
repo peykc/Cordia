@@ -1073,11 +1073,11 @@ function ServerListPage() {
                           return (
                             <div
                               key={userId}
-                              className={`flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 ${pending ? 'opacity-75' : ''}`}
+                              className={`flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible ${pending ? 'opacity-75' : ''}`}
                             >
                               <button
                                 type="button"
-                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none overflow-hidden ${pending ? 'grayscale' : ''}`}
+                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none overflow-visible ${pending ? 'grayscale' : ''}`}
                                 style={!rp?.avatar_data_url ? avatarStyleForUser(userId) : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation()

@@ -159,9 +159,14 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       const identityUserId = identity?.user_id ?? identityUserIdRef.current
       if (!identityUserId) throw new Error('Not logged in')
       const accountCreatedAt = redeemerAccountCreatedAt ?? (currentAccountId ? accountInfoMap[currentAccountId]?.created_at ?? null : null)
-      await friendApi.redeemFriendCode(signalingUrl, code, identityUserId, redeemerDisplayName, accountCreatedAt)
+      const result = await friendApi.redeemFriendCode(signalingUrl, code, identityUserId, redeemerDisplayName, accountCreatedAt)
+      if (result.code_owner_id && !friends.includes(result.code_owner_id)) {
+        setPendingOutgoing((prev) =>
+          prev.includes(result.code_owner_id!) ? prev : [...prev, result.code_owner_id!]
+        )
+      }
     },
-    [signalingUrl, identity?.user_id, currentAccountId, accountInfoMap]
+    [signalingUrl, identity?.user_id, currentAccountId, accountInfoMap, friends]
   )
 
   const acceptCodeRedemption = useCallback(

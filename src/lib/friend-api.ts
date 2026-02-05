@@ -108,7 +108,7 @@ export async function redeemFriendCode(
   redeemerUserId: string,
   redeemerDisplayName: string,
   redeemerAccountCreatedAt?: string | null
-): Promise<{ pending: boolean }> {
+): Promise<{ pending: boolean; code_owner_id?: string }> {
   return friendFetch(signalingUrl, '/codes/redeem', {
     method: 'POST',
     body: {
@@ -117,7 +117,7 @@ export async function redeemFriendCode(
       redeemer_display_name: redeemerDisplayName,
       redeemer_account_created_at: redeemerAccountCreatedAt ?? null,
     },
-  }) as Promise<{ pending: boolean }>
+  }) as Promise<{ pending: boolean; code_owner_id?: string }>
 }
 
 export async function acceptCodeRedemption(

@@ -388,7 +388,7 @@ pub async fn redeem_friend_code(
     }
     let redemptions = friends.code_redemptions.entry(code_owner_id.clone()).or_default();
     if redemptions.iter().any(|r| r.redeemer_user_id == redeemer_user_id) {
-        return (StatusCode::OK, Json(serde_json::json!({ "pending": true }))).into_response();
+        return (StatusCode::OK, Json(serde_json::json!({ "pending": true, "code_owner_id": code_owner_id }))).into_response();
     }
     let now = Utc::now();
     redemptions.push(CodeRedemption {
@@ -411,7 +411,7 @@ pub async fn redeem_friend_code(
     if let Ok(json) = serde_json::to_string(&incoming) {
         state.friends.read().await.send_to_user(&code_owner_id, &json);
     }
-    (StatusCode::OK, Json(serde_json::json!({ "pending": true }))).into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "pending": true, "code_owner_id": code_owner_id }))).into_response()
 }
 
 /// POST /api/friends/codes/redemptions/accept
