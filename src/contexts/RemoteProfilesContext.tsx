@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAccount } from './AccountContext'
+import { loadKnownProfiles, saveKnownProfiles, type KnownProfile } from '../lib/tauri'
 
 export type RemoteProfile = {
   user_id: string
@@ -30,14 +31,82 @@ type RemoteProfilesContextType = {
 
 const RemoteProfilesContext = createContext<RemoteProfilesContextType | null>(null)
 
+const PERSIST_DEBOUNCE_MS = 2000
+
+function knownToRemote(userId: string, k: KnownProfile): RemoteProfile {
+  return {
+    user_id: userId,
+    display_name: k.display_name ?? '',
+    secondary_name: k.secondary_name ?? null,
+    show_secondary: Boolean(k.show_secondary),
+    rev: Number(k.rev) || 0,
+    account_created_at: k.account_created_at ?? null,
+    avatar_data_url: null,
+    avatar_rev: 0,
+  }
+}
+
+function remoteToKnown(p: RemoteProfile): KnownProfile {
+  return {
+    display_name: p.display_name,
+    secondary_name: p.secondary_name,
+    show_secondary: p.show_secondary,
+    rev: p.rev,
+    account_created_at: p.account_created_at,
+  }
+}
+
 export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
   const { currentAccountId } = useAccount()
   const [profiles, setProfiles] = useState<Map<string, RemoteProfile>>(new Map())
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Reset on account switch/logout (keeps data scoped to the current session)
+  // Hydrate from persisted known_profiles on load / account switch so we never show "Unknown"
   useEffect(() => {
-    setProfiles(new Map())
+    if (!currentAccountId) {
+      setProfiles(new Map())
+      return
+    }
+    setProfiles(new Map()) // clear first so we don't show previous account's names
+    let cancelled = false
+    loadKnownProfiles()
+      .then((map) => {
+        if (cancelled) return
+        const next = new Map<string, RemoteProfile>()
+        for (const [userId, k] of Object.entries(map)) {
+          if (userId && k?.display_name != null) {
+            next.set(userId, knownToRemote(userId, k))
+          }
+        }
+        setProfiles(next)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [currentAccountId])
+
+  // Persist known_profiles (no avatar) when profiles change, debounced
+  useEffect(() => {
+    if (!currentAccountId || profiles.size === 0) return
+    if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current)
+    persistTimeoutRef.current = setTimeout(() => {
+      persistTimeoutRef.current = null
+      const toSave: Record<string, KnownProfile> = {}
+      profiles.forEach((p, userId) => {
+        if (p.display_name) toSave[userId] = remoteToKnown(p)
+      })
+      if (Object.keys(toSave).length > 0) {
+        saveKnownProfiles(toSave).catch(() => {})
+      }
+    }, PERSIST_DEBOUNCE_MS)
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current)
+        persistTimeoutRef.current = null
+      }
+    }
+  }, [currentAccountId, profiles])
 
   const applyUpdate: RemoteProfilesContextType['applyUpdate'] = (u) => {
     setProfiles((prev) => {

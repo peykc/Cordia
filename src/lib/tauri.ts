@@ -262,6 +262,24 @@ export async function removeFriend(userId: string): Promise<void> {
   return await invoke('remove_friend', { userId })
 }
 
+/** Minimal persisted profile (no avatar) so we never show "Unknown" for someone we've seen */
+export interface KnownProfile {
+  display_name: string
+  secondary_name?: string | null
+  show_secondary?: boolean
+  rev?: number
+  account_created_at?: string | null
+}
+
+export async function loadKnownProfiles(): Promise<Record<string, KnownProfile>> {
+  const map = await invoke<Record<string, KnownProfile>>('load_known_profiles')
+  return map ?? {}
+}
+
+export async function saveKnownProfiles(profiles: Record<string, KnownProfile>): Promise<void> {
+  return await invoke('save_known_profiles', { profiles })
+}
+
 /**
  * Headers for friend API auth: request signed with identity Ed25519 key.
  * Pass method, full path (e.g. /api/friends/requests), and optional body string.

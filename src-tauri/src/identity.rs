@@ -450,13 +450,15 @@ impl IdentityManager {
         Ok(identity)
     }
 
-    /// Export full identity with profile, server keys, and friends list in binary .key format
+    /// Export full identity with profile, server keys, friends list, known display names, and known house names in binary .key format
     pub fn export_full_identity(
         &self,
         profile_data: Option<serde_json::Value>,
         server_keys: Vec<serde_json::Value>,
         signaling_server_url: Option<String>,
         friends: Vec<String>,
+        known_profiles: Option<serde_json::Value>,
+        known_house_names: Option<serde_json::Value>,
     ) -> Result<Vec<u8>, IdentityError> {
         let identity = self.load_identity()?;
 
@@ -469,6 +471,10 @@ impl IdentityManager {
             servers: Vec<serde_json::Value>,
             signaling_server_url: Option<String>,
             friends: Vec<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            known_profiles: Option<serde_json::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            known_house_names: Option<serde_json::Value>,
         }
 
         let export = FullExportFormat {
@@ -478,6 +484,8 @@ impl IdentityManager {
             servers: server_keys,
             signaling_server_url,
             friends,
+            known_profiles,
+            known_house_names,
         };
 
         // Serialize to JSON
@@ -530,7 +538,7 @@ impl IdentityManager {
     }
 
     /// Decrypt and parse .key format (static, doesn't save - caller must save)
-    pub fn import_key_format_static(data: &[u8]) -> Result<(UserIdentity, Option<serde_json::Value>, Vec<serde_json::Value>, Option<String>, Vec<String>), IdentityError> {
+    pub fn import_key_format_static(data: &[u8]) -> Result<(UserIdentity, Option<serde_json::Value>, Vec<serde_json::Value>, Option<String>, Vec<String>, Option<serde_json::Value>, Option<serde_json::Value>), IdentityError> {
         if data.len() < 16 {
             return Err(IdentityError::InvalidIdentity);
         }
@@ -586,6 +594,10 @@ impl IdentityManager {
             signaling_server_url: Option<String>,
             #[serde(default)]
             friends: Vec<String>,
+            #[serde(default)]
+            known_profiles: Option<serde_json::Value>,
+            #[serde(default)]
+            known_house_names: Option<serde_json::Value>,
         }
 
         let export: FullExportFormat = serde_json::from_slice(&plaintext)
@@ -596,7 +608,7 @@ impl IdentityManager {
         }
 
         // Don't save here - caller (import_identity_auto) will save after account setup
-        Ok((export.identity, export.profile, export.servers, export.signaling_server_url, export.friends))
+        Ok((export.identity, export.profile, export.servers, export.signaling_server_url, export.friends, export.known_profiles, export.known_house_names))
     }
 
 }

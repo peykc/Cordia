@@ -14,7 +14,7 @@ use identity::{IdentityManager, UserIdentity};
 use audio_settings::{AudioSettingsManager, AudioSettings};
 use server::{ServerManager, ServerInfo};
 use signaling::{check_signaling_health, get_default_signaling_url};
-use account_manager::{AccountManager, SessionState, AccountInfo};
+use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
@@ -265,7 +265,7 @@ fn export_full_identity_for_account(
 
     // Export only essential cryptographic keys (rooms/members come from signaling server)
     let mut server_data: Vec<serde_json::Value> = Vec::new();
-    for server in servers {
+    for server in &servers {
         if let Some(symmetric_key) = server.get_symmetric_key() {
             let signing_pubkey = server.signing_pubkey.clone();
             let invite_uri = server.invite_uri.clone();
@@ -302,8 +302,16 @@ fn export_full_identity_for_account(
         });
     let signaling_server_url = account_info.signaling_server_url;
     let friends = account_manager.load_friends(&account_id).unwrap_or_default();
+    let known_profiles_map = account_manager.load_known_profiles(&account_id).unwrap_or_default();
+    let known_profiles = serde_json::to_value(&known_profiles_map).ok();
+    // Build known_house_names from current server list so restore shows last-known names when offline
+    let known_house_names: std::collections::HashMap<String, String> = servers.iter()
+        .filter(|s| !s.name.is_empty())
+        .map(|s| (s.signing_pubkey.clone(), s.name.clone()))
+        .collect();
+    let known_house_names = serde_json::to_value(&known_house_names).ok();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -324,7 +332,7 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
 
     // Export only essential cryptographic keys (rooms/members come from signaling server)
     let mut server_data: Vec<serde_json::Value> = Vec::new();
-    for server in servers {
+    for server in &servers {
         if let Some(symmetric_key) = server.get_symmetric_key() {
             let signing_pubkey = server.signing_pubkey.clone();
             let invite_uri = server.invite_uri.clone();
@@ -364,8 +372,15 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
         });
     let signaling_server_url = account_info.signaling_server_url;
     let friends = account_manager.load_friends(&current_account_id).unwrap_or_default();
+    let known_profiles_map = account_manager.load_known_profiles(&current_account_id).unwrap_or_default();
+    let known_profiles = serde_json::to_value(&known_profiles_map).ok();
+    let known_house_names: std::collections::HashMap<String, String> = servers.iter()
+        .filter(|s| !s.name.is_empty())
+        .map(|s| (s.signing_pubkey.clone(), s.name.clone()))
+        .collect();
+    let known_house_names = serde_json::to_value(&known_house_names).ok();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -461,7 +476,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
     // NO GUARD: Bootstrap command - works without session for initial setup
     
     // Import .key format
-    let (identity, profile_json, server_data, signaling_server_url, friends) = IdentityManager::import_key_format_static(&data)
+    let (identity, profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names) = IdentityManager::import_key_format_static(&data)
         .map_err(|e| format!("Failed to import .key file: {}", e))?;
     
     // Create account container if it doesn't exist
@@ -590,6 +605,37 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
         account_manager.save_friends(&user_id, &friends)
             .map_err(|e| format!("Failed to save friends: {}", e))?;
     }
+
+    // Restore known display names (so we never show "Unknown" for people we've seen)
+    if let Some(ref val) = known_profiles {
+        if let Ok(map) = serde_json::from_value::<std::collections::HashMap<String, account_manager::KnownProfile>>(val.clone()) {
+            let _ = account_manager.save_known_profiles(&user_id, &map);
+        }
+    }
+
+    // Restore known house names and apply to servers with empty names (so restore shows names without beacon)
+    if let Some(ref val) = known_house_names {
+        if let Ok(map) = serde_json::from_value::<std::collections::HashMap<String, String>>(val.clone()) {
+            let _ = account_manager.save_known_house_names(&user_id, &map);
+            if !map.is_empty() {
+                let server_manager = ServerManager::new()
+                    .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+                for (signing_pubkey, name) in &map {
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if let Ok(Some(server_id)) = server_manager.find_server_id_by_signing_pubkey(signing_pubkey) {
+                        if let Ok(mut server) = server_manager.load_server(&server_id) {
+                            if server.name.is_empty() {
+                                server.name = name.clone();
+                                let _ = server_manager.save_server(&server);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     // Return identity and profile data so frontend can restore profile to localStorage
     Ok(ImportResult {
@@ -629,12 +675,33 @@ fn create_server(name: String, user_id: String, display_name: String) -> Result<
 #[tauri::command]
 fn list_servers() -> Result<Vec<ServerInfo>, String> {
     // GUARDED: Requires active session
-    require_session()?;
+    let account_id = require_session()?;
     
     let manager = ServerManager::new()
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
-    let servers = manager.load_all_servers()
+    let mut servers = manager.load_all_servers()
         .map_err(|e| format!("Failed to load servers: {}", e))?;
+
+    // Fill empty house names from cache (e.g. after restore without beacon); then refresh cache from current list
+    let account_manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    let known = account_manager.load_known_house_names(&account_id).unwrap_or_default();
+    for s in &mut servers {
+        if s.name.is_empty() {
+            if let Some(name) = known.get(&s.signing_pubkey) {
+                s.name = name.clone();
+                let _ = manager.save_server(s);
+            }
+        }
+    }
+    let mut new_known = std::collections::HashMap::new();
+    for s in &servers {
+        if !s.name.is_empty() {
+            new_known.insert(s.signing_pubkey.clone(), s.name.clone());
+        }
+    }
+    let _ = account_manager.save_known_house_names(&account_id, &new_known);
+
     Ok(servers.into_iter().map(|s| s.to_info()).collect())
 }
 
@@ -1253,6 +1320,25 @@ fn add_friend(user_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn load_known_profiles() -> Result<serde_json::Value, String> {
+    let account_id = require_session()?;
+    let manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    let map = manager.load_known_profiles(&account_id)
+        .map_err(|e| format!("Failed to load known profiles: {}", e))?;
+    serde_json::to_value(map).map_err(|e| format!("Failed to serialize known profiles: {}", e))
+}
+
+#[tauri::command]
+fn save_known_profiles(profiles: std::collections::HashMap<String, KnownProfile>) -> Result<(), String> {
+    let account_id = require_session()?;
+    let manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    manager.save_known_profiles(&account_id, &profiles)
+        .map_err(|e| format!("Failed to save known profiles: {}", e))
+}
+
+#[tauri::command]
 fn remove_friend(user_id: String) -> Result<(), String> {
     let account_id = require_session()?;
     let manager = AccountManager::new()
@@ -1341,6 +1427,8 @@ fn main() {
             list_friends,
             add_friend,
             remove_friend,
+            load_known_profiles,
+            save_known_profiles,
             get_friend_auth_headers,
             register_key_file_association_command,
             // Audio settings commands

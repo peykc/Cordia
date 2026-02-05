@@ -41,6 +41,20 @@ pub struct AccountInfo {
     pub signaling_server_url: Option<String>,
 }
 
+/// Cached profile data for a remote user (display name, etc.) persisted per account and in .key export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownProfile {
+    pub display_name: String,
+    #[serde(default)]
+    pub secondary_name: Option<String>,
+    #[serde(default)]
+    pub show_secondary: bool,
+    #[serde(default)]
+    pub rev: Option<u64>,
+    #[serde(default)]
+    pub account_created_at: Option<String>,
+}
+
 /// Manages account containers and session state
 pub struct AccountManager {
     data_dir: PathBuf,
@@ -292,6 +306,48 @@ impl AccountManager {
         fs::create_dir_all(&account_dir)?;
         let path = account_dir.join("friends.json");
         let json = serde_json::to_string_pretty(friends)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load known profiles (user_id -> last known name etc.) for an account. Empty map if missing.
+    pub fn load_known_profiles(&self, account_id: &str) -> Result<std::collections::HashMap<String, KnownProfile>, AccountError> {
+        let path = self.get_account_dir(account_id).join("known_profiles.json");
+        if !path.exists() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let content = fs::read_to_string(path)?;
+        let map: std::collections::HashMap<String, KnownProfile> = serde_json::from_str(&content)?;
+        Ok(map)
+    }
+
+    /// Save known profiles for an account.
+    pub fn save_known_profiles(&self, account_id: &str, profiles: &std::collections::HashMap<String, KnownProfile>) -> Result<(), AccountError> {
+        let account_dir = self.get_account_dir(account_id);
+        fs::create_dir_all(&account_dir)?;
+        let path = account_dir.join("known_profiles.json");
+        let json = serde_json::to_string_pretty(profiles)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load known house names (signing_pubkey -> name) for an account. Empty map if missing.
+    pub fn load_known_house_names(&self, account_id: &str) -> Result<std::collections::HashMap<String, String>, AccountError> {
+        let path = self.get_account_dir(account_id).join("known_house_names.json");
+        if !path.exists() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let content = fs::read_to_string(path)?;
+        let map: std::collections::HashMap<String, String> = serde_json::from_str(&content)?;
+        Ok(map)
+    }
+
+    /// Save known house names for an account.
+    pub fn save_known_house_names(&self, account_id: &str, names: &std::collections::HashMap<String, String>) -> Result<(), AccountError> {
+        let account_dir = self.get_account_dir(account_id);
+        fs::create_dir_all(&account_dir)?;
+        let path = account_dir.join("known_house_names.json");
+        let json = serde_json::to_string_pretty(names)?;
         fs::write(path, json)?;
         Ok(())
     }

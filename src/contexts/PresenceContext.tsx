@@ -29,7 +29,8 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
 
   const applySnapshot: PresenceContextType['applySnapshot'] = (signingPubkey, users) => {
     setByHouse((prev) => {
-      const nextForHouse: Record<string, { active_signing_pubkey?: string | null }> = {}
+      const existing = prev[signingPubkey] || {}
+      const nextForHouse = { ...existing }
       for (const u of users) {
         nextForHouse[u.user_id] = { active_signing_pubkey: u.active_signing_pubkey ?? null }
       }
