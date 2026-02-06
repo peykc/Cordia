@@ -160,14 +160,14 @@ function AccountSelectPage() {
 
   if (accountsLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background grid-pattern">
+      <div className="flex min-h-screen items-center justify-center bg-background">
         <p className="text-muted-foreground">Loading accounts...</p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-background grid-pattern flex items-center justify-center p-10">
+    <div className="min-h-screen bg-background flex items-center justify-center p-10">
       <div className="w-full max-w-5xl space-y-8">
         <div className="space-y-2">
           <h1 className="text-3xl font-semibold tracking-tight text-foreground">Select Account</h1>

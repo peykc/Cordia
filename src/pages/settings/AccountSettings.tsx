@@ -1,4 +1,4 @@
-import { Key } from 'lucide-react'
+import { Key, EyeOff } from 'lucide-react'
 import { useIdentity } from '../../contexts/IdentityContext'
 import { useProfile } from '../../contexts/ProfileContext'
 import { Button } from '../../components/ui/button'
@@ -235,7 +235,7 @@ export function AccountSettings() {
             onClick={() => setRevealUserId(v => !v)}
             className="w-full text-left"
           >
-            <div className="relative">
+            <div className="relative inline-block min-w-[25ch] max-w-full w-fit">
               <p
                 className={`text-xs font-mono break-all font-light ${
                   revealUserId ? 'text-muted-foreground' : 'text-muted-foreground/80 blur-sm select-none'
@@ -245,8 +245,9 @@ export function AccountSettings() {
               </p>
               {!revealUserId && (
                 <div className="absolute inset-0 grid place-items-center">
-                  <span className="text-[11px] text-muted-foreground font-light bg-black/70 px-2 py-0.5 rounded-sm">
-                    Click to reveal
+                  <span className="text-[11px] text-black font-light bg-white px-2 py-0.5 rounded-sm flex items-center gap-1.5">
+                    <EyeOff className="h-3 w-3" strokeWidth={2} />
+                    Reveal
                   </span>
                 </div>
               )}
@@ -263,7 +264,7 @@ export function AccountSettings() {
             onClick={() => setRevealPublicKey(v => !v)}
             className="w-full text-left"
           >
-            <div className="relative">
+            <div className="relative inline-block min-w-[25ch] max-w-full w-fit">
               <p
                 className={`text-xs font-mono break-all font-light ${
                   revealPublicKey ? 'text-muted-foreground' : 'text-muted-foreground/80 blur-sm select-none'
@@ -273,8 +274,9 @@ export function AccountSettings() {
               </p>
               {!revealPublicKey && (
                 <div className="absolute inset-0 grid place-items-center">
-                  <span className="text-[11px] text-muted-foreground font-light bg-black/70 px-2 py-0.5 rounded-sm">
-                    Click to reveal
+                  <span className="text-[11px] text-black font-light bg-white px-2 py-0.5 rounded-sm flex items-center gap-1.5">
+                    <EyeOff className="h-3 w-3" strokeWidth={2} />
+                    Reveal
                   </span>
                 </div>
               )}

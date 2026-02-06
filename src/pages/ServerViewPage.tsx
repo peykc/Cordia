@@ -365,14 +365,14 @@ function ServerViewPage() {
 
   if (!server) {
     return (
-      <div className="h-full bg-background grid-pattern flex items-center justify-center">
+      <div className="h-full bg-background flex items-center justify-center">
         <p className="text-muted-foreground text-sm font-light">Server not found</p>
       </div>
     )
   }
 
   return (
-    <div className="h-full bg-background grid-pattern flex flex-col">
+    <div className="h-full bg-background flex flex-col">
       <header className="border-b-2 border-border">
         <div className="w-full flex h-16 items-center justify-between px-6 min-w-0">
           <div className="flex items-center gap-4 min-w-0 flex-1">

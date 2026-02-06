@@ -43,7 +43,7 @@ function SettingsPage() {
   }
 
   return (
-    <div className="h-full bg-background grid-pattern flex flex-col overflow-hidden">
+    <div className="h-full bg-background flex flex-col overflow-hidden">
       <header className="border-b-2 border-border shrink-0">
         <div className="w-full flex h-16 items-center justify-between px-6">
           <div className="flex items-center gap-4">

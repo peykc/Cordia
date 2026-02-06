@@ -117,7 +117,7 @@ function IdentityRestorePage() {
   }
 
   return (
-    <div className="h-full bg-background grid-pattern">
+    <div className="h-full bg-background">
       <div className="container mx-auto px-6 py-12 max-w-4xl h-full relative">
         <Button
           variant="ghost"

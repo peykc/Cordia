@@ -28,7 +28,7 @@ function SplashPage() {
   }, [accountsLoading, currentAccountId, identity, accounts, navigate])
 
   return (
-    <div className="h-full bg-background grid-pattern flex items-center justify-center">
+    <div className="h-full bg-background flex items-center justify-center">
       <div className="flex flex-col items-start gap-6 px-8">
         <div className="flex items-center gap-3">
           <div className="w-px h-12 bg-foreground/20"></div>

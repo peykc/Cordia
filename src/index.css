@@ -46,14 +46,46 @@
   .text-balance {
     text-wrap: balance;
   }
-  
-  .grid-pattern {
-    background-image: 
-      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-    background-size: 24px 24px;
+
+  /* Animated corner accent on hover - no color change, just corner frame */
+  .corner-accent-hover {
+    --corner-s: 12px;
+    --corner-pad: 2px;
+    --corner-timing: 0.2s;
+    position: relative;
   }
-  
+  .corner-accent-hover::before {
+    content: "";
+    position: absolute;
+    box-sizing: border-box;
+    inset: calc(-1 * var(--corner-pad));
+    padding: var(--corner-pad);
+    border: 2px solid hsl(var(--foreground) / 0.3);
+    background: transparent content-box;
+    mask:
+      conic-gradient(#000 0 0) content-box,
+      conic-gradient(at var(--corner-s) var(--corner-s), #0000 75%, #000 0)
+      0 0 / calc(100% - var(--corner-s)) calc(100% - var(--corner-s));
+    -webkit-mask:
+      conic-gradient(#000 0 0) content-box,
+      conic-gradient(at var(--corner-s) var(--corner-s), #0000 75%, #000 0)
+      0 0 / calc(100% - var(--corner-s)) calc(100% - var(--corner-s));
+    mask-composite: exclude;
+    -webkit-mask-composite: xor;
+    backface-visibility: hidden;
+    pointer-events: none;
+    border-radius: inherit;
+    transition:
+      inset var(--corner-timing) ease,
+      padding var(--corner-timing) ease,
+      border-color var(--corner-timing) ease;
+    will-change: inset, padding;
+  }
+  .corner-accent-hover:hover::before {
+    --corner-pad: 8px;
+    border-color: hsl(var(--foreground) / 0.6);
+  }
+
   .subtle-gradient {
     background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%);
   }

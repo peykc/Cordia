@@ -51,7 +51,7 @@ function IdentitySetupPage() {
   }
 
   return (
-    <div className="h-full bg-background grid-pattern">
+    <div className="h-full bg-background">
       <div className="container mx-auto px-6 py-12 max-w-4xl h-full">
         <div className="grid md:grid-cols-2 gap-12 h-full">
           {/* Left side - Info */}

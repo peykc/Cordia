@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
-import { Plus, Minus, Users, Bell, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn, ClipboardPaste } from 'lucide-react'
+import { Plus, Minus, Users, Bell, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn, ClipboardPaste, EyeOff } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useWindowSize } from '../lib/useWindowSize'
@@ -76,6 +76,7 @@ function ServerListPage() {
   const [isRedeemingCode, setIsRedeemingCode] = useState(false)
   const [isCreatingCode, setIsCreatingCode] = useState(false)
   const [copiedFriendCode, setCopiedFriendCode] = useState(false)
+  const [revealFriendCode, setRevealFriendCode] = useState(false)
   const [pastedCode, setPastedCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
   const [exitingServerId, setExitingServerId] = useState<string | null>(null)
@@ -98,12 +99,13 @@ function ServerListPage() {
     }
   }
 
-  // When the Add by code popup is closed by any means, clear the code boxes so next open starts fresh
+  // When the Add by code popup is closed by any means, clear the code boxes and reveal state so next open starts fresh
   useEffect(() => {
     if (!showFriendCodePopover) {
       setFriendCodeInput('')
       setFriendCodeError('')
       setPastedCode(false)
+      setRevealFriendCode(false)
     }
   }, [showFriendCodePopover])
 
@@ -707,7 +709,7 @@ function ServerListPage() {
   }
 
   return (
-    <div className="h-full bg-background grid-pattern flex flex-col overflow-hidden">
+    <div className="h-full bg-background flex flex-col overflow-hidden">
       <header className="border-b-2 border-border shrink-0">
         <div className="w-full flex h-16 items-center justify-between px-6">
           <div className="flex items-center gap-4">
@@ -846,7 +848,7 @@ function ServerListPage() {
               {/* Servers list (scrolls) */}
               <div className="mt-6 flex-1 min-h-0 overflow-y-auto pr-1">
                 {servers.length === 0 ? (
-                  <div className="border-2 border-border bg-card/50 rounded-lg p-8">
+                  <div className="border-2 border-border bg-card/50 rounded-lg p-6">
                     <div className="max-w-md space-y-4">
                       <h3 className="text-2xl font-light tracking-tight">No servers yet</h3>
                       <p className="text-muted-foreground text-sm leading-relaxed font-light">
@@ -855,7 +857,7 @@ function ServerListPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="grid gap-4 pb-2 min-w-0">
+                  <div className="grid gap-4 p-2 min-w-0">
                     {sortedServers.map((server) => (
                       (() => {
                         const isFav = favoriteServerIds.has(server.id)
@@ -891,10 +893,10 @@ function ServerListPage() {
                           }}
                           role="button"
                           tabIndex={0}
-                          className={`w-full p-6 border-2 ${cardBorder} bg-card hover:bg-accent/50 transition-colors text-left rounded-lg min-w-0 overflow-hidden`}
+                          className={`w-full p-4 border-2 ${cardBorder} bg-card hover:bg-accent/50 transition-colors text-left rounded-lg min-w-0 overflow-visible corner-accent-hover`}
                         >
                           <div className="relative flex items-center justify-between gap-6 min-w-0">
-                            <div className="space-y-2 min-w-0 flex-1">
+                            <div className="space-y-1 min-w-0 flex-1">
                               <h3 className="text-lg font-light tracking-tight truncate">{server.name}</h3>
                               <div className="flex items-center gap-4 text-xs text-muted-foreground">
                                 <span className="flex items-center gap-1">
@@ -910,12 +912,12 @@ function ServerListPage() {
                               )}
                             </div>
                             <div
-                              className={`flex flex-col items-center justify-center gap-2 shrink-0 transition-opacity duration-200 ${
+                              className={`absolute right-1 top-0.5 flex flex-col items-center justify-center gap-2 transition-opacity duration-200 ${
                                 hoveredServerId === server.id
-                                  ? 'opacity-100'
+                                  ? 'opacity-100 pointer-events-auto'
                                   : exitingServerId === server.id
-                                    ? 'opacity-0 pointer-events-none'
-                                    : 'absolute right-6 top-6 opacity-0 pointer-events-none'
+                                    ? 'opacity-100 pointer-events-none'
+                                    : 'opacity-0 pointer-events-none'
                               }`}
                             >
                               <button
@@ -1088,45 +1090,69 @@ function ServerListPage() {
                         {myFriendCode ? (
                           <>
                             <p className="text-xs text-muted-foreground font-light">Your code</p>
-                            <div className="flex items-center gap-2">
-                              <div className="flex items-center gap-1 flex-1 min-w-0">
-                                <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">
-                                  {normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}
-                                </code>
-                                <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
-                                <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">
-                                  {normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}
-                                </code>
+                            <button
+                              type="button"
+                              onClick={() => setRevealFriendCode(v => !v)}
+                              className="w-full text-left"
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="relative flex items-center gap-1 flex-1 min-w-0">
+                                  <code
+                                    className={`min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center ${
+                                      revealFriendCode ? '' : 'blur-sm select-none text-muted-foreground/80'
+                                    }`}
+                                  >
+                                    {normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}
+                                  </code>
+                                  <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                                  <code
+                                    className={`min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center ${
+                                      revealFriendCode ? '' : 'blur-sm select-none text-muted-foreground/80'
+                                    }`}
+                                  >
+                                    {normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}
+                                  </code>
+                                  {!revealFriendCode ? (
+                                    <div className="absolute inset-0 flex items-center justify-center z-20">
+                                      <span className="text-[11px] text-black font-light bg-white px-2 py-0.5 rounded-sm flex items-center gap-1.5 shrink-0">
+                                        <EyeOff className="h-3 w-3" strokeWidth={2} />
+                                        Reveal
+                                      </span>
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-8 w-8 shrink-0"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
+                                    setCopiedFriendCode(true)
+                                    setTimeout(() => setCopiedFriendCode(false), 2000)
+                                  }}
+                                  title="Copy"
+                                >
+                                  {copiedFriendCode ? (
+                                    <Check className="h-3.5 w-3.5 text-green-500" />
+                                  ) : (
+                                    <Copy className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                                  onClick={async (e) => {
+                                    e.stopPropagation()
+                                    await revokeFriendCode()
+                                  }}
+                                  title="Revoke"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
                               </div>
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-8 w-8 shrink-0"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
-                                  setCopiedFriendCode(true)
-                                  setTimeout(() => setCopiedFriendCode(false), 2000)
-                                }}
-                                title="Copy"
-                              >
-                                {copiedFriendCode ? (
-                                  <Check className="h-3.5 w-3.5 text-green-500" />
-                                ) : (
-                                  <Copy className="h-3.5 w-3.5" />
-                                )}
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                                onClick={async () => {
-                                  await revokeFriendCode()
-                                }}
-                                title="Revoke"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
+                            </button>
                           </>
                         ) : (
                           <Button
@@ -1647,19 +1673,65 @@ function ServerListPage() {
             {myFriendCode ? (
               <>
                 <p className="text-xs text-muted-foreground font-light">Your code</p>
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1 flex-1 min-w-0">
-                    <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">{normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}</code>
-                    <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
-                    <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">{normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}</code>
+                <button
+                  type="button"
+                  onClick={() => setRevealFriendCode(v => !v)}
+                  className="w-full text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex items-center gap-1 flex-1 min-w-0">
+                      <code
+                        className={`min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center ${
+                          revealFriendCode ? '' : 'blur-sm select-none text-muted-foreground/80'
+                        }`}
+                      >
+                        {normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}
+                      </code>
+                      <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                      <code
+                        className={`min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center ${
+                          revealFriendCode ? '' : 'blur-sm select-none text-muted-foreground/80'
+                        }`}
+                      >
+                        {normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}
+                      </code>
+                      {!revealFriendCode ? (
+                        <div className="absolute inset-0 flex items-center justify-center z-20">
+                          <span className="text-[11px] text-black font-light bg-white px-2 py-0.5 rounded-sm flex items-center gap-1.5 shrink-0">
+                            <EyeOff className="h-3 w-3" strokeWidth={2} />
+                            Reveal
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
+                        setCopiedFriendCode(true)
+                        setTimeout(() => setCopiedFriendCode(false), 2000)
+                      }}
+                      title="Copy"
+                    >
+                      {copiedFriendCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        await revokeFriendCode()
+                      }}
+                      title="Revoke"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
-                  <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" onClick={() => { navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? '')); setCopiedFriendCode(true); setTimeout(() => setCopiedFriendCode(false), 2000) }} title="Copy">
-                    {copiedFriendCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                  <Button variant="outline" size="icon" className="h-8 w-8 shrink-0 text-destructive hover:text-destructive" onClick={async () => { await revokeFriendCode() }} title="Revoke">
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                </button>
               </>
             ) : (
               <Button variant="outline" size="sm" className="w-full justify-start gap-2 font-light bg-white text-black border-white hover:bg-white/90 hover:text-black" disabled={isCreatingCode} onClick={async () => { setIsCreatingCode(true); try { await createFriendCode() } catch (e) { console.warn(e) } finally { setIsCreatingCode(false) } }}>
