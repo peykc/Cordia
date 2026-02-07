@@ -9,10 +9,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the prebuilt binary from GitHub Actions
-COPY signaling-server/target/release/cordia-beacon /app/cordia-beacon
+COPY beacon-server/target/release/cordia-beacon /app/cordia-beacon
 
 # Copy entrypoint script
-COPY signaling-server/entrypoint.sh /app/entrypoint.sh
+COPY beacon-server/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Expose WebSocket port
