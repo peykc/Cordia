@@ -62,7 +62,8 @@ function ServerListPage() {
   const [joinError, setJoinError] = useState('')
   const [showJoinInline, setShowJoinInline] = useState(false)
   const [showCreateInline, setShowCreateInline] = useState(false)
-  const joinInputRef = useRef<HTMLInputElement | null>(null)
+  const joinFirstInputRef = useRef<HTMLInputElement | null>(null)
+  const joinSecondInputRef = useRef<HTMLInputElement | null>(null)
   const createInputRef = useRef<HTMLInputElement | null>(null)
   const [favoriteServerIds, setFavoriteServerIds] = useState<Set<string>>(new Set())
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
@@ -78,6 +79,7 @@ function ServerListPage() {
   const [copiedFriendCode, setCopiedFriendCode] = useState(false)
   const [revealFriendCode, setRevealFriendCode] = useState(false)
   const [pastedCode, setPastedCode] = useState(false)
+  const [pastedJoinCode, setPastedJoinCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
   const [exitingServerId, setExitingServerId] = useState<string | null>(null)
   const [friendsPaneMode, setFriendsPaneMode] = useState<'friends' | 'pending'>('friends')
@@ -130,8 +132,10 @@ function ServerListPage() {
 
   useEffect(() => {
     if (showJoinInline) {
-      // Small delay lets the input mount before focusing
-      setTimeout(() => joinInputRef.current?.focus(), 0)
+      setTimeout(() => joinFirstInputRef.current?.focus(), 0)
+    } else {
+      setInviteCode('')
+      setPastedJoinCode(false)
     }
   }, [showJoinInline])
 
@@ -758,47 +762,122 @@ function ServerListPage() {
                     {showCreateInline ? 'Cancel' : 'New Server'}
                   </Button>
 
-                  {/* Join popover (does not affect layout) */}
+                  {/* Join popover (does not affect layout) - matches Add by code style */}
                   {showJoinInline && (
-                    <div className="absolute right-0 bottom-full mb-2 z-50 w-[200px] max-w-[calc(100vw-4rem)]">
-                      <div className="border-2 border-border bg-card/80 backdrop-blur-sm rounded-lg p-2 shadow-lg">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 px-2 py-1.5 bg-background border border-border rounded-md">
-                            <input
-                              ref={joinInputRef}
-                              type="text"
-                              value={inviteCode}
-                              onChange={(e) => {
-                                setInviteCode(e.target.value)
-                                setJoinError('')
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !isCreating) {
-                                  handleJoinServer()
-                                } else if (e.key === 'Escape') {
-                                  setShowJoinInline(false)
-                                  setInviteCode('')
+                    <div className="absolute right-0 bottom-full mb-2 z-50 w-56 max-w-[calc(100vw-4rem)]">
+                      <div className="border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
+                        <div className="pb-2 border-b border-border">
+                          <p className="text-xs text-muted-foreground font-light mb-1">Join by code</p>
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 shrink-0 min-w-[14ch]">
+                              <input
+                                ref={joinFirstInputRef}
+                                type="text"
+                                value={inviteCode.slice(0, 4)}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
+                                  setInviteCode(raw)
                                   setJoinError('')
-                                }
+                                  if (raw.length > 4) setTimeout(() => joinSecondInputRef.current?.focus(), 0)
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !isCreating) handleJoinServer()
+                                  else if (e.key === 'Escape') {
+                                    setShowJoinInline(false)
+                                    setInviteCode('')
+                                    setJoinError('')
+                                  }
+                                  const atStart = (e.target as HTMLInputElement).selectionStart === 0
+                                  if (e.key === 'Backspace' && atStart && inviteCode.length > 0) {
+                                    e.preventDefault()
+                                    const newFirst = inviteCode.slice(0, 4).slice(0, -1)
+                                    const newSecond = inviteCode.slice(4, 8)
+                                    setInviteCode(newFirst + newSecond)
+                                    setTimeout(() => {
+                                      const el = joinFirstInputRef.current
+                                      if (el) {
+                                        el.focus()
+                                        el.setSelectionRange(newFirst.length, newFirst.length)
+                                      }
+                                    }, 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                                spellCheck={false}
+                              />
+                              <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                              <input
+                                ref={joinSecondInputRef}
+                                type="text"
+                                value={inviteCode.slice(4, 8)}
+                                onChange={(e) => {
+                                  const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
+                                  setInviteCode(inviteCode.slice(0, 4) + second)
+                                  setJoinError('')
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !isCreating) handleJoinServer()
+                                  else if (e.key === 'Escape') {
+                                    setShowJoinInline(false)
+                                    setInviteCode('')
+                                    setJoinError('')
+                                  }
+                                  const atStart = (e.target as HTMLInputElement).selectionStart === 0
+                                  if (e.key === 'Backspace' && atStart && inviteCode.length > 0) {
+                                    e.preventDefault()
+                                    const newFirst = inviteCode.slice(0, 4).slice(0, -1)
+                                    const newSecond = inviteCode.slice(4, 8)
+                                    setInviteCode(newFirst + newSecond)
+                                    setTimeout(() => {
+                                      const el = joinFirstInputRef.current
+                                      if (el) {
+                                        el.focus()
+                                        el.setSelectionRange(newFirst.length, newFirst.length)
+                                      }
+                                    }, 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                                spellCheck={false}
+                                maxLength={4}
+                              />
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-8 w-8 shrink-0 self-center"
+                              title={pastedJoinCode ? 'Pasted' : 'Paste'}
+                              onClick={async () => {
+                                try {
+                                  const text = (window as { __TAURI__?: unknown }).__TAURI__
+                                    ? await readClipboardText()
+                                    : await navigator.clipboard.readText()
+                                  const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
+                                  setInviteCode(raw)
+                                  setJoinError('')
+                                  setPastedJoinCode(true)
+                                  setTimeout(() => setPastedJoinCode(false), 2000)
+                                  if (raw.length > 4) setTimeout(() => joinSecondInputRef.current?.focus(), 0)
+                                  else joinFirstInputRef.current?.focus()
+                                } catch {}
                               }}
-                              placeholder="Invite code"
-                              className="w-full bg-transparent outline-none text-[11px] font-mono tracking-wider"
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
+                            >
+                              {pastedJoinCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <ClipboardPaste className="h-3.5 w-3.5" />}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className={`h-8 shrink-0 px-[0.25rem] text-[0.8rem] ${inviteCode.trim().length >= 8 && !isCreating ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}`}
+                              disabled={isCreating || inviteCode.trim().length < 8}
+                              onClick={handleJoinServer}
+                            >
+                              {isCreating ? '...' : 'Join'}
+                            </Button>
                           </div>
-                          <Button
-                            onClick={handleJoinServer}
-                            variant="outline"
-                            size="icon"
-                            className="h-8 w-8 shrink-0"
-                            disabled={isCreating || !inviteCode.trim()}
-                            title="Join"
-                          >
-                            <CornerDownLeft className="h-3.5 w-3.5" />
-                          </Button>
                         </div>
-                        {joinError && <p className="text-xs text-red-500">{joinError}</p>}
+                        {joinError && <p className="text-xs text-destructive mt-1">{joinError}</p>}
                       </div>
                     </div>
                   )}
@@ -893,7 +972,7 @@ function ServerListPage() {
                           }}
                           role="button"
                           tabIndex={0}
-                          className={`w-full p-4 border-2 ${cardBorder} bg-card hover:bg-accent/50 transition-colors text-left rounded-lg min-w-0 overflow-visible corner-accent-hover`}
+                          className={`w-full p-4 border-2 ${cardBorder} bg-card hover:bg-accent transition-colors text-left rounded-lg min-w-0 overflow-visible corner-accent-hover`}
                         >
                           <div className="relative flex items-center justify-between gap-6 min-w-0">
                             <div className="space-y-1 min-w-0 flex-1">
