@@ -130,7 +130,7 @@ impl IdentityManager {
                     std::io::ErrorKind::NotFound,
                     "APPDATA not found"
                 )))?;
-            Ok(PathBuf::from(app_data).join("Roommate"))
+            Ok(PathBuf::from(app_data).join("Cordia"))
         }
 
         #[cfg(target_os = "macos")]
@@ -140,7 +140,7 @@ impl IdentityManager {
                     std::io::ErrorKind::NotFound,
                     "HOME not found"
                 )))?;
-            Ok(PathBuf::from(home).join("Library").join("Application Support").join("Roommate"))
+            Ok(PathBuf::from(home).join("Library").join("Application Support").join("Cordia"))
         }
 
         #[cfg(target_os = "linux")]

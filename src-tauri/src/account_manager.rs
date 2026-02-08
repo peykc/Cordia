@@ -114,7 +114,7 @@ impl AccountManager {
                     "APPDATA not found",
                 ))
             })?;
-            Ok(PathBuf::from(app_data).join("Roommate"))
+            Ok(PathBuf::from(app_data).join("Cordia"))
         }
 
         #[cfg(target_os = "macos")]
@@ -128,7 +128,7 @@ impl AccountManager {
             Ok(PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
-                .join("Roommate"))
+                .join("Cordia"))
         }
 
         #[cfg(target_os = "linux")]

@@ -10,12 +10,12 @@ const __dirname = path.dirname(__filename);
 
 const iconsDir = path.join(__dirname, 'src-tauri', 'icons');
 
-// Create a simple blue square image
+// Create a simple black square with white C (Cordia)
 async function createIcon(size) {
   const svg = `
     <svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="${size}" height="${size}" fill="#3B82F6"/>
-      <text x="50%" y="50%" font-family="Arial" font-size="${size * 0.4}" fill="white" text-anchor="middle" dominant-baseline="middle">R</text>
+      <rect width="${size}" height="${size}" fill="#0a0a0a"/>
+      <text x="50%" y="50%" font-family="Arial" font-size="${size * 0.45}" font-weight="bold" fill="white" text-anchor="middle" dominant-baseline="middle">C</text>
     </svg>
   `;
   
