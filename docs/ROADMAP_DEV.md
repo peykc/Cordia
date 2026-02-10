@@ -13,7 +13,7 @@ These represent the core technical milestones Cordia has already shipped during 
 - Multi-account support (separate per-account data)
 - Account export/import (`.key`)
 
-### ✅ Servers (“Houses”) + chats
+### ✅ Servers + chats
 - Create/join servers via invite codes
 - Local encrypted server state
 - Multi-chat model when Beacon is connected

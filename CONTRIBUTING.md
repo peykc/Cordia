@@ -130,7 +130,7 @@ Cordia/
 │   └── src/
 │       ├── identity.rs     # Cryptographic identity (stored locally)
 │       ├── account_manager.rs  # Multi-account support
-│       ├── server.rs       # Server ("House") data + encryption
+│       ├── server.rs       # Server data + encryption
 │       └── main.rs         # Tauri commands
 ├── beacon-server/          # Beacon server (Axum + WebSocket)
 │   └── src/                # Beacon implementation

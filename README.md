@@ -33,7 +33,7 @@ If you’re building from source, start with **[QUICKSTART.md](QUICKSTART.md)**.
 ## Key features (today)
 
 - **P2P voice**: low-latency peer-to-peer voice calls (WebRTC).
-- **Servers (“Houses”) + voice chats**: organize hangouts into servers and voice chats.
+- **Servers + voice chats**: organize hangouts into servers and voice chats.
 - **Presence**: see who’s online / active / in voice.
 - **Accounts**: multiple local accounts on one device, each with its own data directory.
 - **Backup/restore**: export/import your account to a `.key` file.
@@ -76,28 +76,50 @@ More internal/dev planning docs live in **[`docs/`](docs/)**.
 
 This roadmap is written as **user-facing outcomes**. A more technical “developer roadmap” lives in **[`docs/ROADMAP_DEV.md`](docs/ROADMAP_DEV.md)**.
 
-### Phase 1 — Cordia v1 (Windows release)
+### ✅ Completed (foundation milestones)
 
-- **Windows `.exe` download on GitHub Releases**
-- **Friends → DMs**: 1 DM window with tabs (DMs behave like a 2-person server)
-- **Ephemeral messaging**: messages exist while the app is open (no persistence yet)
-- **Images**: approved per-image (with optional “trust this friend for images” prompt after download)
-- **Audio pipeline v1**: better mic UX + monitoring/visualization (beyond browser defaults)
+These are the major user-visible capabilities already built:
+
+#### ✅ Phase 1 — Accounts + basic servers
+- Create a local **account** (no passwords)
+- Create/join **servers**
+- Manage voice chats and basic server structure
+
+#### ✅ Phase 2 — Beacon support (optional)
+- Use the hosted **Beacon** or self-host your own
+- Presence + “connected / offline” status
+- Better discovery + richer server features when Beacon is connected
+
+#### ✅ Phase 3 — P2P voice experience
+- Peer-to-peer **voice calls** (WebRTC)
+- Speaking indicators + voice presence
+
+#### ✅ Phase 4 — Reliability + usability
+- Multiple local accounts
+- Backup/restore via `.key`
+- Audio settings + device hot-swapping
+
+### 📌 Next — Cordia v1 (Windows release)
+
+- **Windows `.exe`** on GitHub Releases
+- **Friends → DMs**: one DM OS window with tabs (DMs behave like a 2-person server)
+- **Ephemeral messaging**: buffered while the app is open (no history across restarts)
+- **Images**: approve per-image, with optional “trust this friend for images” prompt after download
+- **Audio pipeline v1**: better mic UX + monitoring/visualization
 - **NAT guidance**: detect Open/Moderate/Strict and guide users to fixes (no relay)
-- **Sound effects**: basic UX sounds (join/leave/pings) and configurable volumes
+- **Sound effects**: configurable UX sounds (join/leave/pings)
 - **UI polish**: server view, DM window, settings
 
-### Phase 2 — Cordia v1.5 (after v1)
+### 🔜 After v1 — Cordia v1.5
 
 - **macOS + Linux builds**
 - **Screen sharing**
-- More UX polish and quality-of-life improvements
 
-### Phase 3 — Cordia v2 (after launch)
+### 🔮 After launch — Cordia v2
 
-- **Multi-channel servers** (hosted “House” requirement)
+- **Multi-channel servers** (when hosting is introduced)
 - **Message persistence** (history across app restarts)
-- **Optional relays** for difficult NAT cases (voice still P2P when possible)
+- **Optional relays** for difficult NAT cases (voice stays P2P when possible)
 - **Mobile support**
 
 ## Contributing

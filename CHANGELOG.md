@@ -16,20 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **P2P Voice Chat**: Direct peer-to-peer WebRTC connections for low latency voice communication
-- **Houses & Rooms**: Organize conversations with persistent spaces and room management
+- **Servers & Chats**: Organize conversations with persistent spaces and chat management
 - **Real-time Presence**: Color-coded status indicators (online, active, in call)
 - **Voice Activity Detection**: Visual indicators show who's speaking in real-time
 - **Multi-Account Support**: Run multiple independent instances with separate data directories
-- **Account Export/Import**: Backup and restore your identity and house keys
-- **Per-Account Signaling Server**: Each account can use a different signaling server
-- **Signaling Server**: Optional WebSocket server for peer discovery and room metadata
-- **House Invites**: Share invite codes to let friends join your houses
+- **Account Export/Import**: Backup and restore your account and server keys
+- **Per-Account Beacon**: Each account can use a different Beacon
+- **Beacon (optional)**: WebSocket server for peer discovery and metadata sync
+- **Server Invites**: Share invite codes to let friends join your servers
 - **Voice Participant Visibility**: See who's in voice calls in each room
 - **Device Hot-Swapping**: Change audio devices without leaving calls
 - **Voice Activation & Push-to-Talk**: Flexible audio input modes
 - **Audio Settings UI**: Configure input/output devices, thresholds, and modes
 - **Ed25519 Identity**: Cryptographic identity management
-- **End-to-End Encryption**: Encrypted house data and communication
+- **End-to-End Encryption**: Encrypted server state and communication
 - **Graceful Degradation**: Works offline with reduced features
 - **Modern UI**: Clean, brutalist design with dark mode
 - **Resizable Sidebar**: Adjustable UserCard and room panel width
@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Presence synchronization across rooms
 - Voice participant cleanup on disconnect
 - Account switching and signaling server reload
-- House import duplicate prevention
+- Server import duplicate prevention
 - Symmetric key handling for invite redemption
 
 ### Security
@@ -68,4 +68,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mobile support
 - Enhanced encryption features
 
-[1.0.0]: https://github.com/Pey-K/Roommate/releases/tag/v1.0.0
+[1.0.0]: https://github.com/Pey-K/Cordia/releases/tag/v1.0.0

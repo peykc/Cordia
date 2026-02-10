@@ -58,8 +58,8 @@ When reporting a vulnerability, please include:
 
 ### Data Security
 
-- **Local Storage**: Your account data and server (“House”) keys are stored locally
-- **Encryption**: House data is encrypted with symmetric keys
+- **Local Storage**: Your account data and server keys are stored locally
+- **Encryption**: Server data is encrypted with symmetric keys
 - **Data Directory**: Be aware of where your data is stored
   - Windows: `%APPDATA%\Cordia\`
   - macOS: `~/Library/Application Support/Cordia/`
