@@ -9,6 +9,7 @@ This folder contains deeper technical notes and planning docs that are too detai
 
 ### Planning docs
 
+- **Design boundaries (what Cordia will not do)**: `DESIGN_BOUNDARIES.md`
 - **Developer roadmap (technical)**: `ROADMAP_DEV.md`
 - **Friends v2 plan**: `FRIENDS_V2_PLAN.md`
 

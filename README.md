@@ -10,6 +10,7 @@ A serious indie, privacy-first **P2P voice hangout app** with modern usability. 
 - [Download](#download)
 - [Key features (today)](#key-features-today)
 - [How it works](#how-it-works)
+- [What Cordia is not](#what-cordia-is-not)
 - [Self-hosting (optional)](#self-hosting-optional)
 - [Documentation](#documentation)
 - [Roadmap](#roadmap)
@@ -35,7 +36,7 @@ If you’re building from source, start with **[QUICKSTART.md](QUICKSTART.md)**.
 - **P2P voice**: low-latency peer-to-peer voice calls (WebRTC).
 - **Servers + voice chats**: organize hangouts into servers and voice chats.
 - **Presence**: see who’s online / active / in voice.
-- **Accounts**: multiple local accounts on one device, each with its own data directory (key-based identity using **Ed25519**).
+- **Accounts**: multiple local accounts on one device, each with its own data directory (passwordless key-based identity using **Ed25519**).
 - **Backup/restore**: export/import your account to a `.key` file.
 - **Optional Beacon**: improves discovery + presence and enables “multi-chat” servers when connected.
 
@@ -48,6 +49,10 @@ If you’re building from source, start with **[QUICKSTART.md](QUICKSTART.md)**.
   - The Beacon still necessarily sees **some** routing metadata (e.g. user IDs, presence updates, server IDs) to do its job.
 
 Cordia v1 servers behave like **single-channel group chats**. Multi-channel servers will come later, likely requiring a hosted server so the Beacon stays lightweight.
+
+## What Cordia is not
+
+Cordia will **not** require government ID or real names, will not offer public discovery (no user directory), and will not gate features by monetization. The Beacon does not inspect or retain message contents, and Cordia does not build or monetize social graphs. It is not designed for massive communities per server or per call. Full details: **[What Cordia is not](docs/DESIGN_BOUNDARIES.md)**.
 
 ## Self-hosting (optional)
 
