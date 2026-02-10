@@ -45,8 +45,7 @@ When reporting a vulnerability, please include:
 
 ### Account Security
 
-- **Backup Your Recovery Key**: Store your account recovery key in a safe place
-- **Export Your Identity**: Regularly export your identity in Settings → Info & Export
+- **Backup your `.key` file**: Regularly export a backup `.key` file and store it in a safe place (Settings → Account / Info & Export)
 - **Use Strong Display Names**: While not required, use meaningful display names
 - **Protect Your Invite Codes**: Don't share invite codes publicly
 
@@ -59,14 +58,14 @@ When reporting a vulnerability, please include:
 
 ### Data Security
 
-- **Local Storage**: Your identity and house keys are stored locally
+- **Local Storage**: Your account data and server (“House”) keys are stored locally
 - **Encryption**: House data is encrypted with symmetric keys
 - **Data Directory**: Be aware of where your data is stored
   - Windows: `%APPDATA%\Cordia\`
   - macOS: `~/Library/Application Support/Cordia/`
   - Linux: `~/.config/cordia/`
 
-### Signaling Server Security
+### Beacon server security
 
 If you're running your own beacon:
 
@@ -84,14 +83,14 @@ If you're running your own beacon:
 - **No Authentication**: The beacon has no user/auth; optional CORS, body size, and connection limits are available via env (see BEACON_SETUP.md)
 - **Public Invite Codes**: Invite codes are not cryptographically secure (they're opaque but predictable)
 - **IP Exposure**: P2P connections may expose your local IP address to peers
-- **No Message Encryption**: Voice is P2P but beacon messages are not encrypted (future: E2E encryption)
+- **Ephemeral messaging (planned)**: text messaging is planned; message encryption and persistence are future work
 
 ### Privacy Protections
 
-- **Server Cannot Read Data**: The beacon cannot read your user data. All house data, room content, and messages are encrypted and stored locally on your device
-- **P2P Voice**: Voice communication is direct peer-to-peer (WebRTC) and never passes through the beacon
-- **Local Storage**: Your identity, house keys, and encrypted data are stored locally and never sent to the server
-- **Server Role**: The beacon only facilitates peer discovery, room metadata, and presence tracking - it does not have access to your encrypted content
+- **Voice is P2P**: voice communication is direct peer-to-peer (WebRTC) and never passes through the beacon
+- **Sensitive server state is encrypted locally**: server state is encrypted client-side before it’s uploaded/synced
+- **Local Storage**: Your account keys and encrypted server data are stored locally
+- **Beacon role**: the beacon facilitates discovery/presence and some metadata sync; it should not have access to your encrypted server state
 
 ### Future Security Enhancements
 

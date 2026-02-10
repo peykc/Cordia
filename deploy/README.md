@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/Pey-K/Cordia/main/deploy/install.sh
 
 ```bash
 cd /mnt/App/stacks/cordia-beacon
-docker-compose logs -f signaling-server
+docker-compose logs -f cordia-beacon
 ```
 
 You should see: `Beacon listening on ws://127.0.0.1:9001`
@@ -69,7 +69,7 @@ docker-compose up -d
 
 ```bash
 docker-compose ps
-docker-compose logs -f signaling-server
+docker-compose logs -f cordia-beacon
 ```
 
 ## Configuration
@@ -125,7 +125,7 @@ docker-compose down
 docker-compose restart
 
 # View logs
-docker-compose logs -f signaling-server
+docker-compose logs -f cordia-beacon
 
 # Check status
 docker-compose ps
@@ -133,24 +133,18 @@ docker-compose ps
 
 ## Accessing from Cordia App
 
-Once the server is running on your NAS, you'll need to update the Cordia app to use your NAS IP address instead of localhost.
+You do **not** need to rebuild Cordia to point at your beacon.
 
-**Example**: If your NAS IP is `192.168.1.100`:
+In the app, go to **Settings → Connections** and set your beacon URL, for example:
 
-Update `src-tauri/src/signaling.rs`:
-```rust
-pub fn get_default_signaling_url() -> String {
-    "ws://192.168.1.100:9001".to_string()
-}
-```
-
-Then rebuild the Cordia app.
+- `ws://192.168.1.100:9001` (LAN)
+- `wss://beacon.yourdomain.com` (recommended when exposed publicly behind TLS)
 
 ## Troubleshooting
 
 ### Can't Connect
 1. Check if server is running: `docker-compose ps`
-2. Check logs: `docker-compose logs signaling-server`
+2. Check logs: `docker-compose logs cordia-beacon`
 3. Verify port is accessible: `telnet YOUR_NAS_IP 9001`
 
 ### Permission Issues
@@ -173,8 +167,8 @@ If you want to build the image locally instead of pulling from GitHub:
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/roommate.git
-cd roommate
+git clone https://github.com/YOUR_USERNAME/Cordia.git
+cd Cordia
 
 # Build and start
 docker-compose up -d --build

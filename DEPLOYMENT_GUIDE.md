@@ -6,7 +6,7 @@ Simple guide for deploying your own Cordia beacon to your NAS or server.
 
 **Privacy:** The beacon cannot read your user data. All server data, chat content, and messages are encrypted and stored locally on your device. The beacon only facilitates peer discovery and presence tracking. Your voice communication is direct peer-to-peer and never passes through the server.
 
-You can change the beacon URL at any time in Settings → Connections, and each account can use a different server.
+You can change the beacon URL at any time in Settings → Connections, and each account can use a different beacon.
 
 ## Installation Methods
 
@@ -67,11 +67,11 @@ That's it! The installer will:
 
 **Verify it's working:**
 ```bash
-cd /mnt/App/stacks/roommate-signaling
+cd /mnt/App/stacks/cordia-beacon
 docker-compose logs -f cordia-beacon
 ```
 
-You should see: `Signaling server listening on ws://127.0.0.1:9001`
+You should see: `Beacon listening on ws://127.0.0.1:9001`
 
 ---
 
@@ -81,8 +81,8 @@ If you prefer manual setup:
 
 ```bash
 # Create directory
-mkdir -p /mnt/App/stacks/roommate-signaling
-cd /mnt/App/stacks/roommate-signaling
+mkdir -p /mnt/App/stacks/cordia-beacon
+cd /mnt/App/stacks/cordia-beacon
 
 # Download configuration
 wget https://raw.githubusercontent.com/Pey-K/Cordia/main/deploy/docker-compose.yml
@@ -90,7 +90,7 @@ wget https://raw.githubusercontent.com/Pey-K/Cordia/main/deploy/docker-compose.y
 # Update image name with your username
 # Edit docker-compose.yml and replace YOUR_USERNAME
 
-# Start server
+# Start beacon
 docker-compose pull
 docker-compose up -d
 ```
@@ -107,26 +107,21 @@ hostname -I | awk '{print $1}'
 
 This will show something like: `192.168.1.100`
 
-### Update App Configuration
+### Connect the Cordia app to your beacon
 
-The Cordia app needs to be configured with your server's IP address. The developer needs to update:
+You do **not** need to rebuild the Cordia app.
 
-**File:** `src-tauri/src/signaling.rs`
+In Cordia, go to **Settings → Connections** and set your beacon URL, for example:
 
-```rust
-pub fn get_default_signaling_url() -> String {
-    "ws://YOUR_NAS_IP:9001".to_string()  // Replace with your actual IP
-}
-```
-
-Then rebuild the app: `npm run tauri build`
+- `ws://192.168.1.100:9001` (LAN)
+- `wss://beacon.yourdomain.com` (recommended when exposed publicly behind TLS)
 
 ## Managing the Server
 
 All commands should be run from the installation directory:
 
 ```bash
-cd /mnt/App/stacks/roommate-signaling
+cd /mnt/App/stacks/cordia-beacon
 ```
 
 ### View Logs
@@ -210,10 +205,10 @@ sudo chown -R 1000:1000 /mnt/App/apps/signal
 To completely remove the beacon:
 
 ```bash
-cd /mnt/App/stacks/roommate-signaling
+cd /mnt/App/stacks/cordia-beacon
 docker-compose down
 docker rmi ghcr.io/YOUR_USERNAME/cordia-beacon:latest
-rm -rf /mnt/App/stacks/roommate-signaling
+rm -rf /mnt/App/stacks/cordia-beacon
 # Optionally remove data
 rm -rf /mnt/App/apps/signal
 ```

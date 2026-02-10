@@ -10,7 +10,7 @@ Before you begin, make sure you have:
 
 - **Node.js** (v18 or higher)
 - **Rust** (latest stable)
-- **Docker** (for signaling server)
+- **Docker** (optional - for running a local beacon)
 - **Git**
 
 See **[SETUP.md](SETUP.md)** for detailed platform-specific setup instructions.
@@ -19,8 +19,8 @@ See **[SETUP.md](SETUP.md)** for detailed platform-specific setup instructions.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/roommate.git
-   cd roommate
+   git clone https://github.com/YOUR_USERNAME/Cordia.git
+   cd Cordia
    ```
 
 2. **Install dependencies:**
@@ -28,12 +28,12 @@ See **[SETUP.md](SETUP.md)** for detailed platform-specific setup instructions.
    npm install
    ```
 
-3. **Start the signaling server (optional):**
+3. **Start a local beacon (optional):**
    ```bash
    docker-compose up -d
    ```
    
-   **Note:** You can also use the default server at `beacon.pkcollection.net` for development. No local server needed!
+   **Note:** You can also use the default beacon at `beacon.pkcollection.net` for development. No local server needed!
 
 4. **Start the development server:**
    ```bash
@@ -65,7 +65,7 @@ git checkout -b fix/your-bug-fix
 
 - Test locally with `npm run tauri dev`
 - Test with multiple instances (use `launch1.bat` and `launch2.bat` for Windows)
-- Verify the signaling server still works
+- Verify the beacon server still works (if you changed it)
 - Test edge cases and error handling
 
 ### 4. Commit Your Changes
@@ -120,7 +120,7 @@ Then create a pull request on GitHub with:
 ## Project Structure
 
 ```
-roommate/
+Cordia/
 ├── src/                    # React frontend
 │   ├── components/         # Reusable UI components
 │   ├── contexts/           # React contexts (state management)
@@ -128,12 +128,12 @@ roommate/
 │   └── pages/              # Page components
 ├── src-tauri/              # Rust backend (Tauri)
 │   └── src/
-│       ├── identity.rs     # Identity management
-│       ├── house.rs        # House/room logic
+│       ├── identity.rs     # Cryptographic identity (stored locally)
+│       ├── account_manager.rs  # Multi-account support
+│       ├── server.rs       # Server ("House") data + encryption
 │       └── main.rs         # Tauri commands
-├── signaling-server/       # WebSocket signaling server
-│   └── src/
-│       └── main.rs         # Signaling server implementation
+├── beacon-server/          # Beacon server (Axum + WebSocket)
+│   └── src/                # Beacon implementation
 └── deploy/                 # Deployment configurations
 ```
 

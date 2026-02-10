@@ -17,12 +17,14 @@ Cordia includes a default beacon at **`beacon.pkcollection.net`** that works out
 
 ## Privacy & Security
 
-**Important:** The beacon cannot read your user data. All server data, chat content, and messages are encrypted and stored locally on your device. The beacon only facilitates:
-- Peer discovery (finding other users)
-- Chat metadata (chat names, member lists)
-- Presence tracking (who's online/active)
+**Important:** Voice is direct peer-to-peer (WebRTC) and never passes through the beacon.
 
-Your actual voice communication is direct peer-to-peer (WebRTC) and never passes through the beacon. Your server keys, encrypted data, and identity are stored locally and never sent to the beacon.
+Cordia encrypts sensitive server state locally before it ever reaches the beacon. The beacon still necessarily sees some routing metadata to function (for example: user IDs, presence updates, and which server IDs you’re currently active in).
+
+At a high level the beacon facilitates:
+- Peer discovery (finding other users)
+- Presence tracking (who's online/active/in voice)
+- Server metadata sync (to enable multi-chat servers when connected)
 
 ## Prerequisites
 

@@ -39,7 +39,7 @@ You should see: `Beacon listening on ws://127.0.0.1:9001`
 
 **Note:** You can change the beacon URL at any time in Settings → Connections. Each account can use a different beacon.
 
-**Privacy Note:** The beacon cannot read your user data. All server data, chat content, and messages are encrypted and stored locally. The beacon only helps with peer discovery and presence tracking. Your voice communication is direct peer-to-peer and never passes through the beacon.
+**Privacy Note:** Voice is direct peer-to-peer and never passes through the beacon. Sensitive server state is encrypted locally. The beacon still necessarily sees some routing metadata (like user IDs and presence updates) to do its job.
 
 ## Step 2: Install Dependencies and Start Cordia
 
@@ -55,10 +55,10 @@ The app window will open automatically.
 
 ## Step 3: Create Your First Server
 
-1. **Create Your Identity** (first time only):
+1. **Create your account** (first time only):
    - Enter a display name (e.g., "Alice")
-   - Click "Create Identity"
-   - ⚠️ **Important:** Save your recovery key somewhere safe! You'll need it to restore your account.
+   - Continue to create your local account
+   - ⚠️ **Important:** Export a backup `.key` file and keep it somewhere safe (Settings → Account). You’ll need it to restore on another device or after reinstall.
 
 2. **Create a Server**:
    - Click the **"New Server"** button
@@ -199,7 +199,7 @@ docker-compose down
 - 👥 **Invite Friends** - Share your server invite code to get friends connected
 - 🏠 **Create Multiple Servers** - Organize different groups (work, friends, family)
 - 🗣️ **Try Voice Features** - Test voice activity detection, presence indicators, and call management
-- 📦 **Backup Your Account** - Export your identity in Settings → Info & Export to backup your keys
+- 📦 **Backup Your Account** - Export your `.key` backup in Settings → Account (or Settings → Info & Export) to restore later
 
 ## Need More Help?
 

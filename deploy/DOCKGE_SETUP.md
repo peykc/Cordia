@@ -160,7 +160,7 @@ In your container manager, the container should show:
 
 Click on the container and view logs. You should see:
 ```
-Signaling server listening on ws://127.0.0.1:9001
+Beacon listening on ws://127.0.0.1:9001
 ```
 
 ### Test Connection

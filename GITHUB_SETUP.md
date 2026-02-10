@@ -27,7 +27,7 @@ git add .
 git commit -m "Initial commit: Cordia P2P voice chat app"
 
 # Add remote (replace YOUR_USERNAME with your GitHub username)
-git remote add origin https://github.com/YOUR_USERNAME/roommate.git
+git remote add origin https://github.com/YOUR_USERNAME/Cordia.git
 
 # Push to GitHub
 git branch -M main
@@ -36,11 +36,11 @@ git push -u origin main
 
 ## Step 2: Verify GitHub Actions Workflow
 
-The workflow file should already exist at `.github/workflows/build-signaling.yml`.
+The workflow file should already exist at `.github/workflows/docker-build.yml`.
 
 1. Go to your repository on GitHub
 2. Click the **Actions** tab
-3. You should see the workflow "Build and Push Signaling Server"
+3. You should see the workflow "Build and Push Cordia Beacon"
 
 After your first push, the workflow will automatically run and build the Docker image.
 
@@ -51,7 +51,7 @@ After your first push, the workflow will automatically run and build the Docker 
 3. Wait for it to complete (usually 2-5 minutes)
 4. Once complete, your Docker image will be available at:
    ```
-   ghcr.io/YOUR_USERNAME/roommate-signaling:latest
+   ghcr.io/YOUR_USERNAME/cordia-beacon:latest
    ```
 
 ## Step 4: Update Deployment Configuration
@@ -59,7 +59,7 @@ After your first push, the workflow will automatically run and build the Docker 
 Update `deploy/docker-compose.yml` with your actual GitHub username:
 
 ```yaml
-image: ghcr.io/YOUR_ACTUAL_USERNAME/roommate-signaling:latest
+image: ghcr.io/YOUR_ACTUAL_USERNAME/cordia-beacon:latest
 ```
 
 Commit and push this change:
@@ -95,7 +95,7 @@ The GitHub Actions workflow:
 You can also manually trigger the workflow:
 
 1. Go to **Actions** tab
-2. Select "Build and Push Signaling Server"
+2. Select "Build and Push Cordia Beacon"
 3. Click **Run workflow**
 4. Select branch and click **Run workflow**
 
@@ -116,7 +116,7 @@ docker-compose up -d
 1. Check the **Actions** tab for error messages
 2. Common issues:
    - Missing Dockerfile
-   - Build errors in signaling-server
+   - Build errors in beacon-server
    - Permission issues with ghcr.io
 
 ### Image Not Found
