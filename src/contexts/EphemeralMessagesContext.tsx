@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import {
   decryptEphemeralChatMessageBySigningPubkey,
   encryptEphemeralChatMessage,
+  encryptEphemeralChatMessageBySigningPubkey,
 } from '../lib/tauri'
 import { useAccount } from './AccountContext'
 import { useIdentity } from './IdentityContext'
@@ -228,6 +229,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           read_by: [],
         }
         setMessagesByBucket((prev) => {
+          const key = bucketKey(detail.signing_pubkey, detail.chat_id)
+          const existing = prev[key] ?? []
+          if (existing.some((m) => m.id === detail.message_id)) {
+            return prev
+          }
           const next = appendMessage(prev, detail.signing_pubkey, detail.chat_id, msg)
           return pruneBuckets(next, settings, Date.now())
         })
@@ -255,6 +261,56 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       window.removeEventListener('cordia:ephemeral-chat-incoming', onIncoming as EventListener)
     }
   }, [settings, identity?.user_id])
+
+  // Retry pending outbox messages while we're online, bounded by max_sync_kb.
+  useEffect(() => {
+    if (!identity?.user_id) return
+    let cancelled = false
+    let inFlight = false
+    const tick = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      try {
+        const maxBudgetBytes = Math.max(32, settings.max_sync_kb) * 1024
+        let usedBytes = 0
+        const pending = Object.values(messagesByBucket)
+          .flat()
+          .filter((m) => m.from_user_id === identity.user_id && m.delivery_status === 'pending')
+          .sort((a, b) => Date.parse(a.sent_at) - Date.parse(b.sent_at))
+        for (const m of pending) {
+          const payload = JSON.stringify({ text: m.text })
+          const estimate = storageBytes(payload) + 128
+          if (usedBytes + estimate > maxBudgetBytes) break
+          usedBytes += estimate
+          try {
+            const encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(m.signing_pubkey, payload)
+            if (cancelled) return
+            window.dispatchEvent(
+              new CustomEvent('cordia:send-ephemeral-chat', {
+                detail: {
+                  signing_pubkey: m.signing_pubkey,
+                  chat_id: m.chat_id,
+                  message_id: m.id,
+                  encrypted_payload,
+                },
+              })
+            )
+          } catch {
+            // Ignore encrypt/send errors; keep pending for next retry tick.
+          }
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+    // Immediate attempt + periodic retries.
+    tick()
+    const id = window.setInterval(tick, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [messagesByBucket, settings.max_sync_kb, identity?.user_id])
 
   useEffect(() => {
     const onReceipt = (e: Event) => {

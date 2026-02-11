@@ -112,6 +112,13 @@ export async function encryptEphemeralChatMessage(serverId: string, plaintext: s
   return await invoke('encrypt_ephemeral_chat_message', { serverId, plaintext })
 }
 
+export async function encryptEphemeralChatMessageBySigningPubkey(
+  signingPubkey: string,
+  plaintext: string
+): Promise<string> {
+  return await invoke('encrypt_ephemeral_chat_message_by_signing_pubkey', { signingPubkey, plaintext })
+}
+
 export async function decryptEphemeralChatMessage(serverId: string, encryptedPayloadB64: string): Promise<string> {
   return await invoke('decrypt_ephemeral_chat_message', { serverId, encryptedPayloadB64 })
 }
