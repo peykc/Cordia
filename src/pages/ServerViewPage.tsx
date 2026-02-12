@@ -435,6 +435,11 @@ function ServerViewPage() {
                     </div>
                     {chatMessages.map((msg) => {
                       const mine = msg.from_user_id === identity?.user_id
+                      const attachmentTransferRows = msg.kind === 'attachment' && msg.attachment
+                        ? attachmentTransfers.filter(
+                            (t) => t.message_id === msg.id || t.attachment_id === msg.attachment?.attachment_id
+                          )
+                        : []
                       const name = mine ? 'You' : fallbackNameForUser(msg.from_user_id)
                       const readBy = (msg.read_by ?? []).filter((uid) => uid !== identity?.user_id)
                       const deliveredBy = (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id)
@@ -486,6 +491,18 @@ function ServerViewPage() {
                                     </Button>
                                   )}
                                 </div>
+                                {attachmentTransferRows.length > 0 && (
+                                  <div className="mt-2 space-y-1">
+                                    {attachmentTransferRows.slice(-2).map((t) => (
+                                      <div key={t.request_id} className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                        <span className="truncate">{t.direction === 'upload' ? 'Upload' : 'Download'}</span>
+                                        <span>
+                                          {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             ) : (
                               <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
@@ -569,18 +586,6 @@ function ServerViewPage() {
                         Send
                       </Button>
                     </div>
-                    {attachmentTransfers.length > 0 && (
-                      <div className="mt-2 rounded-md border border-border/70 bg-background/60 p-2 space-y-1">
-                        {attachmentTransfers.slice(-4).map((t) => (
-                          <div key={t.request_id} className="flex items-center justify-between gap-3 text-[11px]">
-                            <span className="truncate">{t.file_name}</span>
-                            <span className="text-muted-foreground">
-                              {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                     <p className="text-xs text-muted-foreground mt-2">
                       Encrypted messaging with sender-hosted attachments. Recipients download directly from the original sender while both are online.
                     </p>

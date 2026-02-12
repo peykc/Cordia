@@ -15,6 +15,7 @@ import {
   type MessageStorageSettings,
 } from '../lib/messageSettings'
 import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
+import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
 
 export interface EphemeralAttachmentMeta {
   attachment_id: string
@@ -185,6 +186,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
+  const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
+  const messagesByBucketRef = useRef<MessageBuckets>({})
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
     setAttachmentTransfers((prev) => {
@@ -205,6 +208,14 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     transferBuffersRef.current.delete(requestId)
     transferExpectedSizeRef.current.delete(requestId)
   }
+
+  useEffect(() => {
+    attachmentTransfersRef.current = attachmentTransfers
+  }, [attachmentTransfers])
+
+  useEffect(() => {
+    messagesByBucketRef.current = messagesByBucket
+  }, [messagesByBucket])
 
   // Hydrate cache + settings on account change.
   useEffect(() => {
@@ -466,7 +477,15 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         }))
         return
       }
-      const approved = window.confirm(`${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`)
+      const approved = await confirmDialog(
+        `${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`,
+        {
+          title: 'Attachment Transfer',
+          type: 'info',
+          okLabel: 'Allow',
+          cancelLabel: 'Deny',
+        }
+      )
       if (!approved) {
         window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
           detail: { to_user_id: fromUserId, request_id: requestId, accepted: false },
@@ -474,9 +493,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         return
       }
 
+      const relatedMessage = Object.values(messagesByBucketRef.current)
+        .flat()
+        .find((m) => m.kind === 'attachment' && m.attachment?.attachment_id === attachmentId)
       upsertTransfer(requestId, () => ({
         request_id: requestId,
-        message_id: '',
+        message_id: relatedMessage?.id ?? '',
         attachment_id: attachmentId,
         from_user_id: identity.user_id!,
         to_user_id: fromUserId,
@@ -571,7 +593,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                   merged.set(c, offset)
                   offset += c.byteLength
                 }
-                const transfer = attachmentTransfers.find((t) => t.request_id === requestId)
+                const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
                 const savePath = await saveDownloadedAttachment(transfer?.file_name ?? 'attachment.bin', merged, undefined)
                 upsertTransfer(requestId, (prev) => ({
                   ...(prev as AttachmentTransferState),
@@ -631,7 +653,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       window.removeEventListener('cordia:attachment-transfer-response-incoming', onIncomingResponse as EventListener)
       window.removeEventListener('cordia:attachment-transfer-signal-incoming', onIncomingSignal as EventListener)
     }
-  }, [identity?.user_id, attachmentTransfers])
+  }, [identity?.user_id])
 
   const getMessages = (signingPubkey: string, chatId: string): EphemeralChatMessage[] => {
     if (!signingPubkey || !chatId) return []
