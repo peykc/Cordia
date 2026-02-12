@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download } from 'lucide-react'
+import { open } from '@tauri-apps/api/dialog'
 import { Button } from '../components/ui/button'
-import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
+import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, registerAttachmentFromPath } from '../lib/tauri'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { UserCard } from '../components/UserCard'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -34,7 +35,7 @@ function ServerViewPage() {
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
-  const { getMessages, sendMessage, markMessagesRead } = useEphemeralMessages()
+  const { getMessages, sendMessage, sendAttachmentMessage, requestAttachmentDownload, attachmentTransfers, markMessagesRead } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
@@ -280,6 +281,34 @@ function ServerViewPage() {
     }
   }
 
+  const handleSendAttachment = async () => {
+    if (!server || !groupChat || !identity || !canSendMessages) return
+    try {
+      const selected = await open({
+        title: 'Select attachment',
+        multiple: false,
+      })
+      if (!selected || Array.isArray(selected)) return
+      const useProgramCopy = window.confirm('Store a Cordia-managed copy for reliable future sharing?\nOK = copy into app storage, Cancel = keep current path.')
+      const registered = await registerAttachmentFromPath(selected, useProgramCopy ? 'program_copy' : 'current_path')
+      await sendAttachmentMessage({
+        serverId: server.id,
+        signingPubkey: server.signing_pubkey,
+        chatId: groupChat.id,
+        fromUserId: identity.user_id,
+        attachment: {
+          attachment_id: registered.attachment_id,
+          file_name: registered.file_name,
+          extension: registered.extension,
+          size_bytes: registered.size_bytes,
+          sha256: registered.sha256,
+        },
+      })
+    } catch (error) {
+      console.warn('Failed to send attachment:', error)
+    }
+  }
+
   useEffect(() => {
     if (!server || !groupChat || !identity) return
     const unreadFromOthers = chatMessages
@@ -435,7 +464,32 @@ function ServerViewPage() {
                               <span className="text-xs font-medium">{name}</span>
                               <span className="text-[10px] text-muted-foreground">{time}</span>
                             </div>
-                            <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
+                            {msg.kind === 'attachment' && msg.attachment ? (
+                              <div className="rounded border border-border/70 bg-background/60 px-2 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-sm truncate">{msg.attachment.file_name}</p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {(msg.attachment.size_bytes / 1024).toFixed(1)} KB
+                                      {msg.attachment.extension ? ` • .${msg.attachment.extension}` : ''}
+                                    </p>
+                                  </div>
+                                  {!mine && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="icon"
+                                      className="h-7 w-7 shrink-0"
+                                      onClick={() => requestAttachmentDownload(msg)}
+                                    >
+                                      <Download className="h-3.5 w-3.5" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
+                            )}
                             {mine && (
                               <div className="mt-1 text-[10px] text-muted-foreground relative group/receipt">
                                 <span>{statusLabel}</span>
@@ -480,6 +534,17 @@ function ServerViewPage() {
                     }}
                   >
                     <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-11 w-11 shrink-0"
+                        disabled={!canSendMessages}
+                        onClick={handleSendAttachment}
+                        title="Attach file"
+                      >
+                        <Paperclip className="h-4 w-4" />
+                      </Button>
                       <input
                         type="text"
                         value={messageDraft}
@@ -504,8 +569,20 @@ function ServerViewPage() {
                         Send
                       </Button>
                     </div>
+                    {attachmentTransfers.length > 0 && (
+                      <div className="mt-2 rounded-md border border-border/70 bg-background/60 p-2 space-y-1">
+                        {attachmentTransfers.slice(-4).map((t) => (
+                          <div key={t.request_id} className="flex items-center justify-between gap-3 text-[11px]">
+                            <span className="truncate">{t.file_name}</span>
+                            <span className="text-muted-foreground">
+                              {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground mt-2">
-                      Live-only encrypted messages: online delivery only, no history after restart.
+                      Encrypted messaging with sender-hosted attachments. Recipients download directly from the original sender while both are online.
                     </p>
                   </form>
                 </div>

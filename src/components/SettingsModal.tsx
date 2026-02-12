@@ -22,7 +22,7 @@ export function SettingsModal() {
   if (!isOpen) return null
 
   return (
-    <div className="absolute top-24 left-0 right-0 bottom-0 z-[60]">
+    <div className="absolute top-8 left-0 right-0 bottom-0 z-[60]">
       <div className="absolute inset-0 bg-background/75 backdrop-blur-sm" onMouseDown={closeSettings} />
 
       <div
@@ -33,11 +33,18 @@ export function SettingsModal() {
         }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <header className="h-14 shrink-0 border-b-2 border-border px-4 flex items-center justify-between">
-          <h1 className="text-sm font-light tracking-wider uppercase">Settings</h1>
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Close settings" onClick={closeSettings}>
+        <header className="h-14 shrink-0 border-b-2 border-border px-4 flex items-center">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 mr-2"
+            title="Close settings"
+            onClick={closeSettings}
+          >
             <X className="h-4 w-4" />
           </Button>
+          <div className="w-px h-6 bg-foreground/20 mr-3" />
+          <h1 className="text-sm font-light tracking-wider uppercase">Settings</h1>
         </header>
 
         <div className="flex-1 min-h-0">

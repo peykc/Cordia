@@ -169,6 +169,45 @@ pub enum SignalingMessage {
         sent_at: String,
     },
 
+    /// Receiver requests attachment bytes from original sender.
+    AttachmentTransferRequest {
+        to_user_id: String,
+        request_id: String,
+        attachment_id: String,
+    },
+
+    AttachmentTransferRequestIncoming {
+        from_user_id: String,
+        request_id: String,
+        attachment_id: String,
+    },
+
+    /// Sender approves or denies an attachment request.
+    AttachmentTransferResponse {
+        to_user_id: String,
+        request_id: String,
+        accepted: bool,
+    },
+
+    AttachmentTransferResponseIncoming {
+        from_user_id: String,
+        request_id: String,
+        accepted: bool,
+    },
+
+    /// Opaque signaling payload used to negotiate a WebRTC data channel.
+    AttachmentTransferSignal {
+        to_user_id: String,
+        request_id: String,
+        signal: String,
+    },
+
+    AttachmentTransferSignalIncoming {
+        from_user_id: String,
+        request_id: String,
+        signal: String,
+    },
+
     // ============================
     // Presence (online/offline + active server)
     // ============================

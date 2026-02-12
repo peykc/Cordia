@@ -130,6 +130,43 @@ export async function decryptEphemeralChatMessageBySigningPubkey(
   return await invoke('decrypt_ephemeral_chat_message_by_signing_pubkey', { signingPubkey, encryptedPayloadB64 })
 }
 
+export interface AttachmentRegistrationResult {
+  attachment_id: string
+  sha256: string
+  file_name: string
+  extension: string
+  size_bytes: number
+  storage_mode: 'current_path' | 'program_copy' | string
+}
+
+export async function registerAttachmentFromPath(
+  path: string,
+  storageMode: 'current_path' | 'program_copy'
+): Promise<AttachmentRegistrationResult> {
+  return await invoke('register_attachment_from_path', { path, storageMode })
+}
+
+export async function getAttachmentRecord(attachmentId: string): Promise<AttachmentRegistrationResult | null> {
+  return await invoke('get_attachment_record', { attachmentId })
+}
+
+export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Array> {
+  const data = await invoke<number[]>('read_attachment_bytes', { attachmentId })
+  return new Uint8Array(data)
+}
+
+export async function saveDownloadedAttachment(
+  fileName: string,
+  bytes: Uint8Array,
+  sha256?: string | null
+): Promise<string> {
+  return await invoke('save_downloaded_attachment', {
+    fileName,
+    bytes: Array.from(bytes),
+    sha256: sha256 ?? null,
+  })
+}
+
 export async function deleteServer(serverId: string): Promise<void> {
   return await invoke('delete_server', { serverId })
 }

@@ -1,5 +1,8 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  getAttachmentRecord,
+  readAttachmentBytes,
+  saveDownloadedAttachment,
   decryptEphemeralChatMessageBySigningPubkey,
   encryptEphemeralChatMessage,
   encryptEphemeralChatMessageBySigningPubkey,
@@ -11,6 +14,15 @@ import {
   getMessageStorageSettings,
   type MessageStorageSettings,
 } from '../lib/messageSettings'
+import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
+
+export interface EphemeralAttachmentMeta {
+  attachment_id: string
+  file_name: string
+  extension: string
+  size_bytes: number
+  sha256: string
+}
 
 export interface EphemeralChatMessage {
   id: string
@@ -18,6 +30,8 @@ export interface EphemeralChatMessage {
   chat_id: string
   from_user_id: string
   text: string
+  kind?: 'text' | 'attachment'
+  attachment?: EphemeralAttachmentMeta
   sent_at: string
   local_only?: boolean
   delivery_status?: 'pending' | 'delivered' | 'read'
@@ -31,6 +45,14 @@ interface SendEphemeralChatInput {
   chatId: string
   fromUserId: string
   text: string
+}
+
+interface SendEphemeralAttachmentInput {
+  serverId: string
+  signingPubkey: string
+  chatId: string
+  fromUserId: string
+  attachment: EphemeralAttachmentMeta
 }
 
 interface IncomingEphemeralChatDetail {
@@ -54,7 +76,24 @@ interface IncomingEphemeralReceiptDetail {
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
+  sendAttachmentMessage: (input: SendEphemeralAttachmentInput) => Promise<void>
+  requestAttachmentDownload: (msg: EphemeralChatMessage) => Promise<void>
+  attachmentTransfers: AttachmentTransferState[]
   markMessagesRead: (signingPubkey: string, chatId: string, messageIds: string[]) => void
+}
+
+export interface AttachmentTransferState {
+  request_id: string
+  message_id: string
+  attachment_id: string
+  from_user_id: string
+  to_user_id: string
+  file_name: string
+  direction: 'upload' | 'download'
+  status: 'requesting' | 'connecting' | 'transferring' | 'completed' | 'rejected' | 'failed'
+  progress: number
+  saved_path?: string
+  error?: string
 }
 
 const EphemeralMessagesContext = createContext<EphemeralMessagesContextType | null>(null)
@@ -141,7 +180,31 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const { identity } = useIdentity()
   const [settings, setSettings] = useState<MessageStorageSettings>(DEFAULT_MESSAGE_STORAGE_SETTINGS)
   const [messagesByBucket, setMessagesByBucket] = useState<MessageBuckets>({})
+  const [attachmentTransfers, setAttachmentTransfers] = useState<AttachmentTransferState[]>([])
   const [hydrated, setHydrated] = useState(false)
+  const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
+  const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
+  const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
+
+  const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
+    setAttachmentTransfers((prev) => {
+      const idx = prev.findIndex((t) => t.request_id === requestId)
+      if (idx < 0) return [...prev, updater(undefined)]
+      const next = [...prev]
+      next[idx] = updater(prev[idx])
+      return next
+    })
+  }
+
+  const cleanupTransferPeer = (requestId: string) => {
+    const pc = transferPeersRef.current.get(requestId)
+    if (pc) {
+      try { pc.close() } catch {}
+      transferPeersRef.current.delete(requestId)
+    }
+    transferBuffersRef.current.delete(requestId)
+    transferExpectedSizeRef.current.delete(requestId)
+  }
 
   // Hydrate cache + settings on account change.
   useEffect(() => {
@@ -213,8 +276,15 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           detail.encrypted_payload
         )
         if (cancelled) return
-        const parsed = JSON.parse(plaintext) as { text?: string }
-        const text = (parsed.text ?? '').trim()
+        const parsed = JSON.parse(plaintext) as {
+          kind?: 'text' | 'attachment'
+          text?: string
+          attachment?: EphemeralAttachmentMeta
+        }
+        const kind = parsed.kind === 'attachment' ? 'attachment' : 'text'
+        const text = kind === 'attachment'
+          ? (parsed.attachment?.file_name ?? '').trim()
+          : (parsed.text ?? '').trim()
         if (!text) return
 
         const msg: EphemeralChatMessage = {
@@ -223,6 +293,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           chat_id: detail.chat_id,
           from_user_id: detail.from_user_id,
           text,
+          kind,
+          attachment: kind === 'attachment' ? parsed.attachment : undefined,
           sent_at: detail.sent_at || new Date().toISOString(),
           delivery_status: 'delivered',
           delivered_by: [],
@@ -278,7 +350,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           .filter((m) => m.from_user_id === identity.user_id && m.delivery_status === 'pending')
           .sort((a, b) => Date.parse(a.sent_at) - Date.parse(b.sent_at))
         for (const m of pending) {
-          const payload = JSON.stringify({ text: m.text })
+          const payload = m.kind === 'attachment' && m.attachment
+            ? JSON.stringify({ kind: 'attachment', attachment: m.attachment })
+            : JSON.stringify({ kind: 'text', text: m.text })
           const estimate = storageBytes(payload) + 128
           if (usedBytes + estimate > maxBudgetBytes) break
           usedBytes += estimate
@@ -363,6 +437,202 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }, [settings])
 
+  useEffect(() => {
+    if (!identity?.user_id) return
+
+    const sendSignal = (toUserId: string, requestId: string, signalObj: unknown) => {
+      window.dispatchEvent(
+        new CustomEvent('cordia:send-attachment-transfer-signal', {
+          detail: {
+            to_user_id: toUserId,
+            request_id: requestId,
+            signal: JSON.stringify(signalObj),
+          },
+        })
+      )
+    }
+
+    const onIncomingRequest = async (e: Event) => {
+      const detail = (e as CustomEvent<{ from_user_id?: string; request_id?: string; attachment_id?: string }>).detail
+      const fromUserId = detail?.from_user_id?.trim()
+      const requestId = detail?.request_id?.trim()
+      const attachmentId = detail?.attachment_id?.trim()
+      if (!fromUserId || !requestId || !attachmentId) return
+
+      const attachment = await getAttachmentRecord(attachmentId).catch(() => null)
+      if (!attachment) {
+        window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
+          detail: { to_user_id: fromUserId, request_id: requestId, accepted: false },
+        }))
+        return
+      }
+      const approved = window.confirm(`${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`)
+      if (!approved) {
+        window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
+          detail: { to_user_id: fromUserId, request_id: requestId, accepted: false },
+        }))
+        return
+      }
+
+      upsertTransfer(requestId, () => ({
+        request_id: requestId,
+        message_id: '',
+        attachment_id: attachmentId,
+        from_user_id: identity.user_id!,
+        to_user_id: fromUserId,
+        file_name: attachment.file_name,
+        direction: 'upload',
+        status: 'connecting',
+        progress: 0,
+      }))
+      window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
+        detail: { to_user_id: fromUserId, request_id: requestId, accepted: true },
+      }))
+
+      const pc = createPeerConnection()
+      transferPeersRef.current.set(requestId, pc)
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate) return
+        sendSignal(fromUserId, requestId, { type: 'ice', candidate: JSON.stringify(ev.candidate) })
+      }
+      const dc = pc.createDataChannel('cordia-attachment')
+      dc.binaryType = 'arraybuffer'
+      dc.onopen = async () => {
+        try {
+          upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'transferring' }))
+          const bytes = await readAttachmentBytes(attachmentId)
+          const total = bytes.byteLength
+          dc.send(JSON.stringify({ type: 'meta', file_name: attachment.file_name, size_bytes: total, sha256: attachment.sha256 }))
+          let sent = 0
+          const chunkSize = 64 * 1024
+          while (sent < total) {
+            while (dc.bufferedAmount > 512 * 1024) {
+              await new Promise((r) => setTimeout(r, 20))
+            }
+            const next = Math.min(total, sent + chunkSize)
+            dc.send(bytes.slice(sent, next))
+            sent = next
+            const progress = total > 0 ? Math.min(1, sent / total) : 1
+            upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), progress }))
+          }
+          dc.send(JSON.stringify({ type: 'done' }))
+          upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'completed', progress: 1 }))
+          cleanupTransferPeer(requestId)
+        } catch (err) {
+          upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'failed', error: String(err) }))
+          cleanupTransferPeer(requestId)
+        }
+      }
+
+      const offerSdp = await createOffer(pc)
+      sendSignal(fromUserId, requestId, { type: 'offer', sdp: offerSdp })
+    }
+
+    const onIncomingResponse = async (e: Event) => {
+      const detail = (e as CustomEvent<{ from_user_id?: string; request_id?: string; accepted?: boolean }>).detail
+      const fromUserId = detail?.from_user_id?.trim()
+      const requestId = detail?.request_id?.trim()
+      if (!fromUserId || !requestId) return
+      if (!detail?.accepted) {
+        upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'rejected' }))
+        cleanupTransferPeer(requestId)
+        return
+      }
+      upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'connecting' }))
+      const pc = createPeerConnection()
+      transferPeersRef.current.set(requestId, pc)
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate) return
+        sendSignal(fromUserId, requestId, { type: 'ice', candidate: JSON.stringify(ev.candidate) })
+      }
+      pc.ondatachannel = (ev) => {
+        const dc = ev.channel
+        dc.binaryType = 'arraybuffer'
+        dc.onmessage = async (m) => {
+          if (typeof m.data === 'string') {
+            try {
+              const control = JSON.parse(m.data) as { type?: string; file_name?: string; size_bytes?: number; sha256?: string }
+              if (control.type === 'meta') {
+                transferBuffersRef.current.set(requestId, [])
+                transferExpectedSizeRef.current.set(requestId, Number(control.size_bytes ?? 0))
+                upsertTransfer(requestId, (prev) => ({
+                  ...(prev as AttachmentTransferState),
+                  file_name: control.file_name || (prev?.file_name ?? 'attachment.bin'),
+                  status: 'transferring',
+                  progress: 0,
+                }))
+              }
+              if (control.type === 'done') {
+                const chunks = transferBuffersRef.current.get(requestId) ?? []
+                const total = chunks.reduce((acc, c) => acc + c.byteLength, 0)
+                const merged = new Uint8Array(total)
+                let offset = 0
+                for (const c of chunks) {
+                  merged.set(c, offset)
+                  offset += c.byteLength
+                }
+                const transfer = attachmentTransfers.find((t) => t.request_id === requestId)
+                const savePath = await saveDownloadedAttachment(transfer?.file_name ?? 'attachment.bin', merged, undefined)
+                upsertTransfer(requestId, (prev) => ({
+                  ...(prev as AttachmentTransferState),
+                  status: 'completed',
+                  progress: 1,
+                  saved_path: savePath,
+                }))
+                cleanupTransferPeer(requestId)
+              }
+            } catch {
+              // ignore malformed control message
+            }
+            return
+          }
+          const chunk = new Uint8Array(m.data as ArrayBuffer)
+          const current = transferBuffersRef.current.get(requestId) ?? []
+          current.push(chunk)
+          transferBuffersRef.current.set(requestId, current)
+          const expected = transferExpectedSizeRef.current.get(requestId) ?? 0
+          const got = current.reduce((acc, c) => acc + c.byteLength, 0)
+          upsertTransfer(requestId, (prev) => ({
+            ...(prev as AttachmentTransferState),
+            progress: expected > 0 ? Math.min(1, got / expected) : 0,
+          }))
+        }
+      }
+    }
+
+    const onIncomingSignal = async (e: Event) => {
+      const detail = (e as CustomEvent<{ from_user_id?: string; request_id?: string; signal?: string }>).detail
+      const fromUserId = detail?.from_user_id?.trim()
+      const requestId = detail?.request_id?.trim()
+      const signalRaw = detail?.signal
+      if (!fromUserId || !requestId || !signalRaw) return
+      const signal = JSON.parse(signalRaw) as { type?: string; sdp?: string; candidate?: string }
+      const pc = transferPeersRef.current.get(requestId)
+      if (!pc) return
+      if (signal.type === 'offer' && signal.sdp) {
+        const answerSdp = await createAnswer(pc, signal.sdp)
+        sendSignal(fromUserId, requestId, { type: 'answer', sdp: answerSdp })
+        return
+      }
+      if (signal.type === 'answer' && signal.sdp) {
+        await handleAnswer(pc, signal.sdp)
+        return
+      }
+      if (signal.type === 'ice' && signal.candidate) {
+        await addIceCandidate(pc, signal.candidate)
+      }
+    }
+
+    window.addEventListener('cordia:attachment-transfer-request-incoming', onIncomingRequest as EventListener)
+    window.addEventListener('cordia:attachment-transfer-response-incoming', onIncomingResponse as EventListener)
+    window.addEventListener('cordia:attachment-transfer-signal-incoming', onIncomingSignal as EventListener)
+    return () => {
+      window.removeEventListener('cordia:attachment-transfer-request-incoming', onIncomingRequest as EventListener)
+      window.removeEventListener('cordia:attachment-transfer-response-incoming', onIncomingResponse as EventListener)
+      window.removeEventListener('cordia:attachment-transfer-signal-incoming', onIncomingSignal as EventListener)
+    }
+  }, [identity?.user_id, attachmentTransfers])
+
   const getMessages = (signingPubkey: string, chatId: string): EphemeralChatMessage[] => {
     if (!signingPubkey || !chatId) return []
     return messagesByBucket[bucketKey(signingPubkey, chatId)] ?? []
@@ -378,7 +648,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const trimmed = text.trim()
     if (!trimmed) return
 
-    const payload = JSON.stringify({ text: trimmed })
+    const payload = JSON.stringify({ kind: 'text', text: trimmed })
     const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
     const sentAt = new Date().toISOString()
     const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
@@ -401,6 +671,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       chat_id: chatId,
       from_user_id: fromUserId,
       text: trimmed,
+      kind: 'text',
       sent_at: sentAt,
       local_only: true,
       delivery_status: 'pending',
@@ -411,6 +682,73 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       const next = appendMessage(prev, signingPubkey, chatId, localMessage)
       return pruneBuckets(next, settings, Date.now())
     })
+  }
+
+  const sendAttachmentMessage: EphemeralMessagesContextType['sendAttachmentMessage'] = async ({
+    serverId,
+    signingPubkey,
+    chatId,
+    fromUserId,
+    attachment,
+  }) => {
+    if (!attachment?.attachment_id) return
+    const payload = JSON.stringify({ kind: 'attachment', attachment })
+    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
+    const sentAt = new Date().toISOString()
+    const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    window.dispatchEvent(
+      new CustomEvent('cordia:send-ephemeral-chat', {
+        detail: {
+          signing_pubkey: signingPubkey,
+          chat_id: chatId,
+          message_id: messageId,
+          encrypted_payload,
+        },
+      })
+    )
+    const localMessage: EphemeralChatMessage = {
+      id: messageId,
+      signing_pubkey: signingPubkey,
+      chat_id: chatId,
+      from_user_id: fromUserId,
+      text: attachment.file_name,
+      kind: 'attachment',
+      attachment,
+      sent_at: sentAt,
+      local_only: true,
+      delivery_status: 'pending',
+      delivered_by: [],
+      read_by: [],
+    }
+    setMessagesByBucket((prev) => {
+      const next = appendMessage(prev, signingPubkey, chatId, localMessage)
+      return pruneBuckets(next, settings, Date.now())
+    })
+  }
+
+  const requestAttachmentDownload: EphemeralMessagesContextType['requestAttachmentDownload'] = async (msg) => {
+    if (!identity?.user_id || !msg.attachment?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
+    const request_id = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    upsertTransfer(request_id, () => ({
+      request_id,
+      message_id: msg.id,
+      attachment_id: msg.attachment!.attachment_id,
+      from_user_id: msg.from_user_id,
+      to_user_id: identity.user_id,
+      file_name: msg.attachment!.file_name,
+      direction: 'download',
+      status: 'requesting',
+      progress: 0,
+    }))
+    window.dispatchEvent(
+      new CustomEvent('cordia:send-attachment-transfer-request', {
+        detail: {
+          to_user_id: msg.from_user_id,
+          request_id,
+          attachment_id: msg.attachment.attachment_id,
+        },
+      })
+    )
   }
 
   const markMessagesRead: EphemeralMessagesContextType['markMessagesRead'] = (signingPubkey, chatId, messageIds) => {
@@ -461,9 +799,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     () => ({
       getMessages,
       sendMessage,
+      sendAttachmentMessage,
+      requestAttachmentDownload,
+      attachmentTransfers,
       markMessagesRead,
     }),
-    [messagesByBucket, identity?.user_id]
+    [messagesByBucket, identity?.user_id, attachmentTransfers]
   )
 
   return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>

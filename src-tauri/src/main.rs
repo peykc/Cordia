@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedServerHint {
@@ -52,6 +54,226 @@ struct InviteTokenPayload {
     server: ServerInfo,
     #[serde(rename = "house_symmetric_key_b64")]
     server_symmetric_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AttachmentStorageMode {
+    CurrentPath,
+    ProgramCopy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AttachmentRecord {
+    attachment_id: String,
+    sha256: String,
+    file_name: String,
+    extension: String,
+    size_bytes: u64,
+    storage_mode: AttachmentStorageMode,
+    #[serde(default)]
+    source_path: Option<String>,
+    #[serde(default)]
+    cached_file_name: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AttachmentIndex {
+    records: HashMap<String, AttachmentRecord>,
+    sha_to_cached_file_name: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AttachmentRegistrationResult {
+    attachment_id: String,
+    sha256: String,
+    file_name: String,
+    extension: String,
+    size_bytes: u64,
+    storage_mode: String,
+}
+
+fn account_attachment_dir(account_id: &str) -> Result<PathBuf, String> {
+    let account_manager = AccountManager::new()
+        .map_err(|e| format!("Failed to access account manager: {}", e))?;
+    let base = account_manager.get_account_dir(account_id).join("attachments");
+    std::fs::create_dir_all(&base).map_err(|e| format!("Failed to create attachments dir: {}", e))?;
+    std::fs::create_dir_all(base.join("cache")).map_err(|e| format!("Failed to create attachment cache dir: {}", e))?;
+    std::fs::create_dir_all(base.join("downloads")).map_err(|e| format!("Failed to create attachment downloads dir: {}", e))?;
+    Ok(base)
+}
+
+fn attachment_index_path(base: &PathBuf) -> PathBuf {
+    base.join("index.json")
+}
+
+fn load_attachment_index(base: &PathBuf) -> AttachmentIndex {
+    let path = attachment_index_path(base);
+    if !path.exists() {
+        return AttachmentIndex::default();
+    }
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str::<AttachmentIndex>(&content).unwrap_or_default(),
+        Err(_) => AttachmentIndex::default(),
+    }
+}
+
+fn save_attachment_index(base: &PathBuf, index: &AttachmentIndex) -> Result<(), String> {
+    let path = attachment_index_path(base);
+    let json = serde_json::to_string_pretty(index)
+        .map_err(|e| format!("Failed to serialize attachment index: {}", e))?;
+    std::fs::write(path, json).map_err(|e| format!("Failed to write attachment index: {}", e))
+}
+
+fn sha256_file(path: &PathBuf) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+#[tauri::command]
+fn register_attachment_from_path(path: String, storage_mode: String) -> Result<AttachmentRegistrationResult, String> {
+    let account_id = require_session()?;
+    let source = PathBuf::from(path.trim());
+    if !source.exists() {
+        return Err("Attachment source file not found".to_string());
+    }
+    let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    if !meta.is_file() {
+        return Err("Attachment source must be a file".to_string());
+    }
+    let file_name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "Invalid source file name".to_string())?
+        .to_string();
+    let extension = source
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let size_bytes = meta.len();
+    let sha256 = sha256_file(&source)?;
+    let mode = if storage_mode == "program_copy" {
+        AttachmentStorageMode::ProgramCopy
+    } else {
+        AttachmentStorageMode::CurrentPath
+    };
+
+    let base = account_attachment_dir(&account_id)?;
+    let mut index = load_attachment_index(&base);
+    let cache_dir = base.join("cache");
+    let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
+        Some(existing.clone())
+    } else if matches!(mode, AttachmentStorageMode::ProgramCopy) {
+        let ext_suffix = if extension.is_empty() { "".to_string() } else { format!(".{}", extension) };
+        let file_name_cache = format!("{}{}", sha256, ext_suffix);
+        let target = cache_dir.join(&file_name_cache);
+        if !target.exists() {
+            std::fs::copy(&source, &target).map_err(|e| format!("Failed to copy attachment to cache: {}", e))?;
+        }
+        index.sha_to_cached_file_name.insert(sha256.clone(), file_name_cache.clone());
+        Some(file_name_cache)
+    } else {
+        None
+    };
+
+    let attachment_id = uuid::Uuid::new_v4().to_string();
+    let record = AttachmentRecord {
+        attachment_id: attachment_id.clone(),
+        sha256: sha256.clone(),
+        file_name: file_name.clone(),
+        extension: extension.clone(),
+        size_bytes,
+        storage_mode: mode.clone(),
+        source_path: if matches!(mode, AttachmentStorageMode::CurrentPath) {
+            Some(source.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        cached_file_name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    index.records.insert(attachment_id.clone(), record);
+    save_attachment_index(&base, &index)?;
+
+    Ok(AttachmentRegistrationResult {
+        attachment_id,
+        sha256,
+        file_name,
+        extension,
+        size_bytes,
+        storage_mode: match mode {
+            AttachmentStorageMode::CurrentPath => "current_path".to_string(),
+            AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
+        },
+    })
+}
+
+#[tauri::command]
+fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegistrationResult>, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let index = load_attachment_index(&base);
+    let Some(rec) = index.records.get(&attachment_id) else {
+        return Ok(None);
+    };
+    Ok(Some(AttachmentRegistrationResult {
+        attachment_id: rec.attachment_id.clone(),
+        sha256: rec.sha256.clone(),
+        file_name: rec.file_name.clone(),
+        extension: rec.extension.clone(),
+        size_bytes: rec.size_bytes,
+        storage_mode: match rec.storage_mode {
+            AttachmentStorageMode::CurrentPath => "current_path".to_string(),
+            AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
+        },
+    }))
+}
+
+#[tauri::command]
+fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let index = load_attachment_index(&base);
+    let rec = index
+        .records
+        .get(&attachment_id)
+        .ok_or_else(|| "Attachment not found".to_string())?;
+
+    let path = if let Some(cache_name) = &rec.cached_file_name {
+        base.join("cache").join(cache_name)
+    } else if let Some(src) = &rec.source_path {
+        PathBuf::from(src)
+    } else {
+        return Err("Attachment has no readable source".to_string());
+    };
+    std::fs::read(path).map_err(|e| format!("Failed to read attachment data: {}", e))
+}
+
+#[tauri::command]
+fn save_downloaded_attachment(file_name: String, bytes: Vec<u8>, sha256: Option<String>) -> Result<String, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let downloads_dir = base.join("downloads");
+    let mut safe_name = file_name.trim().to_string();
+    if safe_name.is_empty() {
+        safe_name = "download.bin".to_string();
+    }
+    let target = if let Some(hash) = sha256.filter(|s| !s.trim().is_empty()) {
+        let ext = PathBuf::from(&safe_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+        downloads_dir.join(format!("{}{}", hash, ext))
+    } else {
+        downloads_dir.join(safe_name)
+    };
+    std::fs::write(&target, bytes).map_err(|e| format!("Failed to save downloaded attachment: {}", e))?;
+    Ok(target.to_string_lossy().to_string())
 }
 
 fn derive_invite_key(code: &str) -> [u8; 32] {
@@ -1510,6 +1732,10 @@ fn main() {
             encrypt_ephemeral_chat_message_by_signing_pubkey,
             decrypt_ephemeral_chat_message,
             decrypt_ephemeral_chat_message_by_signing_pubkey,
+            register_attachment_from_path,
+            get_attachment_record,
+            read_attachment_bytes,
+            save_downloaded_attachment,
             delete_server,
             find_server_by_invite,
             join_server,

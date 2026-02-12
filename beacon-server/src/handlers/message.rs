@@ -775,6 +775,90 @@ pub async fn handle_message(
             Ok(())
         }
 
+        SignalingMessage::AttachmentTransferRequest { to_user_id, request_id, attachment_id } => {
+            if to_user_id.trim().is_empty() {
+                return Err("AttachmentTransferRequest requires to_user_id".to_string());
+            }
+            if request_id.trim().is_empty() {
+                return Err("AttachmentTransferRequest requires request_id".to_string());
+            }
+            if attachment_id.trim().is_empty() {
+                return Err("AttachmentTransferRequest requires attachment_id".to_string());
+            }
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("AttachmentTransferRequest requires PresenceHello first".to_string()),
+            };
+            if from_user_id == to_user_id {
+                return Ok(());
+            }
+            let incoming = SignalingMessage::AttachmentTransferRequestIncoming {
+                from_user_id,
+                request_id,
+                attachment_id,
+            };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize AttachmentTransferRequestIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            friends.send_to_user(&to_user_id, &json);
+            Ok(())
+        }
+
+        SignalingMessage::AttachmentTransferResponse { to_user_id, request_id, accepted } => {
+            if to_user_id.trim().is_empty() {
+                return Err("AttachmentTransferResponse requires to_user_id".to_string());
+            }
+            if request_id.trim().is_empty() {
+                return Err("AttachmentTransferResponse requires request_id".to_string());
+            }
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("AttachmentTransferResponse requires PresenceHello first".to_string()),
+            };
+            if from_user_id == to_user_id {
+                return Ok(());
+            }
+            let incoming = SignalingMessage::AttachmentTransferResponseIncoming {
+                from_user_id,
+                request_id,
+                accepted,
+            };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize AttachmentTransferResponseIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            friends.send_to_user(&to_user_id, &json);
+            Ok(())
+        }
+
+        SignalingMessage::AttachmentTransferSignal { to_user_id, request_id, signal } => {
+            if to_user_id.trim().is_empty() {
+                return Err("AttachmentTransferSignal requires to_user_id".to_string());
+            }
+            if request_id.trim().is_empty() {
+                return Err("AttachmentTransferSignal requires request_id".to_string());
+            }
+            if signal.trim().is_empty() {
+                return Err("AttachmentTransferSignal requires signal".to_string());
+            }
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("AttachmentTransferSignal requires PresenceHello first".to_string()),
+            };
+            if from_user_id == to_user_id {
+                return Ok(());
+            }
+            let incoming = SignalingMessage::AttachmentTransferSignalIncoming {
+                from_user_id,
+                request_id,
+                signal,
+            };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize AttachmentTransferSignalIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            friends.send_to_user(&to_user_id, &json);
+            Ok(())
+        }
+
         SignalingMessage::ProfilePush { to_user_ids, display_name, real_name, show_real_name, rev, avatar_data_url, avatar_rev, account_created_at } => {
             const MAX_PROFILE_PUSH_RECIPIENTS: usize = 500;
             let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {

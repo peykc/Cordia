@@ -554,6 +554,42 @@ export function ServerSyncBootstrap() {
             )
             return
           }
+          if (msg.type === 'AttachmentTransferRequestIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:attachment-transfer-request-incoming', {
+                detail: {
+                  from_user_id: String(msg.from_user_id),
+                  request_id: String(msg.request_id),
+                  attachment_id: String(msg.attachment_id),
+                },
+              })
+            )
+            return
+          }
+          if (msg.type === 'AttachmentTransferResponseIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:attachment-transfer-response-incoming', {
+                detail: {
+                  from_user_id: String(msg.from_user_id),
+                  request_id: String(msg.request_id),
+                  accepted: Boolean(msg.accepted),
+                },
+              })
+            )
+            return
+          }
+          if (msg.type === 'AttachmentTransferSignalIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:attachment-transfer-signal-incoming', {
+                detail: {
+                  from_user_id: String(msg.from_user_id),
+                  request_id: String(msg.request_id),
+                  signal: String(msg.signal),
+                },
+              })
+            )
+            return
+          }
         } catch (e) {
           // Ignore malformed/unrelated messages
         }
@@ -680,6 +716,56 @@ export function ServerSyncBootstrap() {
         )
       }
 
+      const onSendAttachmentTransferRequest = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ to_user_id?: string; request_id?: string; attachment_id?: string }>).detail
+        const to_user_id = detail?.to_user_id?.trim()
+        const request_id = detail?.request_id?.trim()
+        const attachment_id = detail?.attachment_id?.trim()
+        if (!to_user_id || !request_id || !attachment_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'AttachmentTransferRequest',
+            to_user_id,
+            request_id,
+            attachment_id,
+          })
+        )
+      }
+
+      const onSendAttachmentTransferResponse = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ to_user_id?: string; request_id?: string; accepted?: boolean }>).detail
+        const to_user_id = detail?.to_user_id?.trim()
+        const request_id = detail?.request_id?.trim()
+        if (!to_user_id || !request_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'AttachmentTransferResponse',
+            to_user_id,
+            request_id,
+            accepted: Boolean(detail?.accepted),
+          })
+        )
+      }
+
+      const onSendAttachmentTransferSignal = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ to_user_id?: string; request_id?: string; signal?: string }>).detail
+        const to_user_id = detail?.to_user_id?.trim()
+        const request_id = detail?.request_id?.trim()
+        const signal = detail?.signal?.trim()
+        if (!to_user_id || !request_id || !signal) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'AttachmentTransferSignal',
+            to_user_id,
+            request_id,
+            signal,
+          })
+        )
+      }
+
       window.addEventListener('cordia:server-removed', onServerRemoved)
       window.addEventListener('cordia:servers-updated', onServersUpdated)
       const onFriendsUpdated = () => {
@@ -719,6 +805,9 @@ export function ServerSyncBootstrap() {
       window.addEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
       window.addEventListener('cordia:send-friend-mutual-check', onSendFriendMutualCheck as EventListener)
       window.addEventListener('cordia:send-friend-mutual-reply', onSendFriendMutualReply as EventListener)
+      window.addEventListener('cordia:send-attachment-transfer-request', onSendAttachmentTransferRequest as EventListener)
+      window.addEventListener('cordia:send-attachment-transfer-response', onSendAttachmentTransferResponse as EventListener)
+      window.addEventListener('cordia:send-attachment-transfer-signal', onSendAttachmentTransferSignal as EventListener)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
@@ -731,6 +820,9 @@ export function ServerSyncBootstrap() {
         window.removeEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
         window.removeEventListener('cordia:send-friend-mutual-check', onSendFriendMutualCheck as EventListener)
         window.removeEventListener('cordia:send-friend-mutual-reply', onSendFriendMutualReply as EventListener)
+        window.removeEventListener('cordia:send-attachment-transfer-request', onSendAttachmentTransferRequest as EventListener)
+        window.removeEventListener('cordia:send-attachment-transfer-response', onSendAttachmentTransferResponse as EventListener)
+        window.removeEventListener('cordia:send-attachment-transfer-signal', onSendAttachmentTransferSignal as EventListener)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })
