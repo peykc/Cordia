@@ -22,7 +22,7 @@ export function ServerSyncBootstrap() {
   const { identity } = useIdentity()
   const presence = usePresence()
   const voicePresence = useVoicePresence()
-  const { status: beaconStatus, beaconUrl } = useBeacon()
+  const { beaconUrl } = useBeacon()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const ranForSessionRef = useRef<string | null>(null)
@@ -38,6 +38,7 @@ export function ServerSyncBootstrap() {
   const lastConnectStartAtRef = useRef<number>(0)
   const subscribedSigningPubkeysRef = useRef<Set<string>>(new Set())
   const activeSigningPubkeyRef = useRef<string | null>(null)
+  const pendingOutboundRef = useRef<string[]>([])
   const profilePushRef = useRef({ profile, identity, accountInfoMap, currentAccountId })
   profilePushRef.current = { profile, identity, accountInfoMap, currentAccountId }
 
@@ -49,9 +50,9 @@ export function ServerSyncBootstrap() {
   }, [currentAccountId])
 
   useEffect(() => {
-    // Only run when logged in + beacon is reachable
+    // Only run when logged in + beacon URL exists
     if (!sessionLoaded || !currentAccountId) return
-    if (beaconStatus !== 'connected' || !beaconUrl) return
+    if (!beaconUrl) return
 
     // Run once per active account/session
     if (ranForSessionRef.current === currentAccountId) return
@@ -115,6 +116,19 @@ export function ServerSyncBootstrap() {
       wsRef.current = ws
       lastPongAtRef.current = Date.now()
       lastMessageAtRef.current = Date.now()
+
+      const sendOrQueue = (payload: unknown) => {
+        const serialized = JSON.stringify(payload)
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(serialized)
+          return
+        }
+        pendingOutboundRef.current.push(serialized)
+        if (pendingOutboundRef.current.length > 500) {
+          pendingOutboundRef.current = pendingOutboundRef.current.slice(-500)
+        }
+        if (!cancelled && beaconUrl) connectWs()
+      }
 
       const sendProfileAnnounce = async (override?: {
         display_name: string | null
@@ -309,6 +323,16 @@ export function ServerSyncBootstrap() {
           await sendProfileAnnounce()
           await sendProfileHello()
           await sendProfilePush()
+
+          // Flush any messages queued while reconnecting.
+          if (pendingOutboundRef.current.length > 0) {
+            const queued = pendingOutboundRef.current
+            pendingOutboundRef.current = []
+            for (const payload of queued) {
+              if (ws.readyState !== WebSocket.OPEN) break
+              ws.send(payload)
+            }
+          }
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to subscribe servers over WS:', e)
         }
@@ -684,9 +708,7 @@ export function ServerSyncBootstrap() {
           const jitter = Math.floor(Math.random() * 250)
           const delay = Math.max(1000, baseDelay + jitter)
           reconnectTimerRef.current = window.setTimeout(() => {
-            if (!cancelled && beaconStatus === 'connected' && beaconUrl) {
-              connectWs()
-            }
+            if (!cancelled && beaconUrl) connectWs()
           }, delay)
         }
       }
@@ -711,14 +733,11 @@ export function ServerSyncBootstrap() {
         const next = detail?.signing_pubkey ?? null
         activeSigningPubkeyRef.current = next
         if (!identity?.user_id) return
-        if (ws.readyState !== WebSocket.OPEN) return
-        ws.send(
-          JSON.stringify({
-            type: 'PresenceActive',
-            user_id: identity.user_id,
-            active_signing_pubkey: next,
-          })
-        )
+        sendOrQueue({
+          type: 'PresenceActive',
+          user_id: identity.user_id,
+          active_signing_pubkey: next,
+        })
       }
 
       const onSendEphemeralChat = (ev: Event) => {
@@ -733,20 +752,13 @@ export function ServerSyncBootstrap() {
         const message_id = detail?.message_id?.trim()
         const encrypted_payload = detail?.encrypted_payload?.trim()
         if (!signing_pubkey || !chat_id || !message_id || !encrypted_payload) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          // If we try to send while disconnected, kick a reconnect.
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'EphemeralChatSend',
-            signing_pubkey,
-            chat_id,
-            message_id,
-            encrypted_payload,
-          })
-        )
+        sendOrQueue({
+          type: 'EphemeralChatSend',
+          signing_pubkey,
+          chat_id,
+          message_id,
+          encrypted_payload,
+        })
       }
 
       const onSendEphemeralReceipt = (ev: Event) => {
@@ -762,52 +774,34 @@ export function ServerSyncBootstrap() {
         const receipt_type = detail?.receipt_type?.trim()
         if (!signing_pubkey || !chat_id || !message_id || !receipt_type) return
         if (receipt_type !== 'delivered' && receipt_type !== 'read') return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'EphemeralReceiptSend',
-            signing_pubkey,
-            chat_id,
-            message_id,
-            receipt_type,
-          })
-        )
+        sendOrQueue({
+          type: 'EphemeralReceiptSend',
+          signing_pubkey,
+          chat_id,
+          message_id,
+          receipt_type,
+        })
       }
 
       const onSendFriendMutualCheck = (ev: Event) => {
         const detail = (ev as CustomEvent<{ to_user_id?: string }>).detail
         const to_user_id = detail?.to_user_id?.trim()
         if (!to_user_id) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'FriendMutualCheck',
-            to_user_id,
-          })
-        )
+        sendOrQueue({
+          type: 'FriendMutualCheck',
+          to_user_id,
+        })
       }
 
       const onSendFriendMutualReply = (ev: Event) => {
         const detail = (ev as CustomEvent<{ to_user_id?: string; accepted?: boolean }>).detail
         const to_user_id = detail?.to_user_id?.trim()
         if (!to_user_id) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'FriendMutualCheckReply',
-            to_user_id,
-            accepted: Boolean(detail?.accepted),
-          })
-        )
+        sendOrQueue({
+          type: 'FriendMutualCheckReply',
+          to_user_id,
+          accepted: Boolean(detail?.accepted),
+        })
       }
 
       const onSendAttachmentTransferRequest = (ev: Event) => {
@@ -816,18 +810,12 @@ export function ServerSyncBootstrap() {
         const request_id = detail?.request_id?.trim()
         const attachment_id = detail?.attachment_id?.trim()
         if (!to_user_id || !request_id || !attachment_id) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'AttachmentTransferRequest',
-            to_user_id,
-            request_id,
-            attachment_id,
-          })
-        )
+        sendOrQueue({
+          type: 'AttachmentTransferRequest',
+          to_user_id,
+          request_id,
+          attachment_id,
+        })
       }
 
       const onSendAttachmentTransferResponse = (ev: Event) => {
@@ -835,18 +823,12 @@ export function ServerSyncBootstrap() {
         const to_user_id = detail?.to_user_id?.trim()
         const request_id = detail?.request_id?.trim()
         if (!to_user_id || !request_id) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'AttachmentTransferResponse',
-            to_user_id,
-            request_id,
-            accepted: Boolean(detail?.accepted),
-          })
-        )
+        sendOrQueue({
+          type: 'AttachmentTransferResponse',
+          to_user_id,
+          request_id,
+          accepted: Boolean(detail?.accepted),
+        })
       }
 
       const onSendAttachmentTransferSignal = (ev: Event) => {
@@ -855,18 +837,12 @@ export function ServerSyncBootstrap() {
         const request_id = detail?.request_id?.trim()
         const signal = detail?.signal?.trim()
         if (!to_user_id || !request_id || !signal) return
-        if (ws.readyState !== WebSocket.OPEN) {
-          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
-          return
-        }
-        ws.send(
-          JSON.stringify({
-            type: 'AttachmentTransferSignal',
-            to_user_id,
-            request_id,
-            signal,
-          })
-        )
+        sendOrQueue({
+          type: 'AttachmentTransferSignal',
+          to_user_id,
+          request_id,
+          signal,
+        })
       }
 
       window.addEventListener('cordia:server-removed', onServerRemoved)
@@ -935,6 +911,7 @@ export function ServerSyncBootstrap() {
 
     return () => {
       cancelled = true
+      pendingOutboundRef.current = []
       if (reconnectTimerRef.current != null) {
         window.clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
@@ -952,7 +929,7 @@ export function ServerSyncBootstrap() {
         wsRef.current = null
       }
     }
-  }, [sessionLoaded, currentAccountId, beaconStatus, beaconUrl])
+  }, [sessionLoaded, currentAccountId, beaconUrl])
 
   return null
 }

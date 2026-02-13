@@ -33,6 +33,10 @@
         "unmaximize": true,
         "unminimize": true,
         "startDragging": true
+      },
+      "protocol": {
+        "asset": true,
+        "assetScope": ["**"]
       }
     },
     "updater": {
@@ -56,7 +60,7 @@
       ]
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' blob: data: asset: https://asset.localhost; media-src 'self' blob: data: asset: https://asset.localhost"
     },
     "windows": [
       {

@@ -147,6 +147,8 @@ export interface SharedAttachmentItem {
   size_bytes: number
   storage_mode: 'current_path' | 'program_copy' | string
   source_path?: string | null
+  file_path?: string | null
+  thumbnail_path?: string | null
   created_at: string
   can_share_now: boolean
 }
@@ -378,6 +380,10 @@ export async function readClipboardText(): Promise<string> {
 
 export async function openPathInFileExplorer(path: string): Promise<void> {
   return await invoke('open_path_in_file_explorer', { path })
+}
+
+export async function pathExists(path: string): Promise<boolean> {
+  return await invoke('path_exists', { path })
 }
 
 export async function registerKeyFileAssociation(): Promise<void> {

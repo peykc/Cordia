@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import {
   getAttachmentRecord,
   listSharedAttachments,
+  pathExists,
   readAttachmentBytes,
   saveDownloadedAttachment,
   type SharedAttachmentItem,
@@ -24,6 +25,7 @@ import {
 } from '../lib/downloadSettings'
 import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
 import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
+import { getCurrent } from '@tauri-apps/api/window'
 
 export interface EphemeralAttachmentMeta {
   attachment_id: string
@@ -82,6 +84,10 @@ interface IncomingEphemeralReceiptDetail {
   sent_at: string
 }
 
+type EphemeralPayload =
+  | { kind: 'text'; text: string; sent_at: string }
+  | { kind: 'attachment'; attachment: EphemeralAttachmentMeta; sent_at: string }
+
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
@@ -89,6 +95,9 @@ interface EphemeralMessagesContextType {
   requestAttachmentDownload: (msg: EphemeralChatMessage) => Promise<void>
   attachmentTransfers: AttachmentTransferState[]
   transferHistory: TransferHistoryEntry[]
+  hasAccessibleCompletedDownload: (attachmentId: string | null | undefined) => boolean
+  refreshTransferHistoryAccessibility: () => Promise<void>
+  removeTransferHistoryEntry: (requestId: string) => void
   sharedAttachments: SharedAttachmentItem[]
   refreshSharedAttachments: () => Promise<void>
   unshareAttachmentById: (attachmentId: string) => Promise<void>
@@ -121,6 +130,7 @@ export interface TransferHistoryEntry {
   status: AttachmentTransferState['status']
   progress: number
   saved_path?: string
+  is_inaccessible?: boolean
   created_at: string
   updated_at: string
 }
@@ -236,6 +246,50 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     })
   }
 
+  const removeTransferHistoryEntry = (requestId: string) => {
+    if (!requestId) return
+    setTransferHistory((prev) => prev.filter((h) => h.request_id !== requestId))
+  }
+
+  const hasAccessibleCompletedDownload = (attachmentId: string | null | undefined): boolean => {
+    if (!attachmentId) return false
+    return transferHistoryRef.current.some(
+      (h) =>
+        h.direction === 'download' &&
+        h.attachment_id === attachmentId &&
+        h.status === 'completed' &&
+        Boolean(h.saved_path) &&
+        h.is_inaccessible !== true
+    )
+  }
+
+  const refreshTransferHistoryAccessibility: EphemeralMessagesContextType['refreshTransferHistoryAccessibility'] = async () => {
+    const candidates = transferHistoryRef.current.filter(
+      (h) => h.direction === 'download' && h.status === 'completed' && Boolean(h.saved_path)
+    )
+    if (candidates.length === 0) return
+
+    const checks = await Promise.all(
+      candidates.map(async (h) => {
+        try {
+          const exists = await pathExists(h.saved_path!)
+          return { requestId: h.request_id, inaccessible: !exists }
+        } catch {
+          return { requestId: h.request_id, inaccessible: true }
+        }
+      })
+    )
+    const nextMap = new Map(checks.map((c) => [c.requestId, c.inaccessible]))
+    setTransferHistory((prev) =>
+      prev.map((h) => {
+        const nextInaccessible = nextMap.get(h.request_id)
+        if (nextInaccessible === undefined) return h
+        if ((h.is_inaccessible ?? false) === nextInaccessible) return h
+        return { ...h, is_inaccessible: nextInaccessible }
+      })
+    )
+  }
+
   const cleanupTransferPeer = (requestId: string) => {
     const pc = transferPeersRef.current.get(requestId)
     if (pc) {
@@ -246,12 +300,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     transferExpectedSizeRef.current.delete(requestId)
   }
 
-  const upsertHistory = (requestId: string, updater: (prev?: TransferHistoryEntry) => TransferHistoryEntry) => {
+  const upsertHistory = (
+    requestId: string,
+    updater: (prev?: TransferHistoryEntry) => TransferHistoryEntry | null
+  ) => {
     setTransferHistory((prev) => {
       const idx = prev.findIndex((h) => h.request_id === requestId)
-      if (idx < 0) return [updater(undefined), ...prev].slice(0, 300)
+      if (idx < 0) {
+        const created = updater(undefined)
+        if (!created) return prev
+        return [created, ...prev].slice(0, 300)
+      }
+      const updated = updater(prev[idx])
+      if (!updated) {
+        const next = [...prev]
+        next.splice(idx, 1)
+        return next
+      }
       const next = [...prev]
-      next[idx] = updater(prev[idx])
+      next[idx] = updated
       return next
     })
   }
@@ -271,7 +338,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   useEffect(() => {
     const now = new Date().toISOString()
     for (const t of attachmentTransfers) {
-      upsertHistory(t.request_id, (prev) => ({
+      upsertHistory(t.request_id, (prev) => {
+        if (!prev && (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected')) {
+          return null
+        }
+        return {
         request_id: t.request_id,
         message_id: t.message_id || prev?.message_id || '',
         attachment_id: t.attachment_id,
@@ -283,9 +354,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         status: t.status,
         progress: t.progress,
         saved_path: t.saved_path ?? prev?.saved_path,
+        is_inaccessible: prev?.is_inaccessible,
         created_at: prev?.created_at || now,
         updated_at: now,
-      }))
+        }
+      })
     }
   }, [attachmentTransfers])
 
@@ -391,6 +464,29 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [transferHistory, currentAccountId])
 
   useEffect(() => {
+    if (!currentAccountId) return
+    let unlisten: (() => void) | undefined
+    getCurrent()
+      .onCloseRequested(() => {
+        const pruned = transferHistoryRef.current.filter((h) => h.is_inaccessible !== true).slice(0, 300)
+        try {
+          window.localStorage.setItem(transferHistoryKeyForAccount(currentAccountId), JSON.stringify(pruned))
+        } catch {
+          // ignore local storage write failures
+        }
+        setTransferHistory(pruned)
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
+      .catch(() => {})
+
+    return () => {
+      unlisten?.()
+    }
+  }, [currentAccountId])
+
+  useEffect(() => {
     let cancelled = false
     const onIncoming = async (e: Event) => {
       const detail = (e as CustomEvent<IncomingEphemeralChatDetail>).detail
@@ -402,12 +498,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           detail.encrypted_payload
         )
         if (cancelled) return
-        const parsed = JSON.parse(plaintext) as {
-          kind?: 'text' | 'attachment'
-          text?: string
-          attachment?: EphemeralAttachmentMeta
-        }
+        const parsed = JSON.parse(plaintext) as Partial<EphemeralPayload> & Record<string, any>
         const kind = parsed.kind === 'attachment' ? 'attachment' : 'text'
+        const payloadSentAt = typeof parsed.sent_at === 'string' ? parsed.sent_at : ''
+        const effectiveSentAt = Number.isFinite(Date.parse(payloadSentAt))
+          ? payloadSentAt
+          : (detail.sent_at || new Date().toISOString())
         const text = kind === 'attachment'
           ? (parsed.attachment?.file_name ?? '').trim()
           : (parsed.text ?? '').trim()
@@ -421,7 +517,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           text,
           kind,
           attachment: kind === 'attachment' ? parsed.attachment : undefined,
-          sent_at: detail.sent_at || new Date().toISOString(),
+          sent_at: effectiveSentAt,
           delivery_status: 'delivered',
           delivered_by: [],
           read_by: [],
@@ -477,8 +573,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           .sort((a, b) => Date.parse(a.sent_at) - Date.parse(b.sent_at))
         for (const m of pending) {
           const payload = m.kind === 'attachment' && m.attachment
-            ? JSON.stringify({ kind: 'attachment', attachment: m.attachment })
-            : JSON.stringify({ kind: 'text', text: m.text })
+            ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
+            : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
           const estimate = storageBytes(payload) + 128
           if (usedBytes + estimate > maxBudgetBytes) break
           usedBytes += estimate
@@ -777,7 +873,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const getMessages = (signingPubkey: string, chatId: string): EphemeralChatMessage[] => {
     if (!signingPubkey || !chatId) return []
-    return messagesByBucket[bucketKey(signingPubkey, chatId)] ?? []
+    const list = messagesByBucket[bucketKey(signingPubkey, chatId)] ?? []
+    const timeKey = (s: string) => {
+      const t = Date.parse(s)
+      return Number.isFinite(t) ? t : 0
+    }
+    // Return sorted copy so late-delivered messages slot correctly.
+    return [...list].sort((a, b) => {
+      const ta = timeKey(a.sent_at)
+      const tb = timeKey(b.sent_at)
+      if (ta !== tb) return ta - tb
+      return String(a.id).localeCompare(String(b.id))
+    })
   }
 
   const sendMessage: EphemeralMessagesContextType['sendMessage'] = async ({
@@ -790,9 +897,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const trimmed = text.trim()
     if (!trimmed) return
 
-    const payload = JSON.stringify({ kind: 'text', text: trimmed })
-    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
     const sentAt = new Date().toISOString()
+    const payload = JSON.stringify({ kind: 'text', text: trimmed, sent_at: sentAt } satisfies EphemeralPayload)
+    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
     const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
 
     window.dispatchEvent(
@@ -834,9 +941,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     attachment,
   }) => {
     if (!attachment?.attachment_id) return
-    const payload = JSON.stringify({ kind: 'attachment', attachment })
-    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
     const sentAt = new Date().toISOString()
+    const payload = JSON.stringify({ kind: 'attachment', attachment, sent_at: sentAt } satisfies EphemeralPayload)
+    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
     const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     window.dispatchEvent(
       new CustomEvent('cordia:send-ephemeral-chat', {
@@ -873,6 +980,20 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const requestAttachmentDownload: EphemeralMessagesContextType['requestAttachmentDownload'] = async (msg) => {
     if (!identity?.user_id || !msg.attachment?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
+    const attachmentId = msg.attachment.attachment_id
+    if (hasAccessibleCompletedDownload(attachmentId)) return
+    setTransferHistory((prev) =>
+      prev.filter(
+        (h) =>
+          !(
+            h.direction === 'download' &&
+            h.attachment_id === attachmentId &&
+            h.status === 'completed' &&
+            h.is_inaccessible === true
+          )
+      )
+    )
+
     const duplicateActive = attachmentTransfersRef.current.some(
       (t) =>
         t.direction === 'download' &&
@@ -886,7 +1007,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     upsertTransfer(request_id, () => ({
       request_id,
       message_id: msg.id,
-      attachment_id: msg.attachment!.attachment_id,
+      attachment_id: attachmentId,
       from_user_id: msg.from_user_id,
       to_user_id: identity.user_id,
       file_name: msg.attachment!.file_name,
@@ -898,7 +1019,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     upsertHistory(request_id, () => ({
       request_id,
       message_id: msg.id,
-      attachment_id: msg.attachment!.attachment_id,
+      attachment_id: attachmentId,
       file_name: msg.attachment!.file_name,
       size_bytes: msg.attachment!.size_bytes,
       from_user_id: msg.from_user_id,
@@ -914,7 +1035,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         detail: {
           to_user_id: msg.from_user_id,
           request_id,
-          attachment_id: msg.attachment.attachment_id,
+            attachment_id: attachmentId,
         },
       })
     )
@@ -991,6 +1112,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       requestAttachmentDownload,
       attachmentTransfers,
       transferHistory,
+      hasAccessibleCompletedDownload,
+      refreshTransferHistoryAccessibility,
+      removeTransferHistoryEntry,
       sharedAttachments,
       refreshSharedAttachments,
       unshareAttachmentById,

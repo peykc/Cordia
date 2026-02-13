@@ -1,11 +1,17 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, ArrowUpDown, FolderOpen, Trash2 } from 'lucide-react'
+import { FileIcon } from './FileIcon'
+import { MediaPreviewModal } from './MediaPreviewModal'
 import { useWindowSize } from '../lib/useWindowSize'
 import { Button } from './ui/button'
 import { useTransferCenterModal } from '../contexts/TransferCenterModalContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { openPathInFileExplorer } from '../lib/tauri'
+import { FilenameEllipsis } from './FilenameEllipsis'
+import { formatBytes } from '../lib/bytes'
+import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
+import { useIdentity } from '../contexts/IdentityContext'
 
 function directoryForPath(path: string): string {
   const normalized = path.replace(/\//g, '\\')
@@ -16,28 +22,53 @@ function directoryForPath(path: string): string {
 export function TransferCenterModal() {
   const { isOpen, anchorRect, closeTransferCenter } = useTransferCenterModal()
   const { width, height } = useWindowSize()
+  const [mediaPreview, setMediaPreview] = useState<{
+    type: 'image' | 'video'
+    url: string | null
+    attachmentId?: string
+    fileName?: string
+  } | null>(null)
   const isSmall = width < 700
+  const { identity } = useIdentity()
+  const remoteProfiles = useRemoteProfiles()
   const {
     transferHistory,
     attachmentTransfers,
     sharedAttachments,
     refreshSharedAttachments,
+    refreshTransferHistoryAccessibility,
+    removeTransferHistoryEntry,
     unshareAttachmentById,
   } = useEphemeralMessages()
 
   useEffect(() => {
     if (!isOpen) return
     refreshSharedAttachments().catch(() => {})
-  }, [isOpen, refreshSharedAttachments])
+    refreshTransferHistoryAccessibility().catch(() => {})
+  }, [isOpen, refreshSharedAttachments, refreshTransferHistoryAccessibility])
+
+  // Clear media preview when transfer center closes (e.g. clicking top bar/overlay)
+  // Also revoke blob URLs to avoid leaks
+  useEffect(() => {
+    if (!isOpen) {
+      setMediaPreview((prev) => {
+        if (prev?.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url)
+        return null
+      })
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (!isOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeTransferCenter()
+      if (e.key === 'Escape') {
+        if (mediaPreview) setMediaPreview(null)
+        else closeTransferCenter()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen, closeTransferCenter])
+  }, [isOpen, closeTransferCenter, mediaPreview])
 
   const downloadRows = useMemo(
     () =>
@@ -72,9 +103,11 @@ export function TransferCenterModal() {
 
   if (!isOpen || !anchorRect) return null
 
-  const popupWidth = Math.min(isSmall ? 520 : 860, width - 24)
-  const popupHeight = Math.min(isSmall ? 420 : 520, height - 24)
+  const popupWidth = Math.min(isSmall ? 420 : 720, width - 24)
+  const popupHeight = Math.min(isSmall ? 360 : 460, height - 24)
   const gutter = 10
+  // TitleBar (h-8) + header with Home and user card (h-16)
+  const topBarHeight = 96
 
   // Anchor to the button; prefer below-right alignment.
   let left = Math.round(anchorRect.right - popupWidth)
@@ -83,12 +116,26 @@ export function TransferCenterModal() {
   if (top + popupHeight > height - gutter) {
     top = Math.round(anchorRect.top - popupHeight - 8)
   }
-  top = Math.max(gutter, Math.min(top, height - popupHeight - gutter))
+  top = Math.max(topBarHeight, Math.min(top, height - popupHeight - gutter))
 
   const popupEl = (
     <div className="fixed inset-0 z-[70]">
-      {/* Transparent click-catcher (no dim) */}
-      <div className="absolute inset-0" onMouseDown={closeTransferCenter} />
+      {mediaPreview && (
+        <MediaPreviewModal
+          type={mediaPreview.type}
+          url={mediaPreview.url}
+          attachmentId={mediaPreview.attachmentId}
+          fileName={mediaPreview.fileName}
+          onClose={() => {
+            if (mediaPreview.url?.startsWith('blob:')) {
+              URL.revokeObjectURL(mediaPreview.url)
+            }
+            setMediaPreview(null)
+          }}
+        />
+      )}
+      {/* Transparent click-catcher (no dim) - default cursor, not pointer */}
+      <div className="absolute inset-0 cursor-default" onMouseDown={closeTransferCenter} />
       <div
         className="absolute border-2 border-border bg-card/95 shadow-2xl flex flex-col overflow-hidden rounded-none"
         style={{ left, top, width: popupWidth, height: popupHeight }}
@@ -118,35 +165,62 @@ export function TransferCenterModal() {
                 {downloadRows.length === 0 && (
                   <p className="text-[11px] text-muted-foreground px-1">No downloads yet.</p>
                 )}
-                {downloadRows.map((row) => (
-                  <div key={row.request_id} className="border border-border/50 bg-card/60 px-2 py-1.5 space-y-1">
-                    <div className="text-[12px] truncate">{row.file_name}</div>
+                {downloadRows.map((row) => {
+                  const inaccessible = row.is_inaccessible === true
+                  return (
+                  <div
+                    key={row.request_id}
+                    className={`group border border-border/50 px-2 py-1.5 space-y-1 flex gap-2 ${
+                      inaccessible ? 'bg-card/30 opacity-65' : 'bg-card/60'
+                    }`}
+                  >
+                    <FileIcon
+                      fileName={row.file_name}
+                      savedPath={inaccessible ? undefined : row.saved_path}
+                      onMediaClick={(url, type, attachmentId, fileName) => setMediaPreview({ type, url, attachmentId, fileName })}
+                    />
+                    <div className="min-w-0 flex-1">
+                    <FilenameEllipsis name={row.file_name} className="block text-[12px] truncate" />
                     <div className="text-[10px] text-muted-foreground flex items-center justify-between gap-2">
                       <span className="truncate">
-                        {row.from_user_id.slice(0, 8)} • {(row.size_bytes ?? 0) > 0 ? `${((row.size_bytes ?? 0) / 1024).toFixed(1)} KB` : 'size ?'}
+                        {row.from_user_id === identity?.user_id
+                          ? 'You'
+                          : (remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim()
+                              ? remoteProfiles.getProfile(row.from_user_id)!.display_name
+                              : `User ${row.from_user_id.slice(0, 8)}`)} • {formatBytes(row.size_bytes)}
                       </span>
-                      <span className="shrink-0">
-                        {row.status === 'transferring' ? `${Math.round(row.progress * 100)}%` : row.status}
-                      </span>
+                      <span className="shrink-0">{inaccessible ? 'Not accessible' : (row.status === 'transferring' ? `${Math.round(row.progress * 100)}%` : row.status)}</span>
                     </div>
                     <div className="text-[10px] text-muted-foreground truncate">
                       {new Date(row.updated_at).toLocaleString()}
                     </div>
-                    {row.saved_path && (
+                    {!inaccessible && row.saved_path && (
                       <Button
                         type="button"
                         variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-[10px]"
+                        size="icon"
+                        className="h-6 w-6"
                         onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
                         title={row.saved_path}
                       >
                         <FolderOpen className="h-3.5 w-3.5 mr-1" />
-                        Open folder
                       </Button>
                     )}
+                    {inaccessible && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-red-300 hover:text-red-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => removeTransferHistoryEntry(row.request_id)}
+                        title="Remove inaccessible entry"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    </div>
                   </div>
-                ))}
+                )})}
               </div>
             </section>
 
@@ -163,12 +237,27 @@ export function TransferCenterModal() {
                 {sharedAttachments.map((item) => {
                   const live = latestUploadByAttachment.get(item.attachment_id)
                   const latest = latestUploadHistoryByAttachment.get(item.attachment_id)
+                  const peerName = latest?.peer
+                    ? (latest.peer === identity?.user_id
+                        ? 'You'
+                        : (remoteProfiles.getProfile(latest.peer)?.display_name?.trim()
+                            ? remoteProfiles.getProfile(latest.peer)!.display_name
+                            : `User ${latest.peer.slice(0, 8)}`))
+                    : null
                   return (
-                    <div key={item.attachment_id} className="border border-border/50 bg-card/60 px-2 py-1.5 space-y-1">
-                      <div className="text-[12px] truncate">{item.file_name}</div>
+                    <div key={item.attachment_id} className="border border-border/50 bg-card/60 px-2 py-1.5 space-y-1 flex gap-2">
+                      <FileIcon
+                        fileName={item.file_name}
+                        attachmentId={item.can_share_now && !item.file_path ? item.attachment_id : null}
+                        savedPath={item.file_path ?? undefined}
+                        thumbnailPath={item.thumbnail_path ?? undefined}
+                        onMediaClick={(url, type, attachmentId, fileName) => setMediaPreview({ type, url, attachmentId, fileName })}
+                      />
+                      <div className="min-w-0 flex-1">
+                      <FilenameEllipsis name={item.file_name} className="block text-[12px] truncate" />
                       <div className="text-[10px] text-muted-foreground flex items-center justify-between gap-2">
                         <span className="truncate">
-                          {(item.size_bytes / 1024).toFixed(1)} KB • {item.storage_mode === 'program_copy' ? 'Cordia copy' : 'path'}
+                          {formatBytes(item.size_bytes)} • {item.storage_mode === 'program_copy' ? 'Cordia copy' : 'path'}
                         </span>
                         <span className="shrink-0">
                           {live
@@ -178,7 +267,7 @@ export function TransferCenterModal() {
                       </div>
                       {latest && (
                         <div className="text-[10px] text-muted-foreground truncate">
-                          Last {latest.peer.slice(0, 8)} • {new Date(latest.at).toLocaleString()}
+                          Last {peerName ?? latest.peer.slice(0, 8)} • {new Date(latest.at).toLocaleString()}
                         </div>
                       )}
                       <div className="text-[10px] text-muted-foreground truncate">
@@ -187,13 +276,14 @@ export function TransferCenterModal() {
                       <Button
                         type="button"
                         variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-[10px] text-red-300 hover:text-red-200"
+                        size="icon"
+                        className="h-6 w-6 text-red-300 hover:text-red-200"
                         onClick={() => unshareAttachmentById(item.attachment_id)}
+                        title="Remove from sharing"
                       >
-                        <Trash2 className="h-3.5 w-3.5 mr-1" />
-                        Remove from sharing
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
+                      </div>
                     </div>
                   )
                 })}

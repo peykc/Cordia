@@ -21,6 +21,7 @@ use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedServerHint {
@@ -75,6 +76,8 @@ struct AttachmentRecord {
     source_path: Option<String>,
     #[serde(default)]
     cached_file_name: Option<String>,
+    #[serde(default)]
+    thumbnail_path: Option<String>,
     created_at: String,
 }
 
@@ -103,6 +106,10 @@ struct SharedAttachmentItem {
     size_bytes: u64,
     storage_mode: String,
     source_path: Option<String>,
+    /// Full path to the file for convertFileSrc (source_path or cache path)
+    file_path: Option<String>,
+    /// Path to thumbnail image (JPEG) for video/image preview, if generated
+    thumbnail_path: Option<String>,
     created_at: String,
     can_share_now: bool,
 }
@@ -114,6 +121,7 @@ fn account_attachment_dir(account_id: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&base).map_err(|e| format!("Failed to create attachments dir: {}", e))?;
     std::fs::create_dir_all(base.join("cache")).map_err(|e| format!("Failed to create attachment cache dir: {}", e))?;
     std::fs::create_dir_all(base.join("downloads")).map_err(|e| format!("Failed to create attachment downloads dir: {}", e))?;
+    std::fs::create_dir_all(base.join("thumbs")).map_err(|e| format!("Failed to create attachment thumbs dir: {}", e))?;
     Ok(base)
 }
 
@@ -144,6 +152,38 @@ fn sha256_file(path: &PathBuf) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn is_video_ext(ext: &str) -> bool {
+    let e = ext.to_lowercase();
+    ["mp4", "mov", "webm", "avi", "mkv", "m4v", "wmv", "flv", "mpeg", "mpg", "3gp", "ogv"].contains(&e.as_str())
+}
+
+fn is_image_ext(ext: &str) -> bool {
+    let e = ext.to_lowercase();
+    ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "tiff", "tif"].contains(&e.as_str())
+}
+
+fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool {
+    let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    let output = output_path.to_string_lossy();
+    let input = source.to_string_lossy();
+    let ok = if is_video_ext(ext) {
+        Command::new(ffmpeg)
+            .args(["-i", &input, "-vframes", "1", "-y", &output])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+    } else if is_image_ext(ext) {
+        Command::new(ffmpeg)
+            .args(["-i", &input, "-vf", "scale=128:-1", "-y", &output])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+    } else {
+        return false;
+    };
+    ok.map(|s| s.success()).unwrap_or(false)
 }
 
 #[tauri::command]
@@ -206,11 +246,28 @@ fn register_attachment_from_path(path: String, storage_mode: String) -> Result<A
         } else {
             None
         },
-        cached_file_name,
+        cached_file_name: cached_file_name.clone(),
+        thumbnail_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
     index.records.insert(attachment_id.clone(), record);
     save_attachment_index(&base, &index)?;
+
+    // Extract thumbnail for video/image (uses ffmpeg if available)
+    if is_video_ext(&extension) || is_image_ext(&extension) {
+        let extract_from = if let Some(cache_name) = &cached_file_name {
+            cache_dir.join(cache_name)
+        } else {
+            source.clone()
+        };
+        let thumb_path = base.join("thumbs").join(format!("{}.jpg", attachment_id));
+        if extract_thumbnail(&extract_from, &thumb_path, &extension) {
+            if let Some(rec) = index.records.get_mut(&attachment_id) {
+                rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
+                save_attachment_index(&base, &index)?;
+            }
+        }
+    }
 
     Ok(AttachmentRegistrationResult {
         attachment_id,
@@ -282,19 +339,31 @@ fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
             } else {
                 false
             };
-            SharedAttachmentItem {
-                attachment_id: rec.attachment_id.clone(),
-                sha256: rec.sha256.clone(),
-                file_name: rec.file_name.clone(),
-                extension: rec.extension.clone(),
-                size_bytes: rec.size_bytes,
-                storage_mode: match rec.storage_mode {
-                    AttachmentStorageMode::CurrentPath => "current_path".to_string(),
-                    AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
-                },
-                source_path: rec.source_path.clone(),
-                created_at: rec.created_at.clone(),
-                can_share_now,
+            {
+                let file_path = if let Some(cache_name) = &rec.cached_file_name {
+                    base.join("cache").join(cache_name).to_string_lossy().to_string()
+                } else if let Some(src) = &rec.source_path {
+                    src.clone()
+                } else {
+                    String::new()
+                };
+                let file_path = if file_path.is_empty() { None } else { Some(file_path) };
+                SharedAttachmentItem {
+                    attachment_id: rec.attachment_id.clone(),
+                    sha256: rec.sha256.clone(),
+                    file_name: rec.file_name.clone(),
+                    extension: rec.extension.clone(),
+                    size_bytes: rec.size_bytes,
+                    storage_mode: match rec.storage_mode {
+                        AttachmentStorageMode::CurrentPath => "current_path".to_string(),
+                        AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
+                    },
+                    source_path: rec.source_path.clone(),
+                    file_path,
+                    thumbnail_path: rec.thumbnail_path.clone().filter(|p| PathBuf::from(p).exists()),
+                    created_at: rec.created_at.clone(),
+                    can_share_now,
+                }
             }
         })
         .collect();
@@ -1657,6 +1726,15 @@ fn open_path_in_file_explorer(path: String) -> Result<(), String> {
     Err("Unsupported OS".to_string())
 }
 
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    PathBuf::from(trimmed).exists()
+}
+
 #[cfg(windows)]
 #[tauri::command]
 fn register_key_file_association_command() -> Result<(), String> {
@@ -1909,7 +1987,8 @@ fn main() {
             get_beacon_url,
             set_beacon_url,
             read_clipboard_text,
-            open_path_in_file_explorer
+            open_path_in_file_explorer,
+            path_exists
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
