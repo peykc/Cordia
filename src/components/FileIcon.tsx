@@ -112,6 +112,21 @@ export function FileIcon({
           } catch {
             if (!cancelled) setMediaUrl(null)
           }
+          return
+        }
+        if (attachmentId) {
+          setLoading(true)
+          try {
+            const bytes = await readAttachmentBytes(attachmentId)
+            const blob = new Blob([new Uint8Array(bytes)])
+            const url = URL.createObjectURL(blob)
+            blobUrlRef.current = url
+            if (!cancelled) setMediaUrl(url)
+          } catch {
+            if (!cancelled) setMediaUrl(null)
+          } finally {
+            if (!cancelled) setLoading(false)
+          }
         }
         return
       }
@@ -153,7 +168,8 @@ export function FileIcon({
 
   // Video: thumbnail from thumbnailPath or savedPath (preload=metadata), icon when neither available
   if (category === 'video' && (savedPath || attachmentId || thumbnailPath)) {
-    const hasThumbnail = mediaUrl && (thumbnailPath || savedPath)
+    const hasThumbnail = !!mediaUrl
+    const hasImageThumb = !!thumbnailPath
     return (
       <button
         type="button"
@@ -162,6 +178,8 @@ export function FileIcon({
         onClick={() => {
           if (savedPath) {
             onMediaClick?.(convertFileSrc(savedPath), 'video', undefined, fileName)
+          } else if (mediaUrl) {
+            onMediaClick?.(mediaUrl, 'video', undefined, fileName)
           } else if (attachmentId) {
             onMediaClick?.(null, 'video', attachmentId, fileName)
           }
@@ -170,13 +188,21 @@ export function FileIcon({
       >
         {hasThumbnail ? (
           <>
-            <video
-              src={mediaUrl}
-              className="w-full h-full object-cover"
-              muted
-              playsInline
-              preload="metadata"
-            />
+            {hasImageThumb ? (
+              <img
+                src={mediaUrl}
+                alt=""
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <video
+                src={mediaUrl}
+                className="w-full h-full object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+            )}
             <span className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 transition-colors">
               <Play className="w-4 h-4 text-white fill-white" />
             </span>

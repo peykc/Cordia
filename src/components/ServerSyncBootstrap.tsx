@@ -92,14 +92,6 @@ export function ServerSyncBootstrap() {
       if (now - lastConnectStartAtRef.current < 500) return
       lastConnectStartAtRef.current = now
 
-      // If a socket is already connecting/open, don't tear it down.
-      if (
-        wsRef.current &&
-        (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)
-      ) {
-        return
-      }
-
       // Clean up any previous connection
       if (wsRef.current) {
         wsRef.current.close()
@@ -127,26 +119,15 @@ export function ServerSyncBootstrap() {
 
       const sendOrQueue = (payload: unknown) => {
         const serialized = JSON.stringify(payload)
-        const cur = wsRef.current
-        if (cur && cur.readyState === WebSocket.OPEN) {
-          try {
-            cur.send(serialized)
-            return
-          } catch {
-            // fall through to queue + reconnect
-          }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(serialized)
+          return
         }
         pendingOutboundRef.current.push(serialized)
         if (pendingOutboundRef.current.length > 500) {
           pendingOutboundRef.current = pendingOutboundRef.current.slice(-500)
         }
-        // Only reconnect if we're fully disconnected (don't kill CONNECTING sockets).
-        if (!cancelled && beaconUrl) {
-          const s = wsRef.current?.readyState
-          if (s == null || s === WebSocket.CLOSED || s === WebSocket.CLOSING) {
-            connectWs()
-          }
-        }
+        if (!cancelled && beaconUrl) connectWs()
       }
 
       const sendProfileAnnounce = async (override?: {
@@ -156,7 +137,7 @@ export function ServerSyncBootstrap() {
         updated_at: string | null
       }) => {
         if (!identity?.user_id) return
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) return
         try {
           const servers = await listServers()
           const signingPubkeys = servers.map(s => s.signing_pubkey)
@@ -165,32 +146,36 @@ export function ServerSyncBootstrap() {
           const show = Boolean(override?.show_real_name ?? profile.show_real_name)
           const rn = show ? (override?.real_name ?? profile.real_name) : null
           const updatedAt = override?.updated_at ?? profile.updated_at
-          sendOrQueue({
-            type: 'ProfileAnnounce',
-            user_id: identity.user_id,
-            display_name: dn,
-            real_name: rn,
-            show_real_name: show,
-            rev: Number(updatedAt ? Date.parse(updatedAt) : 0),
-            signing_pubkeys: signingPubkeys,
-          })
+          ws.send(
+            JSON.stringify({
+              type: 'ProfileAnnounce',
+              user_id: identity.user_id,
+              display_name: dn,
+              real_name: rn,
+              show_real_name: show,
+              rev: Number(updatedAt ? Date.parse(updatedAt) : 0),
+              signing_pubkeys: signingPubkeys,
+            })
+          )
         } catch (e) {
           // ignore
         }
       }
 
       const sendProfileHello = async () => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
         try {
           const servers = await listServers()
           for (const s of servers) {
             const ids = Array.from(new Set(s.members.map(m => m.user_id).filter(Boolean)))
             if (ids.length === 0) continue
-            sendOrQueue({
-              type: 'ProfileHello',
-              signing_pubkey: s.signing_pubkey,
-              user_ids: ids,
-            })
+            ws.send(
+              JSON.stringify({
+                type: 'ProfileHello',
+                signing_pubkey: s.signing_pubkey,
+                user_ids: ids,
+              })
+            )
           }
         } catch {
           // ignore
@@ -201,16 +186,18 @@ export function ServerSyncBootstrap() {
       const MAX_FRIEND_IDS = 100
 
       const sendProfileHelloForFriends = async () => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
         try {
           const friends = await listFriends()
           const userIds = Array.from(new Set(friends)).slice(0, MAX_FRIEND_IDS)
           if (userIds.length === 0) return
-          sendOrQueue({
-            type: 'ProfileHello',
-            signing_pubkey: FRIENDS_SIGNING_PUBKEY,
-            user_ids: userIds,
-          })
+          ws.send(
+            JSON.stringify({
+              type: 'ProfileHello',
+              signing_pubkey: FRIENDS_SIGNING_PUBKEY,
+              user_ids: userIds,
+            })
+          )
         } catch {
           // ignore
         }
@@ -228,7 +215,7 @@ export function ServerSyncBootstrap() {
         },
         extraToUserIds?: string[]
       ) => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
         const { profile: p, identity: id, accountInfoMap: am, currentAccountId: cid } = profilePushRef.current
         if (!id?.user_id) return
         try {
@@ -242,19 +229,19 @@ export function ServerSyncBootstrap() {
           if (filteredRecipients.length === 0) return
           const rev = override?.updated_at != null ? Date.parse(override.updated_at) : (p?.updated_at ? Date.parse(p.updated_at) : 0)
           const accountCreatedAt = cid && am[cid]?.created_at ? am[cid].created_at : null
-          sendOrQueue({
-            type: 'ProfilePush',
-            to_user_ids: filteredRecipients,
-            display_name: override?.display_name ?? p?.display_name ?? id?.display_name ?? null,
-            real_name: override?.show_real_name
-              ? (override?.real_name ?? p?.real_name ?? null)
-              : (p?.show_real_name ? (p?.real_name ?? null) : null),
-            show_real_name: override?.show_real_name ?? Boolean(p?.show_real_name),
-            rev: Number.isFinite(rev) ? rev : 0,
-            avatar_data_url: override?.avatar_data_url !== undefined ? override.avatar_data_url : (p?.avatar_data_url ?? null),
-            avatar_rev: override?.avatar_rev !== undefined ? override.avatar_rev : (p?.avatar_rev ?? null),
-            account_created_at: accountCreatedAt,
-          })
+          ws.send(
+            JSON.stringify({
+              type: 'ProfilePush',
+              to_user_ids: filteredRecipients,
+              display_name: override?.display_name ?? p?.display_name ?? id?.display_name ?? null,
+              real_name: override?.show_real_name ? (override?.real_name ?? p?.real_name ?? null) : (p?.show_real_name ? (p?.real_name ?? null) : null),
+              show_real_name: override?.show_real_name ?? Boolean(p?.show_real_name),
+              rev: Number.isFinite(rev) ? rev : 0,
+              avatar_data_url: override?.avatar_data_url !== undefined ? override.avatar_data_url : (p?.avatar_data_url ?? null),
+              avatar_rev: override?.avatar_rev !== undefined ? override.avatar_rev : (p?.avatar_rev ?? null),
+              account_created_at: accountCreatedAt,
+            })
+          )
         } catch {
           // ignore
         }
@@ -262,7 +249,7 @@ export function ServerSyncBootstrap() {
 
       const sendPresenceHello = async (fromLabel: string) => {
         if (!identity?.user_id) return
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) return
         // #region agent log
         DEBUG_LOG({ location: 'ServerSyncBootstrap.tsx:sendPresenceHello', message: 'sendPresenceHello invoked', data: { from: fromLabel, readyState: ws.readyState }, hypothesisId: 'H2a' })
         // #endregion
@@ -270,13 +257,15 @@ export function ServerSyncBootstrap() {
           const [servers, friends] = await Promise.all([listServers(), listFriends()])
           const signingPubkeys = servers.map(s => s.signing_pubkey)
           const friend_user_ids = Array.from(new Set(friends)).slice(0, MAX_FRIEND_IDS)
-          sendOrQueue({
-            type: 'PresenceHello',
-            user_id: identity.user_id,
-            signing_pubkeys: signingPubkeys,
-            active_signing_pubkey: activeSigningPubkeyRef.current,
-            friend_user_ids,
-          })
+          ws.send(
+            JSON.stringify({
+              type: 'PresenceHello',
+              user_id: identity.user_id,
+              signing_pubkeys: signingPubkeys,
+              active_signing_pubkey: activeSigningPubkeyRef.current,
+              friend_user_ids,
+            })
+          )
           await sendProfileHelloForFriends()
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to send presence hello:', e)
@@ -284,19 +273,21 @@ export function ServerSyncBootstrap() {
       }
 
       const subscribeMissingServers = async () => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) return
         try {
           const servers = await listServers()
           const nextSet = new Set(subscribedSigningPubkeysRef.current)
           for (const s of servers) {
             if (nextSet.has(s.signing_pubkey)) continue
             nextSet.add(s.signing_pubkey)
-            sendOrQueue({
-              type: 'Register',
-              server_id: s.id,
-              peer_id: `server-sync:${currentAccountId}:${s.id}`,
-              signing_pubkey: s.signing_pubkey,
-            })
+            ws.send(
+              JSON.stringify({
+                type: 'Register',
+                server_id: s.id,
+                peer_id: `server-sync:${currentAccountId}:${s.id}`,
+                signing_pubkey: s.signing_pubkey,
+              })
+            )
           }
           subscribedSigningPubkeysRef.current = nextSet
           // Presence set may have changed (new server joined/imported)
@@ -317,12 +308,14 @@ export function ServerSyncBootstrap() {
           for (const s of servers) {
             nextSet.add(s.signing_pubkey)
             // Register subscription for this signing_pubkey (beacon uses it for ServerHintUpdated broadcasts)
-            sendOrQueue({
-              type: 'Register',
-              server_id: s.id,
-              peer_id: `server-sync:${currentAccountId}:${s.id}`,
-              signing_pubkey: s.signing_pubkey,
-            })
+            ws.send(
+              JSON.stringify({
+                type: 'Register',
+                server_id: s.id,
+                peer_id: `server-sync:${currentAccountId}:${s.id}`,
+                signing_pubkey: s.signing_pubkey,
+              })
+            )
           }
           subscribedSigningPubkeysRef.current = nextSet
           // Announce presence after subscriptions are set up
@@ -336,14 +329,8 @@ export function ServerSyncBootstrap() {
             const queued = pendingOutboundRef.current
             pendingOutboundRef.current = []
             for (const payload of queued) {
-              const cur = wsRef.current
-              if (!cur || cur.readyState !== WebSocket.OPEN) break
-              try {
-                cur.send(payload)
-              } catch {
-                pendingOutboundRef.current.push(payload)
-                break
-              }
+              if (ws.readyState !== WebSocket.OPEN) break
+              ws.send(payload)
             }
           }
         } catch (e) {

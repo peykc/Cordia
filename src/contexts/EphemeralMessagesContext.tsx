@@ -91,6 +91,20 @@ type EphemeralPayload =
   | { kind: 'text'; text: string; sent_at: string }
   | { kind: 'attachment'; attachment: EphemeralAttachmentMeta; sent_at: string }
 
+type QueuedDownloadRequest = {
+  request_id: string
+  message_id: string
+  attachment_id: string
+  from_user_id: string
+  to_user_id: string
+  file_name: string
+  size_bytes?: number
+}
+
+const MAX_PARALLEL_DOWNLOADS = 2
+const MAX_PENDING_BYTES = 1024 * 1024
+const RESUME_PENDING_BYTES = 512 * 1024
+
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
@@ -116,8 +130,11 @@ export interface AttachmentTransferState {
   to_user_id: string
   file_name: string
   direction: 'upload' | 'download'
-  status: 'requesting' | 'connecting' | 'transferring' | 'completed' | 'rejected' | 'failed'
+  status: 'queued' | 'requesting' | 'connecting' | 'transferring' | 'completed' | 'rejected' | 'failed'
   progress: number
+  debug_kbps?: number
+  debug_buffered_bytes?: number
+  debug_eta_seconds?: number
   saved_path?: string
   error?: string
 }
@@ -234,6 +251,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const [sharedAttachments, setSharedAttachments] = useState<SharedAttachmentItem[]>([])
   const [hydrated, setHydrated] = useState(false)
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
+  const transferDataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map())
+  const senderFlowPausedRef = useRef<Map<string, boolean>>(new Map())
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
   const downloadStreamStateRef = useRef<
@@ -241,19 +260,27 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       string,
       {
         expected: number
-        written: number
+        receivedBytes: number
+        writtenBytes: number
         pending: Uint8Array[]
         pendingBytes: number
-        chain: Promise<void>
         started: boolean
+        doneReceived: boolean
+        writerRunning: boolean
+        flowPauseSent: boolean
       }
     >
   >(new Map())
-  const transferProgressThrottleRef = useRef<Map<string, { at: number; progress: number }>>(new Map())
   const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
   const messagesByBucketRef = useRef<MessageBuckets>({})
   const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
   const previousAccountIdRef = useRef<string | null>(null)
+  const progressTickRef = useRef<Map<string, number>>(new Map())
+  const debugStatsRef = useRef<Map<string, { at: number; bytes: number }>>(new Map())
+  const debugWindowRef = useRef<Map<string, Array<{ at: number; bytes: number }>>>(new Map())
+  const debugSpeedSamplesRef = useRef<Map<string, number[]>>(new Map())
+  const debugTickRef = useRef<Map<string, number>>(new Map())
+  const downloadQueueRef = useRef<QueuedDownloadRequest[]>([])
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
     setAttachmentTransfers((prev) => {
@@ -265,21 +292,248 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     })
   }
 
-  const setTransferProgressThrottled = (requestId: string, progress: number, force?: boolean) => {
+  const updateTransferProgress = (requestId: string, progress: number) => {
     const now = Date.now()
-    const map = transferProgressThrottleRef.current
-    const prev = map.get(requestId)
-    const nextProgress = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0
-    const should =
-      force ||
-      !prev ||
-      now - prev.at > 125 ||
-      Math.abs(nextProgress - prev.progress) >= 0.02 ||
-      nextProgress === 0 ||
-      nextProgress === 1
-    if (!should) return
-    map.set(requestId, { at: now, progress: nextProgress })
-    upsertTransfer(requestId, (p) => ({ ...(p as AttachmentTransferState), progress: nextProgress }))
+    const last = progressTickRef.current.get(requestId) ?? 0
+    const clamped = Math.max(0, Math.min(1, progress))
+    // Throttle progress writes to keep UI responsive during large transfers.
+    if (clamped < 1 && now - last < 120) return
+    progressTickRef.current.set(requestId, now)
+    upsertTransfer(requestId, (prev) => ({
+      ...(prev as AttachmentTransferState),
+      progress: clamped,
+    }))
+  }
+
+  const dispatchDownloadRequest = (peerUserId: string, requestId: string, attachmentId: string) => {
+    window.dispatchEvent(
+      new CustomEvent('cordia:send-attachment-transfer-request', {
+        detail: {
+          to_user_id: peerUserId,
+          request_id: requestId,
+          attachment_id: attachmentId,
+        },
+      })
+    )
+  }
+
+  const activeDownloadCount = (excludeRequestId?: string) =>
+    attachmentTransfersRef.current.filter(
+      (t) =>
+        t.direction === 'download' &&
+        t.request_id !== excludeRequestId &&
+        (t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring')
+    ).length
+
+  const enqueueDownload = (entry: QueuedDownloadRequest) => {
+    const q = downloadQueueRef.current
+    const isSmall = (entry.size_bytes ?? Number.MAX_SAFE_INTEGER) <= 10 * 1024 * 1024
+    if (isSmall) q.unshift(entry)
+    else q.push(entry)
+    downloadQueueRef.current = q
+  }
+
+  const removeQueuedDownloadRequest = (requestId: string) => {
+    downloadQueueRef.current = downloadQueueRef.current.filter((x) => x.request_id !== requestId)
+  }
+
+  const tryStartNextQueuedDownload = () => {
+    const slots = MAX_PARALLEL_DOWNLOADS - activeDownloadCount()
+    if (slots <= 0) return
+    const q = downloadQueueRef.current
+    if (q.length === 0) return
+    for (let i = 0; i < slots && q.length > 0; i += 1) {
+      const nextIdx = q.reduce((best, item, idx) => {
+        const cur = item.size_bytes ?? Number.MAX_SAFE_INTEGER
+        const bestSize = q[best].size_bytes ?? Number.MAX_SAFE_INTEGER
+        return cur < bestSize ? idx : best
+      }, 0)
+      const [next] = q.splice(nextIdx, 1)
+      const now = new Date().toISOString()
+      upsertTransfer(next.request_id, (prev) => ({
+        ...(prev as AttachmentTransferState),
+        status: 'requesting',
+        progress: 0,
+        error: undefined,
+      }))
+      upsertHistory(next.request_id, (prev) => ({
+        ...(prev as TransferHistoryEntry),
+        request_id: next.request_id,
+        message_id: next.message_id,
+        attachment_id: next.attachment_id,
+        file_name: next.file_name,
+        size_bytes: next.size_bytes ?? prev?.size_bytes,
+        from_user_id: next.from_user_id,
+        to_user_id: next.to_user_id,
+        direction: 'download',
+        status: 'requesting',
+        progress: 0,
+        created_at: prev?.created_at ?? now,
+        updated_at: now,
+      }))
+      dispatchDownloadRequest(next.from_user_id, next.request_id, next.attachment_id)
+    }
+    downloadQueueRef.current = q
+  }
+
+  const updateTransferDebug = (
+    requestId: string,
+    totalBytes: number,
+    bufferedBytes?: number,
+    totalExpectedBytes?: number
+  ) => {
+    const now = Date.now()
+    const prev = debugStatsRef.current.get(requestId)
+    const lastTick = debugTickRef.current.get(requestId) ?? 0
+    let kbps: number | undefined
+    let etaSeconds: number | undefined
+    const window = debugWindowRef.current.get(requestId) ?? []
+    window.push({ at: now, bytes: totalBytes })
+    while (window.length > 0 && now - window[0].at > 1000) {
+      window.shift()
+    }
+    debugWindowRef.current.set(requestId, window)
+    if (window.length >= 2) {
+      const oldest = window[0]
+      const dtMs = now - oldest.at
+      const db = totalBytes - oldest.bytes
+      if (dtMs > 0 && db >= 0) {
+        kbps = (db / (dtMs / 1000)) / 1024
+      }
+    }
+    const speedSamples = debugSpeedSamplesRef.current.get(requestId) ?? []
+    if ((kbps ?? 0) > 0) {
+      speedSamples.push(kbps as number)
+      if (speedSamples.length > 6) speedSamples.shift()
+      debugSpeedSamplesRef.current.set(requestId, speedSamples)
+    }
+    const avgKbps =
+      speedSamples.length > 0
+        ? speedSamples.reduce((sum, v) => sum + v, 0) / speedSamples.length
+        : kbps
+    if (prev) {
+      const dtMs = now - prev.at
+      const db = totalBytes - prev.bytes
+      if (dtMs > 0 && db >= 0) {
+        kbps = kbps ?? (db / (dtMs / 1000)) / 1024
+      }
+    }
+    if (totalExpectedBytes && totalExpectedBytes > totalBytes && (avgKbps ?? 0) > 0) {
+      etaSeconds = (totalExpectedBytes - totalBytes) / ((avgKbps as number) * 1024)
+    } else if (totalExpectedBytes && totalExpectedBytes <= totalBytes) {
+      etaSeconds = 0
+    }
+    debugStatsRef.current.set(requestId, { at: now, bytes: totalBytes })
+    if (now - lastTick < 150 && bufferedBytes === undefined) return
+    debugTickRef.current.set(requestId, now)
+    upsertTransfer(requestId, (prevState) => ({
+      ...(prevState as AttachmentTransferState),
+      debug_kbps: avgKbps ?? kbps ?? prevState?.debug_kbps,
+      debug_buffered_bytes: bufferedBytes ?? prevState?.debug_buffered_bytes,
+      debug_eta_seconds: etaSeconds ?? prevState?.debug_eta_seconds,
+    }))
+  }
+
+  const startDownloadWriter = (requestId: string) => {
+    const st = downloadStreamStateRef.current.get(requestId)
+    if (!st || !st.started || st.writerRunning) return
+    st.writerRunning = true
+    downloadStreamStateRef.current.set(requestId, st)
+    const run = async () => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+      const targetBatchBytes = 128 * 1024
+      while (true) {
+        const cur = downloadStreamStateRef.current.get(requestId)
+        if (!cur || !cur.started) return
+        if (cur.flowPauseSent && cur.pendingBytes <= RESUME_PENDING_BYTES) {
+          const dc = transferDataChannelsRef.current.get(requestId)
+          if (dc && dc.readyState === 'open') {
+            try {
+              dc.send(JSON.stringify({ type: 'flow_resume' }))
+              cur.flowPauseSent = false
+              downloadStreamStateRef.current.set(requestId, cur)
+            } catch {
+              // ignore transient channel send failures; transfer error path handles hard failures
+            }
+          }
+        }
+        if (cur.pendingBytes <= 0) {
+          if (cur.doneReceived) break
+          await sleep(4)
+          continue
+        }
+        const outSize = Math.min(targetBatchBytes, cur.pendingBytes)
+        const out = new Uint8Array(outSize)
+        let remaining = outSize
+        let writeOff = 0
+        while (remaining > 0 && cur.pending.length > 0) {
+          const first = cur.pending[0]
+          if (first.byteLength <= remaining) {
+            out.set(first, writeOff)
+            writeOff += first.byteLength
+            remaining -= first.byteLength
+            cur.pending.shift()
+          } else {
+            out.set(first.subarray(0, remaining), writeOff)
+            cur.pending[0] = first.subarray(remaining)
+            writeOff += remaining
+            remaining = 0
+          }
+        }
+        cur.pendingBytes -= outSize
+        downloadStreamStateRef.current.set(requestId, cur)
+        try {
+          await writeDownloadStreamChunk(requestId, out)
+          const afterWrite = downloadStreamStateRef.current.get(requestId)
+          if (!afterWrite || !afterWrite.started) return
+          afterWrite.writtenBytes += outSize
+          downloadStreamStateRef.current.set(requestId, afterWrite)
+          updateTransferProgress(
+            requestId,
+            afterWrite.expected > 0 ? Math.min(1, afterWrite.writtenBytes / afterWrite.expected) : 0
+          )
+          updateTransferDebug(requestId, afterWrite.writtenBytes, undefined, afterWrite.expected)
+        } catch {
+          // If transfer was cancelled/cleaned, avoid resurrecting failure state.
+          if (!downloadStreamStateRef.current.has(requestId)) return
+          upsertTransfer(requestId, (prev) => ({
+            ...(prev as AttachmentTransferState),
+            status: 'failed',
+            error: 'Failed writing download chunk',
+          }))
+          cleanupTransferPeer(requestId)
+          tryStartNextQueuedDownload()
+          return
+        }
+      }
+      try {
+        const savePath = await finishDownloadStream(requestId)
+        if (!downloadStreamStateRef.current.has(requestId)) return
+        upsertTransfer(requestId, (prev) => ({
+          ...(prev as AttachmentTransferState),
+          status: 'completed',
+          progress: 1,
+          saved_path: savePath,
+        }))
+        cleanupTransferPeer(requestId)
+        tryStartNextQueuedDownload()
+      } catch {
+        if (!downloadStreamStateRef.current.has(requestId)) return
+        upsertTransfer(requestId, (prev) => ({
+          ...(prev as AttachmentTransferState),
+          status: 'failed',
+          error: 'Failed finalizing download file',
+        }))
+        cleanupTransferPeer(requestId)
+        tryStartNextQueuedDownload()
+      }
+    }
+    run().finally(() => {
+      const latest = downloadStreamStateRef.current.get(requestId)
+      if (!latest) return
+      latest.writerRunning = false
+      downloadStreamStateRef.current.set(requestId, latest)
+    })
   }
 
   const removeTransferHistoryEntry = (requestId: string) => {
@@ -289,9 +543,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const cancelTransferRequest = (requestId: string) => {
     if (!requestId) return
+    const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    removeQueuedDownloadRequest(requestId)
     cleanupTransferPeer(requestId)
     setAttachmentTransfers((prev) => prev.filter((t) => t.request_id !== requestId))
     setTransferHistory((prev) => prev.filter((h) => h.request_id !== requestId))
+    if (
+      transfer &&
+      transfer.direction === 'download' &&
+      (transfer.status === 'requesting' || transfer.status === 'connecting' || transfer.status === 'transferring')
+    ) {
+      setTimeout(() => tryStartNextQueuedDownload(), 0)
+    }
   }
 
   const hasAccessibleCompletedDownload = (attachmentId: string | null | undefined): boolean => {
@@ -339,6 +602,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       try { pc.close() } catch {}
       transferPeersRef.current.delete(requestId)
     }
+    transferDataChannelsRef.current.delete(requestId)
+    senderFlowPausedRef.current.delete(requestId)
     transferBuffersRef.current.delete(requestId)
     transferExpectedSizeRef.current.delete(requestId)
     const st = downloadStreamStateRef.current.get(requestId)
@@ -346,6 +611,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       cancelDownloadStream(requestId).catch(() => {})
     }
     downloadStreamStateRef.current.delete(requestId)
+    progressTickRef.current.delete(requestId)
+    debugStatsRef.current.delete(requestId)
+    debugWindowRef.current.delete(requestId)
+    debugSpeedSamplesRef.current.delete(requestId)
+    debugTickRef.current.delete(requestId)
   }
 
   const upsertHistory = (
@@ -413,6 +683,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   // Hydrate cache + settings on account change.
   useEffect(() => {
     setHydrated(false)
+    downloadQueueRef.current = []
     const nextSettings = getMessageStorageSettings(currentAccountId)
     setSettings(nextSettings)
     setDownloadSettingsState(getDownloadSettings(currentAccountId))
@@ -795,29 +1066,73 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         if (!ev.candidate) return
         sendSignal(fromUserId, requestId, { type: 'ice', candidate: JSON.stringify(ev.candidate) })
       }
-      const dc = pc.createDataChannel('cordia-attachment')
+      const dc = pc.createDataChannel('cordia-attachment', { ordered: true })
+      transferDataChannelsRef.current.set(requestId, dc)
+      senderFlowPausedRef.current.set(requestId, false)
       dc.binaryType = 'arraybuffer'
+      const CHUNK_SIZE = 64 * 1024
+      const MAX_BUFFER = 512 * 1024
+      const LOW_WATER = 256 * 1024
+      dc.bufferedAmountLowThreshold = LOW_WATER
       dc.onopen = async () => {
         try {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'transferring' }))
-          const total = Number(attachment.size_bytes ?? 0)
+          const total = attachment.size_bytes
           dc.send(JSON.stringify({ type: 'meta', file_name: attachment.file_name, size_bytes: total, sha256: attachment.sha256 }))
           let sent = 0
-          const chunkSize = 1024 * 1024
+          const readBlockSize = 256 * 1024
+          const waitForDrain = async () => {
+            if (dc.bufferedAmount < LOW_WATER) return
+            await new Promise<void>((resolve, reject) => {
+              const onLow = () => {
+                cleanup()
+                resolve()
+              }
+              const onClose = () => {
+                cleanup()
+                reject(new Error('Data channel closed during send'))
+              }
+              const onError = () => {
+                cleanup()
+                reject(new Error('Data channel error during send'))
+              }
+              const cleanup = () => {
+                dc.removeEventListener('bufferedamountlow', onLow)
+                dc.removeEventListener('close', onClose)
+                dc.removeEventListener('error', onError)
+              }
+              dc.addEventListener('bufferedamountlow', onLow)
+              dc.addEventListener('close', onClose)
+              dc.addEventListener('error', onError)
+            })
+          }
           while (sent < total) {
-            while (dc.bufferedAmount > 2 * 1024 * 1024) {
-              await new Promise((r) => setTimeout(r, 20))
+            while (senderFlowPausedRef.current.get(requestId) === true) {
+              await new Promise((r) => setTimeout(r, 2))
             }
-            const next = Math.min(total, sent + chunkSize)
-            const bytes = await readAttachmentChunk(attachmentId, sent, next - sent)
-            // Ensure this view is ArrayBuffer-backed (not SharedArrayBuffer) for TS + runtime compatibility.
-            const out = new Uint8Array(bytes.byteLength)
-            out.set(bytes)
-            dc.send(out)
-            sent = next
-            const progress = total > 0 ? Math.min(1, sent / total) : 1
-            setTransferProgressThrottled(requestId, progress)
-            // Yield so UI stays responsive during large sends.
+            const blockStart = sent
+            const blockNext = Math.min(total, blockStart + readBlockSize)
+            const block = await readAttachmentChunk(attachmentId, blockStart, blockNext - blockStart)
+            if (block.byteLength === 0) {
+              throw new Error('Attachment stream ended early')
+            }
+            let blockOffset = 0
+            while (blockOffset < block.byteLength) {
+              if (dc.bufferedAmount > MAX_BUFFER) {
+                await waitForDrain()
+              }
+              const end = Math.min(block.byteLength, blockOffset + CHUNK_SIZE)
+              const segment = block.subarray(blockOffset, end)
+              const sendChunk = new Uint8Array(segment.byteLength)
+              sendChunk.set(segment)
+              dc.send(sendChunk)
+              sent += segment.byteLength
+              blockOffset = end
+              const progress = total > 0 ? Math.min(1, sent / total) : 1
+              updateTransferProgress(requestId, progress)
+              updateTransferDebug(requestId, sent, dc.bufferedAmount, total)
+            }
+            // Yield once per read block to keep UI responsive under concurrent transfers.
             await new Promise((r) => setTimeout(r, 0))
           }
           dc.send(JSON.stringify({ type: 'done' }))
@@ -826,6 +1141,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         } catch (err) {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'failed', error: String(err) }))
           cleanupTransferPeer(requestId)
+        }
+      }
+      dc.onmessage = (m) => {
+        if (typeof m.data !== 'string') return
+        try {
+          const control = JSON.parse(m.data) as { type?: string }
+          if (control.type === 'flow_pause') {
+            senderFlowPausedRef.current.set(requestId, true)
+          } else if (control.type === 'flow_resume') {
+            senderFlowPausedRef.current.set(requestId, false)
+          }
+        } catch {
+          // ignore malformed control message
         }
       }
 
@@ -843,6 +1171,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       if (!detail?.accepted) {
         upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'rejected' }))
         cleanupTransferPeer(requestId)
+        tryStartNextQueuedDownload()
         return
       }
       upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'connecting' }))
@@ -854,23 +1183,33 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
       pc.ondatachannel = (ev) => {
         const dc = ev.channel
+        transferDataChannelsRef.current.set(requestId, dc)
         dc.binaryType = 'arraybuffer'
         dc.onmessage = async (m) => {
           if (typeof m.data === 'string') {
             try {
               const control = JSON.parse(m.data) as { type?: string; file_name?: string; size_bytes?: number; sha256?: string }
+              if (control.type === 'flow_pause' || control.type === 'flow_resume') {
+                return
+              }
               if (control.type === 'meta') {
                 transferExpectedSizeRef.current.set(requestId, Number(control.size_bytes ?? 0))
                 downloadStreamStateRef.current.set(requestId, {
                   expected: Number(control.size_bytes ?? 0),
-                  written: 0,
+                  receivedBytes: 0,
+                  writtenBytes: 0,
                   pending: [],
                   pendingBytes: 0,
-                  chain: Promise.resolve(),
                   started: true,
+                  doneReceived: false,
+                  writerRunning: false,
+                  flowPauseSent: false,
                 })
                 const fileName = control.file_name || (attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.file_name ?? 'attachment.bin')
                 beginDownloadStream(requestId, fileName, control.sha256 ?? null, downloadSettings.preferred_dir)
+                  .then(() => {
+                    startDownloadWriter(requestId)
+                  })
                   .catch(() => {
                     upsertTransfer(requestId, (prev) => ({
                       ...(prev as AttachmentTransferState),
@@ -878,6 +1217,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                       error: 'Failed to start download stream',
                     }))
                     cleanupTransferPeer(requestId)
+                    tryStartNextQueuedDownload()
                   })
                 upsertTransfer(requestId, (prev) => ({
                   ...(prev as AttachmentTransferState),
@@ -895,33 +1235,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                     error: 'Download stream missing',
                   }))
                   cleanupTransferPeer(requestId)
+                  tryStartNextQueuedDownload()
                   return
                 }
-                const flush = async () => {
-                  const cur = downloadStreamStateRef.current.get(requestId)
-                  if (!cur || cur.pendingBytes <= 0) return
-                  const out = new Uint8Array(cur.pendingBytes)
-                  let off = 0
-                  for (const c of cur.pending) {
-                    out.set(c, off)
-                    off += c.byteLength
-                  }
-                  cur.pending = []
-                  cur.pendingBytes = 0
-                  cur.chain = cur.chain.then(() => writeDownloadStreamChunk(requestId, out))
-                  downloadStreamStateRef.current.set(requestId, cur)
-                }
-                // Flush any remaining pending bytes then finalize.
-                await flush()
-                await st.chain
-                const savePath = await finishDownloadStream(requestId)
-                upsertTransfer(requestId, (prev) => ({
-                  ...(prev as AttachmentTransferState),
-                  status: 'completed',
-                  progress: 1,
-                  saved_path: savePath,
-                }))
-                cleanupTransferPeer(requestId)
+                st.doneReceived = true
+                downloadStreamStateRef.current.set(requestId, st)
               }
             } catch {
               // ignore malformed control message
@@ -929,35 +1247,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             return
           }
           const chunk = new Uint8Array(m.data as ArrayBuffer)
-          const expected = transferExpectedSizeRef.current.get(requestId) ?? 0
           const st = downloadStreamStateRef.current.get(requestId)
           if (!st?.started) return
           st.pending.push(chunk)
           st.pendingBytes += chunk.byteLength
-          st.written += chunk.byteLength
-          const flushThreshold = 256 * 1024
-          if (st.pendingBytes >= flushThreshold) {
-            const out = new Uint8Array(st.pendingBytes)
-            let off = 0
-            for (const c of st.pending) {
-              out.set(c, off)
-              off += c.byteLength
+          st.receivedBytes += chunk.byteLength
+          if (!st.flowPauseSent && st.pendingBytes >= MAX_PENDING_BYTES) {
+            const flowDc = transferDataChannelsRef.current.get(requestId)
+            if (flowDc && flowDc.readyState === 'open') {
+              try {
+                flowDc.send(JSON.stringify({ type: 'flow_pause' }))
+                st.flowPauseSent = true
+              } catch {
+                // ignore transient channel send failures
+              }
             }
-            st.pending = []
-            st.pendingBytes = 0
-            st.chain = st.chain
-              .then(() => writeDownloadStreamChunk(requestId, out))
-              .catch(() => {
-                upsertTransfer(requestId, (prev) => ({
-                  ...(prev as AttachmentTransferState),
-                  status: 'failed',
-                  error: 'Failed writing download chunk',
-                }))
-                cleanupTransferPeer(requestId)
-              })
           }
           downloadStreamStateRef.current.set(requestId, st)
-          setTransferProgressThrottled(requestId, expected > 0 ? Math.min(1, st.written / expected) : 0)
+          startDownloadWriter(requestId)
+          // UI progress/debug are updated from bytes written to disk in writer loop.
         }
       }
     }
@@ -1127,6 +1435,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         t.status !== 'rejected'
     )
     if (duplicateActive) return
+    const peerUserId = msg.from_user_id
+    const queueInstead = activeDownloadCount() >= MAX_PARALLEL_DOWNLOADS
     const request_id = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     upsertTransfer(request_id, () => ({
       request_id,
@@ -1136,7 +1446,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       to_user_id: identity.user_id,
       file_name: msg.attachment!.file_name,
       direction: 'download',
-      status: 'requesting',
+      status: queueInstead ? 'queued' : 'requesting',
       progress: 0,
     }))
     const now = new Date().toISOString()
@@ -1149,20 +1459,24 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       from_user_id: msg.from_user_id,
       to_user_id: identity.user_id,
       direction: 'download',
-      status: 'requesting',
+      status: queueInstead ? 'queued' : 'requesting',
       progress: 0,
       created_at: now,
       updated_at: now,
     }))
-    window.dispatchEvent(
-      new CustomEvent('cordia:send-attachment-transfer-request', {
-        detail: {
-          to_user_id: msg.from_user_id,
-          request_id,
-            attachment_id: attachmentId,
-        },
+    if (queueInstead) {
+      enqueueDownload({
+        request_id,
+        message_id: msg.id,
+        attachment_id: attachmentId,
+        from_user_id: msg.from_user_id,
+        to_user_id: identity.user_id,
+        file_name: msg.attachment!.file_name,
+        size_bytes: msg.attachment!.size_bytes,
       })
-    )
+      return
+    }
+    dispatchDownloadRequest(peerUserId, request_id, attachmentId)
   }
 
   const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = async () => {

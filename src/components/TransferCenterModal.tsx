@@ -19,6 +19,14 @@ function directoryForPath(path: string): string {
   return idx > 0 ? normalized.slice(0, idx) : normalized
 }
 
+function formatEta(seconds?: number): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '--:--'
+  const total = Math.max(0, Math.round(seconds))
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
 export function TransferCenterModal() {
   const { isOpen, anchorRect, closeTransferCenter } = useTransferCenterModal()
   const { width, height } = useWindowSize()
@@ -45,7 +53,11 @@ export function TransferCenterModal() {
   useEffect(() => {
     if (!isOpen) return
     refreshSharedAttachments().catch(() => {})
-    refreshTransferHistoryAccessibility().catch(() => {})
+    // Defer path existence checks so opening the popup stays instant.
+    const t = window.setTimeout(() => {
+      refreshTransferHistoryAccessibility().catch(() => {})
+    }, 180)
+    return () => window.clearTimeout(t)
   }, [isOpen, refreshSharedAttachments, refreshTransferHistoryAccessibility])
 
   // Clear media preview when transfer center closes (e.g. clicking top bar/overlay)
@@ -80,14 +92,26 @@ export function TransferCenterModal() {
   )
 
   const latestUploadByAttachment = useMemo(() => {
-    const map = new Map<string, { status: string; progress: number }>()
+    const map = new Map<
+      string,
+      { status: string; progress: number; debugKbps?: number; bufferedBytes?: number; etaSeconds?: number }
+    >()
     for (const t of attachmentTransfers) {
       if (t.direction !== 'upload') continue
       map.set(t.attachment_id, {
         status: t.status,
         progress: t.progress,
+        debugKbps: t.debug_kbps,
+        bufferedBytes: t.debug_buffered_bytes,
+        etaSeconds: t.debug_eta_seconds,
       })
     }
+    return map
+  }, [attachmentTransfers])
+
+  const liveTransferByRequest = useMemo(() => {
+    const map = new Map<string, typeof attachmentTransfers[number]>()
+    for (const t of attachmentTransfers) map.set(t.request_id, t)
     return map
   }, [attachmentTransfers])
 
@@ -167,9 +191,13 @@ export function TransferCenterModal() {
                   <p className="text-[11px] text-muted-foreground px-1">No downloads yet.</p>
                 )}
                 {downloadRows.map((row) => {
+                  const live = liveTransferByRequest.get(row.request_id)
+                  const status = live?.status ?? row.status
+                  const progress = live?.progress ?? row.progress
                   const inaccessible = row.is_inaccessible === true
                   const canCancel =
-                    row.status === 'requesting' || row.status === 'connecting' || row.status === 'transferring'
+                    status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring'
+                  const canRemoveRejected = status === 'rejected'
                   return (
                   <div
                     key={row.request_id}
@@ -192,8 +220,15 @@ export function TransferCenterModal() {
                               ? remoteProfiles.getProfile(row.from_user_id)!.display_name
                               : `User ${row.from_user_id.slice(0, 8)}`)} • {formatBytes(row.size_bytes)}
                       </span>
-                      <span className="shrink-0">{inaccessible ? 'Not accessible' : (row.status === 'transferring' ? `${Math.round(row.progress * 100)}%` : row.status)}</span>
+                      <span className="shrink-0">{inaccessible ? 'Not accessible' : (status === 'transferring' ? `${Math.round(progress * 100)}%` : status)}</span>
                     </div>
+                    {!!live && (status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring') && (
+                      <div className="text-[9px] text-muted-foreground truncate">
+                        {`debug: ${Math.round(live.debug_kbps ?? 0)} KB/s`}
+                        {` • ETA ${formatEta(live.debug_eta_seconds)}`}
+                        {typeof live.debug_buffered_bytes === 'number' ? ` • buffered ${Math.round(live.debug_buffered_bytes / 1024)} KB` : ''}
+                      </div>
+                    )}
                     <div className="text-[10px] text-muted-foreground truncate">
                       {new Date(row.updated_at).toLocaleString()}
                     </div>
@@ -229,6 +264,18 @@ export function TransferCenterModal() {
                         className="h-6 w-6 text-red-300 hover:text-red-200 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => removeTransferHistoryEntry(row.request_id)}
                         title="Remove inaccessible entry"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    {canRemoveRejected && !inaccessible && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-red-300 hover:text-red-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => removeTransferHistoryEntry(row.request_id)}
+                        title="Remove rejected entry"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -280,6 +327,13 @@ export function TransferCenterModal() {
                             : (item.can_share_now ? 'ready' : 'missing')}
                         </span>
                       </div>
+                      {live && (live.status === 'requesting' || live.status === 'connecting' || live.status === 'transferring') && (
+                        <div className="text-[9px] text-muted-foreground truncate">
+                          {`debug: ${Math.round(live.debugKbps ?? 0)} KB/s`}
+                          {` • ETA ${formatEta(live.etaSeconds)}`}
+                          {typeof live.bufferedBytes === 'number' ? ` • buffered ${Math.round(live.bufferedBytes / 1024)} KB` : ''}
+                        </div>
+                      )}
                       {latest && (
                         <div className="text-[10px] text-muted-foreground truncate">
                           Last {peerName ?? latest.peer.slice(0, 8)} • {new Date(latest.at).toLocaleString()}

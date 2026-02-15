@@ -177,12 +177,12 @@ export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Ar
   return new Uint8Array(data)
 }
 
-export async function readAttachmentChunk(attachmentId: string, offset: number, length: number): Promise<Uint8Array> {
-  const data = await invoke<number[]>('read_attachment_chunk', {
-    attachmentId,
-    offset: Math.max(0, Math.floor(offset)),
-    length: Math.max(0, Math.floor(length)),
-  })
+export async function readAttachmentChunk(
+  attachmentId: string,
+  offset: number,
+  length: number
+): Promise<Uint8Array> {
+  const data = await invoke<number[]>('read_attachment_chunk', { attachmentId, offset, length })
   return new Uint8Array(data)
 }
 

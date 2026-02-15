@@ -20,8 +20,7 @@ use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
 use std::collections::HashMap;
-use std::io::Write;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -189,18 +188,10 @@ fn resolve_downloads_dir(target_dir: Option<String>) -> Result<PathBuf, String> 
     Ok(base.join("downloads"))
 }
 
-fn resolve_download_target(downloads_dir: &PathBuf, file_name: &str, sha256: &Option<String>) -> PathBuf {
+fn resolve_download_target(downloads_dir: &PathBuf, file_name: &str) -> PathBuf {
     let mut safe_name = file_name.trim().to_string();
     if safe_name.is_empty() {
         safe_name = "download.bin".to_string();
-    }
-    if let Some(hash) = sha256.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        let ext = PathBuf::from(&safe_name)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| format!(".{}", s))
-            .unwrap_or_default();
-        return downloads_dir.join(format!("{}{}", hash, ext));
     }
     let desired = downloads_dir.join(&safe_name);
     if !desired.exists() {
@@ -396,7 +387,10 @@ fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn read_attachment_chunk(attachment_id: String, offset: u64, length: u32) -> Result<Vec<u8>, String> {
+fn read_attachment_chunk(attachment_id: String, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+    if length == 0 {
+        return Ok(Vec::new());
+    }
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
     let index = load_attachment_index(&base);
@@ -413,18 +407,14 @@ fn read_attachment_chunk(attachment_id: String, offset: u64, length: u32) -> Res
         return Err("Attachment has no readable source".to_string());
     };
 
-    let file_len = rec.size_bytes;
-    if offset >= file_len {
-        return Ok(Vec::new());
-    }
-    let max_len = std::cmp::min(length as u64, file_len - offset) as usize;
-
-    let mut f = std::fs::File::open(&path).map_err(|e| format!("Failed to open attachment: {}", e))?;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("Failed to open attachment: {}", e))?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| format!("Failed to seek attachment: {}", e))?;
-    let mut buf = vec![0u8; max_len];
-    f.read_exact(&mut buf)
+    let mut buf = vec![0u8; length];
+    let n = f
+        .read(&mut buf)
         .map_err(|e| format!("Failed to read attachment chunk: {}", e))?;
+    buf.truncate(n);
     Ok(buf)
 }
 
@@ -506,7 +496,7 @@ fn unshare_attachment(attachment_id: String) -> Result<bool, String> {
 fn save_downloaded_attachment(
     file_name: String,
     bytes: Vec<u8>,
-    sha256: Option<String>,
+    _sha256: Option<String>,
     target_dir: Option<String>,
 ) -> Result<String, String> {
     let mut safe_name = file_name.trim().to_string();
@@ -515,7 +505,7 @@ fn save_downloaded_attachment(
     }
 
     let downloads_dir = resolve_downloads_dir(target_dir)?;
-    let target = resolve_download_target(&downloads_dir, &safe_name, &sha256);
+    let target = resolve_download_target(&downloads_dir, &safe_name);
     std::fs::write(&target, bytes).map_err(|e| format!("Failed to save downloaded attachment: {}", e))?;
     Ok(target.to_string_lossy().to_string())
 }
@@ -524,7 +514,7 @@ fn save_downloaded_attachment(
 fn begin_download_stream(
     request_id: String,
     file_name: String,
-    sha256: Option<String>,
+    _sha256: Option<String>,
     target_dir: Option<String>,
 ) -> Result<String, String> {
     let rid = request_id.trim().to_string();
@@ -533,7 +523,7 @@ fn begin_download_stream(
     }
     let safe_name = file_name.trim().to_string();
     let downloads_dir = resolve_downloads_dir(target_dir)?;
-    let target_path = resolve_download_target(&downloads_dir, &safe_name, &sha256);
+    let target_path = resolve_download_target(&downloads_dir, &safe_name);
     let temp_name = format!(
         "{}.part",
         target_path
