@@ -10,6 +10,13 @@ import {
   createRemoteAudioElement,
   closePeerConnection
 } from '../lib/webrtc'
+import {
+  initReceiverAudio,
+  getPrefs as getReceiverPrefs,
+  setUserVolume as setReceiverUserVolume,
+  setUserMuted as setReceiverUserMuted,
+  type PerUserAudioPrefs
+} from '../lib/receiverAudio'
 import { useBeacon } from './BeaconContext'
 import { useVoicePresence } from './VoicePresenceContext'
 import { useSpeaking } from './SpeakingContext'
@@ -69,6 +76,12 @@ interface WebRTCContextType {
   reinitializeAudio(deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void>
   hotSwapInputDevice(deviceId: string | null): Promise<void>
   stopAudio(): void
+
+  // Receiver-side per-user volume & local mute (keyed by remote userId)
+  remoteAudioPrefs: Record<string, PerUserAudioPrefs>
+  setRemoteUserVolume(userId: string, volume: number): void
+  setRemoteUserMuted(userId: string, muted: boolean): void
+  getRemoteUserPrefs(userId: string): PerUserAudioPrefs
 }
 
 const WebRTCContext = createContext<WebRTCContextType | null>(null)
@@ -90,6 +103,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const [peers, setPeers] = useState<Map<string, PeerConnectionInfo>>(new Map())
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null)
   const [inputLevelMeter, setInputLevelMeter] = useState<InputLevelMeter | null>(null)
+  const [remoteAudioPrefs, setRemoteAudioPrefs] = useState<Record<string, PerUserAudioPrefs>>({})
 
   // Refs
   const inputLevelMeterRef = useRef<InputLevelMeter | null>(null)
@@ -109,6 +123,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const localAudioAnalyzerRef = useRef<RemoteAudioAnalyzer | null>(null)  // For self-speaking detection
   const cleanedPeersRef = useRef<Set<string>>(new Set())  // Track cleaned peers to prevent double cleanup
   const profileP2PRef = useRef<{ user_id: string; display_name: string; real_name: string | null; show_real_name: boolean; rev: number; account_created_at: string | null } | null>(null)
+  // Per-peer recovery: ICE disconnected → try restart after delay; failed → delayed cleanup so restart can recover
+  const peerRecoveryRef = useRef<Map<string, { disconnectTimer: ReturnType<typeof setTimeout> | null; failedTimer: ReturnType<typeof setTimeout> | null }>>(new Map())
 
   // Keep profile payload for P2P send (avoid stale closure when data channel opens)
   useEffect(() => {
@@ -135,6 +151,11 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     peersRef.current = peers
   }, [peers])
+
+  // Init receiver-side per-user audio prefs from storage
+  useEffect(() => {
+    initReceiverAudio()
+  }, [])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -394,16 +415,14 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
   const setOutputDevice = useCallback((deviceId: string) => {
     outputDeviceRef.current = deviceId
-
-    // Update all existing remote audio elements
-    peers.forEach((peerInfo) => {
+    peersRef.current.forEach((peerInfo) => {
       if (peerInfo.audioElement && 'setSinkId' in peerInfo.audioElement) {
-        (peerInfo.audioElement as any).setSinkId(deviceId).catch((error: Error) => {
-          console.warn('[WebRTC] Failed to update output device for peer:', error)
-        })
+        (peerInfo.audioElement as HTMLAudioElement & { setSinkId(id: string): Promise<void> })
+          .setSinkId(deviceId)
+          .catch((e: Error) => console.warn('[WebRTC] setSinkId failed:', e))
       }
     })
-  }, [peers])
+  }, [])
 
   const toggleMute = useCallback(() => {
     const meter = inputLevelMeterRef.current
@@ -427,6 +446,14 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
     cleanedPeersRef.current.add(peerId)
 
+    // Clear any ICE recovery timers so we don't fire after cleanup
+    const entry = peerRecoveryRef.current.get(peerId)
+    if (entry) {
+      if (entry.disconnectTimer !== null) clearTimeout(entry.disconnectTimer)
+      if (entry.failedTimer !== null) clearTimeout(entry.failedTimer)
+      peerRecoveryRef.current.delete(peerId)
+    }
+
     console.log(`[WebRTC] Cleaning up peer ${peerId} (user ${peerInfo.userId})`)
 
     // Stop audio analyzer
@@ -438,7 +465,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }, 0)
     }
 
-    // Stop remote audio
+    // Stop remote playback (prefs are kept for next time they join)
     if (peerInfo.audioElement) {
       peerInfo.audioElement.pause()
       peerInfo.audioElement.srcObject = null
@@ -462,6 +489,49 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
     return undefined
   }, [])
+
+  const clearRecoveryTimers = useCallback((peerId: string) => {
+    const entry = peerRecoveryRef.current.get(peerId)
+    if (entry) {
+      if (entry.disconnectTimer !== null) clearTimeout(entry.disconnectTimer)
+      if (entry.failedTimer !== null) clearTimeout(entry.failedTimer)
+      peerRecoveryRef.current.delete(peerId)
+    }
+  }, [])
+
+  const tryIceRestart = useCallback(async (peerId: string) => {
+    const peerInfo = peersRef.current.get(peerId)
+    if (!peerInfo || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    const roomId = currentRoomRef.current
+    if (!roomId) return
+    try {
+      const offerSdp = await createOffer(peerInfo.connection, { iceRestart: true })
+      wsRef.current.send(JSON.stringify({
+        type: 'VoiceOffer',
+        from_peer: currentPeerIdRef.current,
+        from_user: currentUserIdRef.current,
+        to_peer: peerId,
+        chat_id: roomId,
+        sdp: offerSdp
+      }))
+      console.log('[Media] Sent ICE restart offer to peer=', peerId)
+    } catch (e) {
+      console.warn('[Media] ICE restart offer failed:', e)
+    }
+  }, [])
+
+  const handlePeerDisconnect = useCallback((remotePeerId: string) => {
+    console.log(`[Media] Peer ${remotePeerId} disconnected - cleaning up connection`)
+    setPeers(prev => {
+      const updated = new Map(prev)
+      const peerInfo = updated.get(remotePeerId)
+      if (peerInfo) {
+        cleanupPeerConnection(remotePeerId, peerInfo)
+        updated.delete(remotePeerId)
+      }
+      return updated
+    })
+  }, [cleanupPeerConnection])
 
   const createPeerConnectionForPeer = useCallback(async (remotePeerId: string, remoteUserId: string): Promise<RTCPeerConnection> => {
     const pc = createPeerConnection()
@@ -523,30 +593,60 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // Handle ICE connection state changes
-    // NOTE: This is MEDIA plane - separate from signaling
+    // Handle ICE connection state changes: try recovery before giving up (long calls / flaky networks)
+    const DISCONNECT_RECOVERY_MS = 10_000  // After 10s disconnected, try ICE restart
+    const FAILED_CLEANUP_MS = 20_000       // After 20s failed, give up and cleanup
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState
       console.log(`[Media] ICE state for peer=${remotePeerId}: ${state}`)
 
-      if (state === 'failed') {
-        console.error(`[Media] ICE FAILED for peer ${remotePeerId} - media connection lost`)
-        // ICE failure is a real media failure - clean up this peer
-        handlePeerDisconnect(remotePeerId)
+      if (state === 'connected' || state === 'completed') {
+        clearRecoveryTimers(remotePeerId)
+        console.log(`[Media] ICE connected for peer ${remotePeerId} - media flowing`)
+        return
       }
 
       if (state === 'disconnected') {
-        console.warn(`[Media] ICE disconnected for peer ${remotePeerId} - may recover automatically`)
-        // ICE disconnected often recovers on its own. Don't act yet.
+        console.warn(`[Media] ICE disconnected for peer ${remotePeerId} - will try ICE restart if still down after 10s`)
+        let entry = peerRecoveryRef.current.get(remotePeerId)
+        if (!entry) {
+          entry = { disconnectTimer: null, failedTimer: null }
+          peerRecoveryRef.current.set(remotePeerId, entry)
+        }
+        if (entry.disconnectTimer !== null) clearTimeout(entry.disconnectTimer)
+        entry.disconnectTimer = setTimeout(() => {
+          entry = peerRecoveryRef.current.get(remotePeerId)
+          if (entry) entry.disconnectTimer = null
+          const info = peersRef.current.get(remotePeerId)
+          const iceState = info?.connection.iceConnectionState
+          if (info && (iceState === 'disconnected' || iceState === 'failed')) {
+            console.log(`[Media] Trying ICE restart for peer ${remotePeerId}`)
+            tryIceRestart(remotePeerId)
+          }
+        }, DISCONNECT_RECOVERY_MS)
+        return
       }
 
-      if (state === 'connected' || state === 'completed') {
-        console.log(`[Media] ICE connected for peer ${remotePeerId} - media flowing`)
+      if (state === 'failed') {
+        console.error(`[Media] ICE FAILED for peer ${remotePeerId} - will cleanup in 20s unless recovered`)
+        let entry = peerRecoveryRef.current.get(remotePeerId)
+        if (!entry) {
+          entry = { disconnectTimer: null, failedTimer: null }
+          peerRecoveryRef.current.set(remotePeerId, entry)
+        }
+        if (entry.failedTimer !== null) clearTimeout(entry.failedTimer)
+        entry.failedTimer = setTimeout(() => {
+          entry = peerRecoveryRef.current.get(remotePeerId)
+          if (entry) entry.failedTimer = null
+          if (peersRef.current.has(remotePeerId)) {
+            console.error(`[Media] Peer ${remotePeerId} still failed after recovery window - cleaning up`)
+            handlePeerDisconnect(remotePeerId)
+          }
+        }, FAILED_CLEANUP_MS)
       }
     }
 
-    // Handle connection state changes
-    // NOTE: This is MEDIA plane - separate from signaling
+    // Handle connection state changes (update UI; cleanup is driven by ICE failed timer above)
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState
       console.log(`[Media] Connection state for peer=${remotePeerId}: ${state}`)
@@ -559,42 +659,32 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         }
         return updated
       })
-
-      // Clean up only on actual media failure
-      if (state === 'failed') {
-        console.error(`[Media] Connection FAILED for peer ${remotePeerId} - cleaning up`)
-        handlePeerDisconnect(remotePeerId)
-      }
-      // Note: 'closed' is expected when we clean up, don't double-cleanup
+      // Do not cleanup here - ICE failed timer handles delayed cleanup so ICE restart can recover first
     }
 
-    // Handle remote audio track
-    // NOTE: This is MEDIA plane - receiving audio from peer
+    // Handle remote audio track: play via HTMLAudioElement (reliable in Tauri/WebView2). Per-user volume/mute via element.volume.
     pc.ontrack = (event) => {
       console.log(`[Media] Received remote track from peer=${remotePeerId}`)
       console.log(`[Media] Track: kind=${event.track.kind}, enabled=${event.track.enabled}, readyState=${event.track.readyState}`)
       const remoteStream = event.streams[0]
 
       if (remoteStream) {
+        const prefs = getReceiverPrefs(remoteUserId)
         const audioElement = createRemoteAudioElement(remoteStream, outputDeviceRef.current || undefined)
+        audioElement.volume = prefs.muted ? 0 : Math.max(0, Math.min(2, prefs.volume))
         console.log(`[Media] Created audio element for peer=${remotePeerId}`)
 
-        // Create analyzer for voice activity detection
         let audioAnalyzer: RemoteAudioAnalyzer | null = null
         try {
           audioAnalyzer = new RemoteAudioAnalyzer(
             remoteStream,
-            (isSpeaking: boolean) => {
-              // Update speaking state for this user
-              setUserSpeaking(remoteUserId, isSpeaking)
-            }
+            (isSpeaking: boolean) => setUserSpeaking(remoteUserId, isSpeaking)
           )
           console.log(`[Media] Created audio analyzer for peer=${remotePeerId}`)
         } catch (error) {
           console.warn(`[Media] Failed to create audio analyzer for peer=${remotePeerId}:`, error)
         }
 
-        // Listen for track unmute events
         event.track.onunmute = () => {
           console.log(`[Media] Remote track unmuted for peer=${remotePeerId}`)
         }
@@ -612,6 +702,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           }
           return updated
         })
+        setRemoteAudioPrefs((prev) => ({ ...prev, [remoteUserId]: getReceiverPrefs(remoteUserId) }))
       } else {
         console.error('[Media] No stream in ontrack event!')
       }
@@ -726,23 +817,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     return pc
-  }, [applyRemoteProfile])
-
-  const handlePeerDisconnect = useCallback((remotePeerId: string) => {
-    console.log(`[Media] Peer ${remotePeerId} disconnected - cleaning up connection`)
-
-    setPeers(prev => {
-      const updated = new Map(prev)
-      const peerInfo = updated.get(remotePeerId)
-
-      if (peerInfo) {
-        cleanupPeerConnection(remotePeerId, peerInfo)
-        updated.delete(remotePeerId)
-      }
-
-      return updated
-    })
-  }, [cleanupPeerConnection])
+  }, [applyRemoteProfile, handlePeerDisconnect, clearRecoveryTimers, tryIceRestart])
 
   const handleSignalingMessage = useCallback(async (data: string) => {
     const msg = JSON.parse(data)
@@ -848,7 +923,24 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         console.log(`[Signal] Received VoiceOffer from peer=${from_peer}`)
 
         try {
-          // Check if we already have a connection to this user
+          // Same peer_id: renegotiation (e.g. ICE restart from their side) – reuse existing PC
+          const existingSamePeer = peersRef.current.get(from_peer)
+          if (existingSamePeer) {
+            console.log(`[Signal] Renegotiation (ICE restart?) for existing peer=${from_peer}`)
+            const answerSdp = await createAnswer(existingSamePeer.connection, sdp)
+            wsRef.current?.send(JSON.stringify({
+              type: 'VoiceAnswer',
+              from_peer: currentPeerIdRef.current,
+              from_user: currentUserIdRef.current,
+              to_peer: from_peer,
+              chat_id: currentRoomRef.current,
+              sdp: answerSdp
+            }))
+            console.log(`[Signal] Sent VoiceAnswer (renegotiation) to peer=${from_peer}`)
+            break
+          }
+
+          // Different peer_id for same user: replace old connection
           const existingByUserId = findPeerByUserId(from_user)
           if (existingByUserId && existingByUserId.peerId !== from_peer) {
             console.log(`[Signal] User reconnected with new peer_id, replacing old connection`)
@@ -871,17 +963,15 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             return updated
           })
 
-          // Create and send answer
           const answerSdp = await createAnswer(pc, sdp)
-          const answerMessage = {
+          wsRef.current?.send(JSON.stringify({
             type: 'VoiceAnswer',
             from_peer: currentPeerIdRef.current,
             from_user: currentUserIdRef.current,
             to_peer: from_peer,
             chat_id: currentRoomRef.current,
             sdp: answerSdp
-          }
-          wsRef.current?.send(JSON.stringify(answerMessage))
+          }))
           console.log(`[Signal] Sent VoiceAnswer to peer=${from_peer}`)
         } catch (error) {
           console.error(`[Signal] Failed to handle VoiceOffer from ${from_peer}:`, error)
@@ -1196,6 +1286,30 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     leaveVoiceInternal()
   }, [isInVoice, leaveVoiceInternal])
 
+  const setRemoteUserVolume = useCallback((userId: string, volume: number) => {
+    setReceiverUserVolume(userId, volume)
+    const prefs = getReceiverPrefs(userId)
+    peersRef.current.forEach((info) => {
+      if (info.userId === userId && info.audioElement) {
+        info.audioElement.volume = prefs.muted ? 0 : Math.max(0, Math.min(2, prefs.volume))
+      }
+    })
+    setRemoteAudioPrefs((prev) => ({ ...prev, [userId]: prefs }))
+  }, [])
+
+  const setRemoteUserMuted = useCallback((userId: string, muted: boolean) => {
+    setReceiverUserMuted(userId, muted)
+    const prefs = getReceiverPrefs(userId)
+    peersRef.current.forEach((info) => {
+      if (info.userId === userId && info.audioElement) {
+        info.audioElement.volume = prefs.muted ? 0 : Math.max(0, Math.min(2, prefs.volume))
+      }
+    })
+    setRemoteAudioPrefs((prev) => ({ ...prev, [userId]: prefs }))
+  }, [])
+
+  const getRemoteUserPrefs = useCallback((userId: string) => getReceiverPrefs(userId), [])
+
   return (
     <WebRTCContext.Provider
       value={{
@@ -1211,7 +1325,11 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         ensureAudioInitialized,
         reinitializeAudio,
         hotSwapInputDevice,
-        stopAudio
+        stopAudio,
+        remoteAudioPrefs,
+        setRemoteUserVolume,
+        setRemoteUserMuted,
+        getRemoteUserPrefs
       }}
     >
       {children}

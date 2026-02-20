@@ -2,11 +2,18 @@
  * WebRTC utilities for peer-to-peer voice connections
  */
 
-// RTCConfiguration with STUN servers for NAT traversal
+// RTCConfiguration with STUN servers for NAT traversal (multiple providers improve connection success and recovery)
 export const PEER_CONNECTION_CONFIG: RTCConfiguration = {
   iceServers: [
+    // Google (already good)
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    // Cloudflare (excellent global reach)
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    // Twilio public STUN (no account needed)
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    // Fallback generic
+    { urls: 'stun:stun.sipgate.net:3478' }
   ],
   iceCandidatePoolSize: 10,
   bundlePolicy: 'max-bundle',
@@ -49,10 +56,15 @@ export function createPeerConnection(): RTCPeerConnection {
  * Note: We don't wait for ICE gathering to complete - candidates are trickled
  * asynchronously via the onicecandidate handler for faster connection setup.
  */
-export async function createOffer(pc: RTCPeerConnection): Promise<string> {
+export interface CreateOfferOptions {
+  iceRestart?: boolean
+}
+
+export async function createOffer(pc: RTCPeerConnection, options?: CreateOfferOptions): Promise<string> {
   const offer = await pc.createOffer({
     offerToReceiveAudio: true,
-    offerToReceiveVideo: false
+    offerToReceiveVideo: false,
+    iceRestart: options?.iceRestart ?? false
   })
 
   await pc.setLocalDescription(offer)

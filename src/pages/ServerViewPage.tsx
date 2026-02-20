@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Eye, EyeOff, Trash2, Play, Plus, Minus, X } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Eye, EyeOff, Trash2, Play, Plus, Minus, X, Volume2, VolumeX } from 'lucide-react'
 import { open, confirm } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
@@ -15,6 +15,8 @@ import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useFriends } from '../contexts/FriendsContext'
 import { useAccount } from '../contexts/AccountContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
+import { Slider } from '../components/ui/slider'
+import { Label } from '../components/ui/label'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { useBeacon } from '../contexts/BeaconContext'
 import { TransferCenterButton } from '../components/TransferCenterButton'
@@ -50,7 +52,15 @@ function ServerViewPage() {
   const { activeSigningPubkey } = useActiveServer()
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
-  const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
+  const {
+    joinVoice,
+    leaveVoice,
+    isInVoice: webrtcIsInVoice,
+    currentRoomId,
+    setRemoteUserVolume,
+    setRemoteUserMuted,
+    getRemoteUserPrefs,
+  } = useWebRTC()
   const {
     getMessages,
     openServerChat,
@@ -84,6 +94,8 @@ function ServerViewPage() {
   const inviteCodeButtonRef = useRef<HTMLButtonElement>(null)
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
+  const [voiceVolumeMenu, setVoiceVolumeMenu] = useState<{ userId: string; displayName: string; x: number; y: number } | null>(null)
+  const voiceVolumeMenuRef = useRef<HTMLDivElement>(null)
   const [messageDraft, setMessageDraft] = useState('')
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -158,6 +170,18 @@ function ServerViewPage() {
     const sizeClass = size === 'small' ? 'h-1.5 w-1.5' : 'h-2 w-2'
     return <div className={`${sizeClass} ${cls} ring-2 ring-background`} />
   }
+
+  // Close voice volume menu on click outside
+  useEffect(() => {
+    if (!voiceVolumeMenu) return
+    const onMouseDown = (e: MouseEvent) => {
+      if (voiceVolumeMenuRef.current && !voiceVolumeMenuRef.current.contains(e.target as Node)) {
+        setVoiceVolumeMenu(null)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [voiceVolumeMenu])
 
   // Sync with beacon in background (non-blocking)
   const syncWithSignalingServer = async () => {
@@ -554,6 +578,8 @@ function ServerViewPage() {
                         const level = getMemberLevel(server.signing_pubkey, userId, voicePresence.isUserInVoice(server.signing_pubkey, userId))
                         const voiceRp = userId === identity?.user_id ? null : remoteProfiles.getProfile(userId)
                         const voiceAvatarUrl = userId === identity?.user_id ? profile.avatar_data_url : voiceRp?.avatar_data_url
+                        const isRemote = userId !== identity?.user_id
+                        const prefs = getRemoteUserPrefs(userId)
                         return (
                           <button
                             key={userId}
@@ -568,8 +594,12 @@ function ServerViewPage() {
                               setProfileCardUserId(userId)
                               setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
                             }}
+                            onContextMenu={isRemote ? (e) => {
+                              e.preventDefault()
+                              setVoiceVolumeMenu({ userId, displayName, x: e.clientX, y: e.clientY })
+                            } : undefined}
                             aria-label={displayName}
-                            title={`${displayName}${userId === identity?.user_id ? ' (you)' : ''}`}
+                            title={isRemote ? `${displayName} — Right-click for volume` : `${displayName} (you)`}
                           >
                             {voiceAvatarUrl ? (
                               <img src={voiceAvatarUrl} alt="" className="w-full h-full object-cover" />
@@ -579,6 +609,11 @@ function ServerViewPage() {
                             <div className="absolute -top-1 left-1/2 -translate-x-1/2">
                               <PresenceSquare level={level} />
                             </div>
+                            {isRemote && prefs.muted && (
+                              <div className="absolute inset-0 grid place-items-center bg-black/50" aria-hidden>
+                                <VolumeX className="h-3 w-3 text-white" />
+                              </div>
+                            )}
                           </button>
                         )
                       })}
@@ -1351,6 +1386,49 @@ function ServerViewPage() {
               </div>
             </div>
           </>,
+          document.body
+        )}
+
+      {voiceVolumeMenu &&
+        createPortal(
+          <div
+            ref={voiceVolumeMenuRef}
+            className="fixed z-[100] w-56 rounded-md border border-border bg-background p-3 shadow-lg"
+            style={{ left: Math.min(voiceVolumeMenu.x, window.innerWidth - 224), top: Math.min(voiceVolumeMenu.y, window.innerHeight - 140) }}
+          >
+            <p className="text-xs font-medium text-muted-foreground truncate mb-2" title={voiceVolumeMenu.displayName}>
+              {voiceVolumeMenu.displayName}
+            </p>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs">User volume</Label>
+                <Slider
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={getRemoteUserPrefs(voiceVolumeMenu.userId).volume}
+                  onValueChange={(v) => setRemoteUserVolume(voiceVolumeMenu.userId, v)}
+                  className="mt-1"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Mute (local)</Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1"
+                  onClick={() => setRemoteUserMuted(voiceVolumeMenu.userId, !getRemoteUserPrefs(voiceVolumeMenu.userId).muted)}
+                >
+                  {getRemoteUserPrefs(voiceVolumeMenu.userId).muted ? (
+                    <VolumeX className="h-3.5 w-3.5" />
+                  ) : (
+                    <Volume2 className="h-3.5 w-3.5" />
+                  )}
+                  {getRemoteUserPrefs(voiceVolumeMenu.userId).muted ? 'Unmute' : 'Mute'}
+                </Button>
+              </div>
+            </div>
+          </div>,
           document.body
         )}
 

@@ -4,6 +4,7 @@
  */
 export class RemoteAudioAnalyzer {
   private audioContext: AudioContext
+  private ownedContext: boolean // If we created the context, we close it on stop(); otherwise we don't
   private analyser: AnalyserNode
   private dataArray: Uint8Array
   private intervalId: number | null = null
@@ -14,9 +15,11 @@ export class RemoteAudioAnalyzer {
 
   constructor(
     stream: MediaStream,
-    onSpeakingChange: (isSpeaking: boolean) => void
+    onSpeakingChange: (isSpeaking: boolean) => void,
+    sharedContext?: AudioContext
   ) {
-    this.audioContext = new AudioContext()
+    this.ownedContext = !sharedContext
+    this.audioContext = sharedContext ?? new AudioContext()
     this.analyser = this.audioContext.createAnalyser()
     this.analyser.fftSize = 256
     this.analyser.smoothingTimeConstant = 0.3 // Fast response
@@ -62,8 +65,8 @@ export class RemoteAudioAnalyzer {
       clearTimeout(this.intervalId)
       this.intervalId = null
     }
-    // Check if AudioContext is already closed before attempting to close
-    if (this.audioContext.state !== 'closed') {
+    // Only close the context if we created it (not when using shared RX context)
+    if (this.ownedContext && this.audioContext.state !== 'closed') {
       this.audioContext.close().catch((error) => {
         console.warn('[RemoteAudioAnalyzer] Failed to close audio context:', error)
       })
