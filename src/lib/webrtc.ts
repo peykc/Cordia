@@ -3,17 +3,16 @@
  */
 
 // RTCConfiguration for P2P-only voice (no TURN). Order matters: faster reflexive candidates first.
-// TCP candidate gathering is implementation-defined; no standard config knob.
+// Small pool (2) keeps gathering lean; TCP candidate gathering is implementation-defined.
+// iceTransportPolicy: 'all' — do not restrict to relay; stack gathers from all interfaces
+// (Wi‑Fi, Ethernet, VPN, etc.) and includes IPv6 when available (helps bypass NAT on modern networks).
 export const PEER_CONNECTION_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' },
-    { urls: 'stun:stun.sipgate.net:3478' },
-    { urls: 'stun:stun.nextcloud.com:3478' }
+    { urls: 'stun:global.stun.twilio.com:3478' }
   ],
-  iceCandidatePoolSize: 10,
+  iceCandidatePoolSize: 2,
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
   iceTransportPolicy: 'all'
@@ -33,14 +32,9 @@ export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 
 /**
  * Create a new RTCPeerConnection with default configuration.
- * Overrides iceCandidatePoolSize to 20 for long calls and warmup: better candidate
- * selection before connect with minimal cost.
  */
 export function createPeerConnection(): RTCPeerConnection {
-  const pc = new RTCPeerConnection({
-    ...PEER_CONNECTION_CONFIG,
-    iceCandidatePoolSize: 20
-  })
+  const pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG)
 
   // Log connection state changes for debugging
   pc.onconnectionstatechange = () => {

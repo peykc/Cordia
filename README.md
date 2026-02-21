@@ -104,16 +104,19 @@ These are the major user-visible capabilities already built:
 - Backup/restore via `.key`
 - Audio settings + device hot-swapping
 
+#### ✅ Phase 5 — Messaging, media, and audio
+- **Ephemeral messaging**: buffered while app is open; persistent/ephemeral storage options
+- **Images/attachments**: approve per transfer, with "ask every time" vs "always allow" setting
+- **Audio pipeline v1**: native capture (cpal), mic UX, monitoring/visualization, device hot-swap
+
 ### 📌 Next — Cordia v1 (Windows release)
 
 - **Windows `.exe`** on GitHub Releases
-- **Friends → DMs**: one DM OS window with tabs (DMs behave like a 2-person server)
-- **Ephemeral messaging**: buffered while the app is open (no history across restarts)
-- **Images**: approve per-image, with optional “trust this friend for images” prompt after download
-- **Audio pipeline v1**: better mic UX + monitoring/visualization
-- **NAT guidance**: detect Open/Moderate/Strict and guide users to fixes (no relay)
-- **Sound effects**: configurable UX sounds (join/leave/pings)
-- **UI polish**: server view, DM window, settings
+- **Message sync on server open** between users (when you open a server, sync the most recent messages from other online users)
+- **Friends → DMs**: one DM experience with tabs (DMs behave like a 2-person server)
+- **NAT guidance**: detect Open/Moderate/Strict and guide users to fixes (no relay); detection and override already exist
+- **Sound effects**: configurable UX sounds (e.g. join/leave, pings)
+- **UI polish**: downloads/uploads page, friends overview page, in-call/join call style
 
 ### 🔜 After v1 — Cordia v1.5
 
@@ -124,6 +127,7 @@ These are the major user-visible capabilities already built:
 
 - **Multi-channel servers** (when hosting is introduced)
 - **Message persistence** (history across app restarts)
+- **Audio pipeline v2**: Phase 2 improvements (e.g. AudioWorklet decoupling, micro jitter buffer, receiver-side Opus tuning) per [docs/NATIVE_AUDIO_PIPELINE_PLAN.md](docs/NATIVE_AUDIO_PIPELINE_PLAN.md)
 - **Optional relays** for difficult NAT cases (voice stays P2P when possible)
 - **Mobile support**
 

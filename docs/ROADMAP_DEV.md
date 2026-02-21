@@ -29,15 +29,19 @@ These represent the core technical milestones Cordia has already shipped during 
 - ICE candidate exchange
 - Voice presence + speaking indicators
 
+### ✅ Phase 5 (v1 scope, completed)
+- Ephemeral messaging (in-memory + optional persistent history; sync settings)
+- Image/attachment approval (per-transfer confirm; ask vs always allow)
+- Native audio pipeline v1 (cpal capture → frontend → WebRTC; mic UX, monitoring)
+
 ## In progress / planned (implementation notes)
 
 ### v1 (Windows release)
-- DM window (single OS window with tabs)
-- Ephemeral messaging (buffered while app is open)
-- Audio pipeline improvements (mic UX + monitoring; reduce web permission friction)
-- NAT detection + guided troubleshooting (Open / Moderate / Strict; no relay)
+- Message sync on server open between users (request N messages from peers when opening a server)
+- DM window (single OS window with tabs; DMs as 2-person server)
+- NAT guidance (guided troubleshooting; detection + override already in place)
 - Sound effects
-- Frontend polish (server view, DM window, settings)
+- Frontend polish: downloads/uploads page, friends overview page, in-call/join call style
 
 ### v1.5
 - macOS + Linux builds
@@ -46,6 +50,7 @@ These represent the core technical milestones Cordia has already shipped during 
 ### v2+
 - Multi-channel servers gated behind hosting requirements
 - Message persistence + history
+- Audio pipeline v2 (Phase 2A/2B/2C: AudioWorklet, micro jitter buffer, Opus tuning)
 - Optional relays for hard NAT cases
 - Mobile
 
