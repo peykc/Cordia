@@ -8,7 +8,8 @@ import {
   addIceCandidate,
   attachAudioTrack,
   createRemoteAudioElement,
-  closePeerConnection
+  closePeerConnection,
+  isLastPathP2P
 } from '../lib/webrtc'
 import {
   initReceiverAudio,
@@ -42,6 +43,8 @@ import { loadAudioSettings } from '../lib/tauri'
 
 // Keepalive interval for signaling WebSocket (prevents idle disconnects)
 const SIGNALING_KEEPALIVE_INTERVAL_MS = 25000
+// Let ICE pool warm before first offer (improves candidate selection; 100–200ms typical)
+const ICE_OFFER_WARMUP_MS = 100
 
 export type PeerConnectionState = RTCPeerConnectionState
 
@@ -125,6 +128,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const profileP2PRef = useRef<{ user_id: string; display_name: string; real_name: string | null; show_real_name: boolean; rev: number; account_created_at: string | null } | null>(null)
   // Per-peer recovery: ICE disconnected → try restart after delay; failed → delayed cleanup so restart can recover
   const peerRecoveryRef = useRef<Map<string, { disconnectTimer: ReturnType<typeof setTimeout> | null; failedTimer: ReturnType<typeof setTimeout> | null }>>(new Map())
+  // One ICE restart per failure when path was P2P (avoid restart loop)
+  const peerRestartedOnFailureRef = useRef<Set<string>>(new Set())
 
   // Keep profile payload for P2P send (avoid stale closure when data channel opens)
   useEffect(() => {
@@ -453,6 +458,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       if (entry.failedTimer !== null) clearTimeout(entry.failedTimer)
       peerRecoveryRef.current.delete(peerId)
     }
+    peerRestartedOnFailureRef.current.delete(peerId)
 
     console.log(`[WebRTC] Cleaning up peer ${peerId} (user ${peerInfo.userId})`)
 
@@ -505,7 +511,16 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     const roomId = currentRoomRef.current
     if (!roomId) return
     try {
-      const offerSdp = await createOffer(peerInfo.connection, { iceRestart: true })
+      await new Promise(r => setTimeout(r, ICE_OFFER_WARMUP_MS))
+      const pc = peerInfo.connection
+      const offerSdp = await (
+        typeof (pc as RTCPeerConnection & { restartIce?: () => void }).restartIce === 'function'
+          ? (async () => {
+              ;(pc as RTCPeerConnection & { restartIce: () => void }).restartIce()
+              return createOffer(pc)
+            })()
+          : createOffer(pc, { iceRestart: true })
+      )
       wsRef.current.send(JSON.stringify({
         type: 'VoiceOffer',
         from_peer: currentPeerIdRef.current,
@@ -594,20 +609,32 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     // Handle ICE connection state changes: try recovery before giving up (long calls / flaky networks)
-    const DISCONNECT_RECOVERY_MS = 10_000  // After 10s disconnected, try ICE restart
-    const FAILED_CLEANUP_MS = 20_000       // After 20s failed, give up and cleanup
+    const DISCONNECT_RECOVERY_MS = 6_000   // After 6s disconnected, try ICE restart (fast recovery attempt)
+    const FAILED_CLEANUP_MS = 30_000       // After 30s failed, give up and cleanup (longer tolerance before drop)
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState
       console.log(`[Media] ICE state for peer=${remotePeerId}: ${state}`)
 
       if (state === 'connected' || state === 'completed') {
         clearRecoveryTimers(remotePeerId)
+        peerRestartedOnFailureRef.current.delete(remotePeerId)
         console.log(`[Media] ICE connected for peer ${remotePeerId} - media flowing`)
         return
       }
 
+      if (state === 'checking') {
+        // ICE is re-checking (e.g. disconnected → checking → connected). Cancel disconnect timer so we
+        // don't trigger an unnecessary restart while it may self-recover; avoids extra renegotiations and glitches.
+        const entry = peerRecoveryRef.current.get(remotePeerId)
+        if (entry && entry.disconnectTimer !== null) {
+          clearTimeout(entry.disconnectTimer)
+          peerRecoveryRef.current.set(remotePeerId, { disconnectTimer: null, failedTimer: entry.failedTimer })
+        }
+        return
+      }
+
       if (state === 'disconnected') {
-        console.warn(`[Media] ICE disconnected for peer ${remotePeerId} - will try ICE restart if still down after 10s`)
+        console.warn(`[Media] ICE disconnected for peer ${remotePeerId} - will try ICE restart if still down after 6s`)
         let entry = peerRecoveryRef.current.get(remotePeerId)
         if (!entry) {
           entry = { disconnectTimer: null, failedTimer: null }
@@ -619,7 +646,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           if (entry) entry.disconnectTimer = null
           const info = peersRef.current.get(remotePeerId)
           const iceState = info?.connection.iceConnectionState
-          if (info && (iceState === 'disconnected' || iceState === 'failed')) {
+          // Only restart if still disconnected/failed; skip if 'checking' (self-recovery in progress)
+          if (info && iceState !== 'connected' && iceState !== 'completed' && iceState !== 'checking') {
             console.log(`[Media] Trying ICE restart for peer ${remotePeerId}`)
             tryIceRestart(remotePeerId)
           }
@@ -628,7 +656,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
 
       if (state === 'failed') {
-        console.error(`[Media] ICE FAILED for peer ${remotePeerId} - will cleanup in 20s unless recovered`)
+        console.error(`[Media] ICE FAILED for peer ${remotePeerId} - will cleanup in 30s unless recovered`)
         let entry = peerRecoveryRef.current.get(remotePeerId)
         if (!entry) {
           entry = { disconnectTimer: null, failedTimer: null }
@@ -643,6 +671,15 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             handlePeerDisconnect(remotePeerId)
           }
         }, FAILED_CLEANUP_MS)
+        if (!peerRestartedOnFailureRef.current.has(remotePeerId)) {
+          isLastPathP2P(pc).then((p2p) => {
+            if (p2p && peersRef.current.has(remotePeerId)) {
+              peerRestartedOnFailureRef.current.add(remotePeerId)
+              console.log(`[Media] Last path was P2P - trying immediate ICE restart for peer ${remotePeerId}`)
+              tryIceRestart(remotePeerId)
+            }
+          }).catch(() => {})
+        }
       }
     }
 
@@ -878,7 +915,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
               return updated
             })
 
-            // Create and send offer
+            await new Promise(r => setTimeout(r, ICE_OFFER_WARMUP_MS))
             const offerSdp = await createOffer(pc)
             const offerMessage = {
               type: 'VoiceOffer',

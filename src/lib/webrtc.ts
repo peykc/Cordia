@@ -2,22 +2,21 @@
  * WebRTC utilities for peer-to-peer voice connections
  */
 
-// RTCConfiguration with STUN servers for NAT traversal (multiple providers improve connection success and recovery)
+// RTCConfiguration for P2P-only voice (no TURN). Order matters: faster reflexive candidates first.
+// TCP candidate gathering is implementation-defined; no standard config knob.
 export const PEER_CONNECTION_CONFIG: RTCConfiguration = {
   iceServers: [
-    // Google (already good)
+    { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Cloudflare (excellent global reach)
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    // Twilio public STUN (no account needed)
     { urls: 'stun:global.stun.twilio.com:3478' },
-    // Fallback generic
-    { urls: 'stun:stun.sipgate.net:3478' }
+    { urls: 'stun:stun.sipgate.net:3478' },
+    { urls: 'stun:stun.nextcloud.com:3478' }
   ],
   iceCandidatePoolSize: 10,
   bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require'
+  rtcpMuxPolicy: 'require',
+  iceTransportPolicy: 'all'
 }
 
 /**
@@ -33,10 +32,15 @@ export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 }
 
 /**
- * Create a new RTCPeerConnection with default configuration
+ * Create a new RTCPeerConnection with default configuration.
+ * Overrides iceCandidatePoolSize to 20 for long calls and warmup: better candidate
+ * selection before connect with minimal cost.
  */
 export function createPeerConnection(): RTCPeerConnection {
-  const pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG)
+  const pc = new RTCPeerConnection({
+    ...PEER_CONNECTION_CONFIG,
+    iceCandidatePoolSize: 20
+  })
 
   // Log connection state changes for debugging
   pc.onconnectionstatechange = () => {
@@ -48,6 +52,39 @@ export function createPeerConnection(): RTCPeerConnection {
   }
 
   return pc
+}
+
+/**
+ * True if the last/selected candidate pair was P2P (host/srflx only, no relay).
+ * Used to trigger one immediate ICE restart on "failed" when we were on a direct path.
+ */
+export async function isLastPathP2P(pc: RTCPeerConnection): Promise<boolean> {
+  try {
+    const report = await pc.getStats()
+    const candidateTypes = new Map<string, string>()
+    report.forEach((stats) => {
+      const s = stats as RTCStats & { type: string; id: string; candidateType?: string }
+      if (s.type === 'local-candidate' || s.type === 'remote-candidate') {
+        if (s.candidateType) candidateTypes.set(s.id, s.candidateType)
+      }
+    })
+    let foundP2PPair = false
+    report.forEach((stats) => {
+      const s = stats as RTCStats & { type: string; localCandidateId?: string; remoteCandidateId?: string; state?: string }
+      if (s.type !== 'candidate-pair') return
+      if (s.state !== 'succeeded' && s.state !== 'in-progress') return
+      const localType = candidateTypes.get(s.localCandidateId ?? '')
+      const remoteType = candidateTypes.get(s.remoteCandidateId ?? '')
+      if (!localType || !remoteType) return
+      const p2p =
+        (localType === 'host' || localType === 'srflx' || localType === 'prflx') &&
+        (remoteType === 'host' || remoteType === 'srflx' || remoteType === 'prflx')
+      if (p2p) foundP2PPair = true
+    })
+    return foundP2PPair
+  } catch {
+    return false
+  }
 }
 
 /**
