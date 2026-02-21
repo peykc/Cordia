@@ -7,6 +7,10 @@ This folder contains deeper technical notes and planning docs that are too detai
 - **Start here**: `../QUICKSTART.md`
 - **Self-hosting**: `../BEACON_SETUP.md`, `../DEPLOYMENT_GUIDE.md`, `../deploy/README.md`
 
+### Testing
+
+- **Testing (how to run tests, manual checklist)**: `TESTING.md`
+
 ### Planning docs
 
 - **Design boundaries (what Cordia will not do)**: `DESIGN_BOUNDARIES.md`

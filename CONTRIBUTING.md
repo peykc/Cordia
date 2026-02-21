@@ -63,10 +63,13 @@ git checkout -b fix/your-bug-fix
 
 ### 3. Test Your Changes
 
+- Run Rust tests: `cargo test --manifest-path src-tauri/Cargo.toml`
 - Test locally with `npm run tauri dev`
 - Test with multiple instances (use `launch1.bat` and `launch2.bat` for Windows)
 - Verify the beacon server still works (if you changed it)
 - Test edge cases and error handling
+
+See **[docs/TESTING.md](docs/TESTING.md)** for the full manual smoke checklist and before-release steps.
 
 ### 4. Commit Your Changes
 

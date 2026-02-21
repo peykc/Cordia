@@ -75,7 +75,7 @@ Self-hosting:
 - **[Deployment guide](DEPLOYMENT_GUIDE.md)**: deploy Beacon to NAS/server
 - **[GitHub Actions image builds](GITHUB_SETUP.md)**: build/push Beacon images to GHCR
 
-More internal/dev planning docs live in **[`docs/`](docs/)**.
+Testing and release checklist: **[docs/TESTING.md](docs/TESTING.md)**. More internal/dev planning docs live in **[`docs/`](docs/)**.
 
 ## Roadmap
 

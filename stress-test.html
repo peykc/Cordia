@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cordia Beacon Stress Tester</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      margin: 0;
+      padding: 1rem 1.5rem;
+      max-width: 42rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 1rem;
+    }
+    .panel {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      color: #888;
+      margin-bottom: 0.25rem;
+    }
+    input[type="text"],
+    input[type="number"] {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      padding: 0.5rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      font-variant-numeric: tabular-nums;
+    }
+    input[type="number"] { width: 6rem; }
+    .row { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    .row:last-child { margin-bottom: 0; }
+    .row label { margin-bottom: 0; }
+    button {
+      background: #252525;
+      border: 1px solid #444;
+      color: #e0e0e0;
+      padding: 0.5rem 0.9rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button:hover { background: #2d2d2d; border-color: #555; }
+    button:active { background: #1f1f1f; }
+    button.primary { background: #1a3d1a; border-color: #2d5a2d; }
+    button.primary:hover { background: #224422; }
+    button.danger { background: #3d1a1a; border-color: #5a2d2d; }
+    button.danger:hover { background: #442222; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status {
+      font-variant-numeric: tabular-nums;
+      font-size: 1.25rem;
+      margin-top: 0.5rem;
+    }
+    #status .ok { color: #22c55e; }
+    #status .warn { color: #eab308; }
+    #status .err { color: #ef4444; }
+    .muted { font-size: 0.8rem; color: #666; margin-top: 0.5rem; }
+    .log {
+      font-size: 0.7rem;
+      color: #777;
+      max-height: 8rem;
+      overflow-y: auto;
+      margin-top: 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid #222;
+    }
+    .log div { margin-bottom: 0.2rem; }
+    code { background: #222; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.8em; color: #a0a0a0; }
+  </style>
+</head>
+<body>
+  <h1>Cordia Beacon Stress Tester</h1>
+  <p class="muted">Opens fake WebSocket clients that send PresenceHello so the beacon counts them. The browser limits <strong>all</strong> WebSockets to one origin (~195) across every tab/window — so you’ll cap at ~195 here. For 500+ connections run: <code>node stress-test.mjs &lt;beacon-url&gt; 500</code> (requires <code>npm install ws</code> once).</p>
+
+  <div class="panel">
+    <div class="row">
+      <div style="flex: 1; min-width: 12rem;">
+        <label for="url">Beacon URL</label>
+        <input type="text" id="url" placeholder="http://localhost:3030" value="http://localhost:3030" />
+      </div>
+      <div>
+        <label for="target">Clients</label>
+        <input type="number" id="target" min="1" max="2000" value="100" />
+      </div>
+    </div>
+    <p class="muted" style="margin-bottom: 0.5rem; font-size: 0.7rem;">Instance: <code id="instanceId"></code> — use different tabs/windows to add more “users” on the beacon.</p>
+    <div class="row" style="gap: 0.5rem;">
+      <button id="btnStart" class="primary">Start</button>
+      <button id="btnStop" class="danger" disabled>Stop</button>
+      <button id="btnAdd10">+10</button>
+      <button id="btnRamp">Ramp (10/s)</button>
+      <a id="linkStatus" href="#" target="_blank" rel="noopener" style="margin-left: auto; font-size: 0.8rem; color: #22c55e;">Open beacon status</a>
+    </div>
+    <p id="status">Ready. Set URL and client count, then Start.</p>
+    <p id="statusDetail" class="muted" style="margin-top: 0.25rem; font-size: 0.75rem;"></p>
+    <div id="log" class="log"></div>
+  </div>
+
+  <script>
+    (function () {
+      var instanceId = Math.random().toString(36).slice(2, 10);
+      document.getElementById('instanceId').textContent = instanceId;
+
+      var sockets = [];
+      var targetCount = 0;
+      var rampTimer = null;
+      var rampPerSec = 10;
+
+      function wsBaseUrl() {
+        var u = document.getElementById('url').value.trim();
+        if (!u) return null;
+        u = u.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+        if (!u.startsWith('ws')) u = 'ws://' + u;
+        return u.replace(/\/+$/, '');
+      }
+
+      function log(msg) {
+        var el = document.getElementById('log');
+        var line = document.createElement('div');
+        line.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function updateStatus() {
+        var open = sockets.filter(function (s) { return s.readyState === WebSocket.OPEN; }).length;
+        var connecting = sockets.filter(function (s) { return s.readyState === WebSocket.CONNECTING; }).length;
+        var closed = sockets.length - open - connecting;
+        var total = sockets.length;
+        var el = document.getElementById('status');
+        var detail = document.getElementById('statusDetail');
+        if (total === 0) {
+          el.textContent = 'Ready. Set URL and client count, then Start.';
+          el.className = '';
+          detail.textContent = '';
+        } else {
+          el.textContent = 'Open: ' + open + ' / ' + targetCount;
+          el.className = open >= targetCount ? 'ok' : (open > 0 ? 'warn' : 'err');
+          detail.textContent = 'Connecting: ' + connecting + '  ·  Closed/failed: ' + closed + '  ·  Total sockets: ' + total;
+          if (total > 250 && open < 220 && connecting === 0) {
+            detail.textContent += '  — Likely browser limit (~200–255 per origin).';
+          }
+        }
+      }
+
+      function sendPresenceHello(ws, userIndex) {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'PresenceHello',
+          user_id: 'stress-' + instanceId + '-' + userIndex,
+          signing_pubkeys: ['stress-house'],
+          active_signing_pubkey: null
+        }));
+      }
+
+      function connectOne(index, onDone) {
+        var base = wsBaseUrl();
+        if (!base) { log('Error: no beacon URL'); if (onDone) onDone(); return; }
+        var url = base + '/ws';
+        var ws;
+        try {
+          ws = new WebSocket(url);
+        } catch (e) {
+          log('Error: ' + e.message);
+          if (onDone) onDone();
+          return;
+        }
+        ws.onopen = function () {
+          sendPresenceHello(ws, index);
+          updateStatus();
+          if (onDone) onDone();
+        };
+        ws.onclose = function () { updateStatus(); };
+        ws.onerror = function () { updateStatus(); };
+        sockets.push(ws);
+        updateStatus();
+      }
+
+      function connectBatch(from, count, stepMs, onComplete) {
+        var idx = from;
+        var remaining = count;
+        function next() {
+          if (remaining <= 0) {
+            if (onComplete) onComplete();
+            return;
+          }
+          connectOne(idx, function () {
+            idx++;
+            remaining--;
+            if (stepMs <= 0) next();
+            else setTimeout(next, stepMs);
+          });
+        }
+        next();
+      }
+
+      function stopAll() {
+        if (rampTimer) {
+          clearTimeout(rampTimer);
+          rampTimer = null;
+        }
+        sockets.forEach(function (ws) {
+          try { ws.close(); } catch (_) {}
+        });
+        sockets = [];
+        targetCount = 0;
+        updateStatus();
+        log('All connections closed.');
+      }
+
+      document.getElementById('btnStart').onclick = function () {
+        var base = wsBaseUrl();
+        if (!base) { log('Set Beacon URL first.'); return; }
+        targetCount = Math.max(1, parseInt(document.getElementById('target').value, 10) || 100);
+        document.getElementById('target').value = targetCount;
+        stopAll();
+        log('Starting ' + targetCount + ' fake clients…');
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = false;
+        connectBatch(0, targetCount, 20, function () {
+          document.getElementById('btnStart').disabled = false;
+          log('All ' + targetCount + ' clients started. Check beacon status page.');
+        });
+      };
+
+      document.getElementById('btnStop').onclick = function () {
+        stopAll();
+        document.getElementById('btnStop').disabled = true;
+        document.getElementById('btnStart').disabled = false;
+      };
+
+      document.getElementById('btnAdd10').onclick = function () {
+        var base = wsBaseUrl();
+        if (!base) { log('Set Beacon URL first.'); return; }
+        var start = sockets.length;
+        targetCount = start + 10;
+        log('Adding 10 more clients…');
+        connectBatch(start, 10, 30, function () {
+          log('Added 10. Total: ' + sockets.length);
+        });
+      };
+
+      document.getElementById('btnRamp').onclick = function () {
+        var base = wsBaseUrl();
+        if (!base) { log('Set Beacon URL first.'); return; }
+        var max = Math.max(1, parseInt(document.getElementById('target').value, 10) || 100);
+        var btn = document.getElementById('btnRamp');
+        if (rampTimer) {
+          clearTimeout(rampTimer);
+          rampTimer = null;
+          btn.textContent = 'Ramp (10/s)';
+          log('Ramp stopped.');
+          return;
+        }
+        btn.textContent = 'Stop ramp';
+        targetCount = max;
+        log('Ramping to ' + max + ' at ' + rampPerSec + '/s…');
+        var interval = 1000 / rampPerSec;
+        var next = sockets.length;
+        function addOne() {
+          if (next >= max) {
+            rampTimer = null;
+            btn.textContent = 'Ramp (10/s)';
+            var openCount = sockets.filter(function (s) { return s.readyState === WebSocket.OPEN; }).length;
+            log('Ramp done. Sockets: ' + sockets.length + ', open: ' + openCount + (openCount < max ? ' (browser limit per origin)' : ''));
+            return;
+          }
+          connectOne(next, function () {});
+          next++;
+          rampTimer = setTimeout(addOne, interval);
+        }
+        rampTimer = setTimeout(addOne, interval);
+      };
+
+      document.getElementById('url').addEventListener('input', function () {
+        var u = this.value.trim().replace(/^ws(s?):\/\//i, 'http$1://');
+        document.getElementById('linkStatus').href = u ? (u.replace(/\/+$/, '') + '/') : '#';
+      });
+      document.getElementById('linkStatus').href = (document.getElementById('url').value.trim().replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '') || 'http://localhost:3030') + '/';
+
+      setInterval(function () {
+        if (sockets.length > 0) updateStatus();
+      }, 500);
+
+      updateStatus();
+    })();
+  </script>
+</body>
+</html>
