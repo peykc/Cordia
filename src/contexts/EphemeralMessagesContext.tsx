@@ -41,6 +41,8 @@ export interface EphemeralAttachmentMeta {
   /** Optional aspect ratio from sender so shimmer/container can match on first paint. */
   aspect_ratio_w?: number
   aspect_ratio_h?: number
+  /** Local path for preview while bundling (before SHA/registration completes). Sender-only. */
+  preview_path?: string
 }
 
 export interface EphemeralChatMessage {
@@ -56,8 +58,10 @@ export interface EphemeralChatMessage {
   attachments?: EphemeralAttachmentMeta[]
   sent_at: string
   local_only?: boolean
-  delivery_status?: 'pending' | 'delivered'
+  delivery_status?: 'pending' | 'delivered' | 'bundling'
   delivered_by?: string[]
+  /** SHA compute progress 0–100 while bundling. Sender-only. */
+  bundling_progress?: number
 }
 
 interface SendEphemeralChatInput {
@@ -84,6 +88,18 @@ export interface SendMixedMessageInput {
   /** Attachments in display order (draft order). Shown first in chat. */
   attachments: EphemeralAttachmentMeta[]
   /** Optional caption, shown below the attachment grid. */
+  text?: string
+  /** When provided, replace this message (e.g. bundling placeholder) instead of appending. */
+  replaceMessageId?: string
+}
+
+export interface AddBundlingMessageInput {
+  messageId: string
+  signingPubkey: string
+  chatId: string
+  fromUserId: string
+  /** Staged attachments with path for preview. */
+  staged: Array<{ path: string; file_name: string; extension: string; size_bytes: number; spoiler?: boolean }>
   text?: string
 }
 
@@ -161,6 +177,10 @@ interface EphemeralMessagesContextType {
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
   sendAttachmentMessage: (input: SendEphemeralAttachmentInput) => Promise<void>
   sendMixedMessage: (input: SendMixedMessageInput) => Promise<void>
+  /** Add optimistic bundling message (shows immediately while SHA/registration runs). */
+  addBundlingMessage: (input: AddBundlingMessageInput) => void
+  /** Update bundling progress (0–100) for a message. */
+  updateBundlingProgress: (messageId: string, percent: number) => void
   requestAttachmentDownload: (msg: EphemeralChatMessage, attachment?: EphemeralAttachmentMeta) => Promise<void>
   attachmentTransfers: AttachmentTransferState[]
   transferHistory: TransferHistoryEntry[]
@@ -244,6 +264,32 @@ function appendMessage(
   const key = bucketKey(signingPubkey, chatId)
   const existing = prev[key] ?? []
   return { ...prev, [key]: [...existing, msg] }
+}
+
+function replaceMessageById(
+  prev: MessageBuckets,
+  signingPubkey: string,
+  chatId: string,
+  messageId: string,
+  replacement: EphemeralChatMessage
+): MessageBuckets {
+  const key = bucketKey(signingPubkey, chatId)
+  const existing = prev[key] ?? []
+  const next = existing.map((m) => (m.id === messageId ? replacement : m))
+  return { ...prev, [key]: next }
+}
+
+function updateBundlingProgressById(prev: MessageBuckets, messageId: string, percent: number): MessageBuckets {
+  for (const key of Object.keys(prev)) {
+    const list = prev[key] ?? []
+    const idx = list.findIndex((m) => m.id === messageId)
+    if (idx >= 0) {
+      const next = [...list]
+      next[idx] = { ...next[idx], bundling_progress: percent }
+      return { ...prev, [key]: next }
+    }
+  }
+  return prev
 }
 
 function persistKeyForAccount(accountId: string | null): string {
@@ -2044,6 +2090,45 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       .catch(() => {})
   }
 
+  const addBundlingMessage: EphemeralMessagesContextType['addBundlingMessage'] = ({
+    messageId,
+    signingPubkey,
+    chatId,
+    fromUserId,
+    staged,
+    text,
+  }) => {
+    const sentAt = new Date().toISOString()
+    const attachments: EphemeralAttachmentMeta[] = staged.map((s, i) => ({
+      attachment_id: `bundling:${messageId}:${i}`,
+      file_name: s.file_name,
+      extension: s.extension,
+      size_bytes: s.size_bytes,
+      sha256: '',
+      spoiler: s.spoiler,
+      preview_path: s.path,
+    }))
+    const bundlingMessage: EphemeralChatMessage = {
+      id: messageId,
+      signing_pubkey: signingPubkey,
+      chat_id: chatId,
+      from_user_id: fromUserId,
+      text: text?.trim() ?? '',
+      kind: 'mixed',
+      attachments,
+      sent_at: sentAt,
+      local_only: true,
+      delivery_status: 'bundling',
+      delivered_by: [],
+    }
+    setMessagesByBucket((prev) => appendAndPruneBySigning(prev, signingPubkey, chatId, bundlingMessage))
+    ensureBucketLoaded(signingPubkey, chatId)
+  }
+
+  const updateBundlingProgress: EphemeralMessagesContextType['updateBundlingProgress'] = (messageId, percent) => {
+    setMessagesByBucket((prev) => updateBundlingProgressById(prev, messageId, percent))
+  }
+
   const sendMixedMessage: EphemeralMessagesContextType['sendMixedMessage'] = async ({
     serverId,
     signingPubkey,
@@ -2051,6 +2136,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     fromUserId,
     attachments,
     text,
+    replaceMessageId,
   }) => {
     if (!attachments?.length) return
     const sentAt = new Date().toISOString()
@@ -2061,7 +2147,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       sent_at: sentAt,
     } satisfies EphemeralPayload)
     const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
-    const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    const messageId = replaceMessageId ?? `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     window.dispatchEvent(
       new CustomEvent('cordia:send-ephemeral-chat', {
         detail: {
@@ -2085,7 +2171,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       delivery_status: 'pending',
       delivered_by: [],
     }
-    setMessagesByBucket((prev) => appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage))
+    setMessagesByBucket((prev) => {
+      const next = replaceMessageId
+        ? replaceMessageById(prev, signingPubkey, chatId, replaceMessageId, localMessage)
+        : appendMessage(prev, signingPubkey, chatId, localMessage)
+      return pruneBuckets(next, ensureSettingsLoaded(signingPubkey), signingPubkey)
+    })
     ensureBucketLoaded(signingPubkey, chatId)
     listSharedAttachments()
       .then((list) => {
@@ -2299,6 +2390,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       sendMessage,
       sendAttachmentMessage,
       sendMixedMessage,
+      addBundlingMessage,
+      updateBundlingProgress,
       requestAttachmentDownload,
       attachmentTransfers,
       transferHistory,

@@ -27,6 +27,7 @@ use rand::RngCore;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
@@ -113,6 +114,13 @@ struct AttachmentIndex {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct PathShaCacheEntry {
+    sha256: String,
+    size_bytes: u64,
+    mtime_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileMetadataResult {
     file_name: String,
     extension: String,
@@ -187,6 +195,28 @@ fn save_attachment_index(base: &PathBuf, index: &AttachmentIndex) -> Result<(), 
     std::fs::write(path, json).map_err(|e| format!("Failed to write attachment index: {}", e))
 }
 
+fn path_sha_cache_path(base: &PathBuf) -> PathBuf {
+    base.join("path_sha_cache.json")
+}
+
+fn load_path_sha_cache(base: &PathBuf) -> HashMap<String, PathShaCacheEntry> {
+    let path = path_sha_cache_path(base);
+    if !path.exists() {
+        return HashMap::new();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_path_sha_cache(base: &PathBuf, cache: &HashMap<String, PathShaCacheEntry>) -> Result<(), String> {
+    let path = path_sha_cache_path(base);
+    let json = serde_json::to_string_pretty(cache)
+        .map_err(|e| format!("Failed to serialize path SHA cache: {}", e))?;
+    std::fs::write(path, json).map_err(|e| format!("Failed to write path SHA cache: {}", e))
+}
+
 fn sha256_file(path: &PathBuf) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
     let mut hasher = Sha256::new();
@@ -195,15 +225,34 @@ fn sha256_file(path: &PathBuf) -> Result<String, String> {
 }
 
 fn sha256_file_streaming(path: &PathBuf) -> Result<String, String> {
+    sha256_file_streaming_with_progress(path, |_| {})
+}
+
+fn sha256_file_streaming_with_progress<F>(path: &PathBuf, mut on_progress: F) -> Result<String, String>
+where
+    F: FnMut(u8),
+{
     let mut f = std::fs::File::open(path).map_err(|e| format!("Failed to open file for hashing: {}", e))?;
+    let total = f.seek(SeekFrom::End(0)).map_err(|e| format!("Failed to seek for file size: {}", e))?;
+    f.seek(SeekFrom::Start(0)).map_err(|e| format!("Failed to seek to start: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 1024 * 1024];
+    let mut read_total: u64 = 0;
+    let mut last_pct: u8 = 0;
     loop {
         let n = f.read(&mut buf).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
+        read_total += n as u64;
+        if total > 0 {
+            let pct = ((read_total * 100) / total).min(100) as u8;
+            if pct >= last_pct + 2 || pct == 100 {
+                last_pct = pct;
+                on_progress(pct);
+            }
+        }
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -418,6 +467,7 @@ fn register_attachment_from_path(
             &file_name_clone,
             &extension_clone,
             size_bytes,
+            Some((app_handle.clone(), attachment_id_clone.clone())),
         );
         if let Err(ref err) = result {
             if let Ok(base) = account_attachment_dir(&account_id) {
@@ -467,12 +517,69 @@ fn prepare_attachment_background(
     _file_name: &str,
     extension: &str,
     _size_bytes: u64,
+    progress_emitter: Option<(tauri::AppHandle, String)>,
 ) -> Result<(), String> {
     let base = account_attachment_dir(account_id)?;
     let cache_dir = base.join("cache");
     let source = PathBuf::from(source_path);
 
-    let sha256 = sha256_file_streaming(&source)?;
+    let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    let size_bytes = meta.len();
+    let mtime_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let sha256 = {
+        let mut path_cache = load_path_sha_cache(&base);
+        let path_key = source.to_string_lossy().to_string();
+        let cached = path_cache.get(&path_key);
+        let compute_sha = || {
+            if let Some((ref app, ref att_id)) = progress_emitter {
+                let app = app.clone();
+                let att_id = att_id.clone();
+                sha256_file_streaming_with_progress(&source, move |pct| {
+                    let _ = app.emit_all("cordia:attachment-sha-progress", serde_json::json!({
+                        "attachment_id": att_id,
+                        "percent": pct,
+                    }));
+                })
+            } else {
+                sha256_file_streaming(&source)
+            }
+        };
+        if let Some(entry) = cached {
+            if entry.size_bytes == size_bytes && entry.mtime_secs == mtime_secs {
+                entry.sha256.clone()
+            } else {
+                let sha = compute_sha()?;
+                path_cache.insert(
+                    path_key,
+                    PathShaCacheEntry {
+                        sha256: sha.clone(),
+                        size_bytes,
+                        mtime_secs,
+                    },
+                );
+                let _ = save_path_sha_cache(&base, &path_cache);
+                sha
+            }
+        } else {
+            let sha = compute_sha()?;
+            path_cache.insert(
+                path_key,
+                PathShaCacheEntry {
+                    sha256: sha.clone(),
+                    size_bytes,
+                    mtime_secs,
+                },
+            );
+            let _ = save_path_sha_cache(&base, &path_cache);
+            sha
+        }
+    };
     let mut index = load_attachment_index(&base);
 
     let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {

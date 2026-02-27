@@ -145,6 +145,8 @@ function ServerViewPage() {
     openServerChat,
     sendMessage,
     sendMixedMessage,
+    addBundlingMessage,
+    updateBundlingProgress,
     requestAttachmentDownload,
     attachmentTransfers,
     transferHistory,
@@ -185,6 +187,11 @@ function ServerViewPage() {
   const [messageDraft, setMessageDraft] = useState('')
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const bundlingProgressRef = useRef<{
+    messageId: string
+    attachmentIds: string[]
+    progressByAtt: Record<string, number>
+  } | null>(null)
   const chatScrollBottomAnchorRef = useRef<HTMLDivElement | null>(null)
   const wasAtBottomRef = useRef(true)
   /** Refs to video container elements so we can scroll the active one into view when exiting fullscreen. */
@@ -450,6 +457,29 @@ function ServerViewPage() {
     leaveVoice()
   }
 
+  useEffect(() => {
+    const unlistenPromise = listen<{ attachment_id: string; percent: number }>(
+      'cordia:attachment-sha-progress',
+      (event) => {
+        const { attachment_id, percent } = event.payload ?? {}
+        if (attachment_id == null || percent == null) return
+        const ref = bundlingProgressRef.current
+        if (!ref) return
+        ref.progressByAtt[attachment_id] = percent
+        if (ref.attachmentIds.length === 0) return
+        const total = ref.attachmentIds.reduce(
+          (sum, id) => sum + (ref.progressByAtt[id] ?? 0),
+          0
+        )
+        const avg = Math.round(total / ref.attachmentIds.length)
+        updateBundlingProgress(ref.messageId, Math.min(100, avg))
+      }
+    )
+    return () => {
+      unlistenPromise.then((fn) => fn()).catch(() => {})
+    }
+  }, [updateBundlingProgress])
+
   const waitForAttachmentReady = (attachmentId: string): Promise<void> =>
     new Promise((resolve, reject) => {
       const unlistenRef = { current: null as (() => void) | null }
@@ -475,9 +505,39 @@ function ServerViewPage() {
 
     try {
       if (toSend.length > 0) {
+        const messageId = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+        bundlingProgressRef.current = { messageId, attachmentIds: [], progressByAtt: {} }
+        addBundlingMessage({
+          messageId,
+          signingPubkey: server.signing_pubkey,
+          chatId: groupChat.id,
+          fromUserId: identity.user_id,
+          staged: toSend.map((s) => ({
+            path: s.path,
+            file_name: s.file_name,
+            extension: s.extension,
+            size_bytes: s.size_bytes,
+            spoiler: s.spoiler,
+          })),
+          text: text || undefined,
+        })
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const el = chatScrollRef.current
+            if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+          })
+        })
         const registered = await Promise.all(
           toSend.map((att) => registerAttachmentFromPath(att.path, att.storage_mode))
         )
+        if (bundlingProgressRef.current?.messageId === messageId) {
+          bundlingProgressRef.current.attachmentIds = registered.map((r) => r.attachment_id)
+          const ref = bundlingProgressRef.current
+          const total = ref.attachmentIds.reduce((sum, id) => sum + (ref.progressByAtt[id] ?? 0), 0)
+          if (ref.attachmentIds.length > 0 && total > 0) {
+            updateBundlingProgress(messageId, Math.min(100, Math.round(total / ref.attachmentIds.length)))
+          }
+        }
         await Promise.all(registered.map((r) => waitForAttachmentReady(r.attachment_id)))
         const records = await Promise.all(registered.map((r) => getAttachmentRecord(r.attachment_id)))
         const isMediaFile = (fileName: string) =>
@@ -503,28 +563,16 @@ function ServerViewPage() {
             ...(dim && { aspect_ratio_w: dim.w, aspect_ratio_h: dim.h }),
           }
         })
-        const mediaAttachments = allAttachments.filter((a) => isMediaFile(a.file_name))
-        const otherAttachments = allAttachments.filter((a) => !isMediaFile(a.file_name))
-        if (mediaAttachments.length > 0) {
-          await sendMixedMessage({
-            serverId: server.id,
-            signingPubkey: server.signing_pubkey,
-            chatId: groupChat.id,
-            fromUserId: identity.user_id,
-            attachments: mediaAttachments,
-            text: text || undefined,
-          })
-        }
-        if (otherAttachments.length > 0) {
-          await sendMixedMessage({
-            serverId: server.id,
-            signingPubkey: server.signing_pubkey,
-            chatId: groupChat.id,
-            fromUserId: identity.user_id,
-            attachments: otherAttachments,
-            text: mediaAttachments.length > 0 ? undefined : text || undefined,
-          })
-        }
+        bundlingProgressRef.current = null
+        await sendMixedMessage({
+          serverId: server.id,
+          signingPubkey: server.signing_pubkey,
+          chatId: groupChat.id,
+          fromUserId: identity.user_id,
+          attachments: allAttachments,
+          text: text || undefined,
+          replaceMessageId: messageId,
+        })
         for (const att of allAttachments) {
           if (att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
         }
@@ -546,6 +594,7 @@ function ServerViewPage() {
       })
     } catch (error) {
       console.warn('Failed to send:', error)
+      bundlingProgressRef.current = null
       setMessageDraft(text)
       setStagedAttachments(toSend)
     }
@@ -1159,7 +1208,7 @@ function ServerViewPage() {
                                                       (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                   )
                                                   const hasPath = isOwn
-                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
+                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? att.preview_path ?? undefined)
                                                     : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
@@ -1346,7 +1395,7 @@ function ServerViewPage() {
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
-                                                            {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1484,7 +1533,7 @@ function ServerViewPage() {
                                                                 </span>
                                                               </button>
                                                             )}
-                                                            {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1561,7 +1610,7 @@ function ServerViewPage() {
                                                         (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                     )
                                                     const hasPath = isOwn
-                                                      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
+                                                      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? att.preview_path ?? undefined)
                                                       : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                     const notDownloaded = !isOwn && !hasAccessibleCompletedDownload(att.attachment_id) && !hasPath
                                                     const stateLabel = attachmentStateLabelFor(att)
@@ -1671,7 +1720,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1758,7 +1807,7 @@ function ServerViewPage() {
                                                       (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                   )
                                                   const hasPath = isOwn
-                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
+                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? att.preview_path ?? undefined)
                                                     : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
@@ -1948,7 +1997,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </div>
                                                               </button>
-                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -2074,7 +2123,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </button>
                                                               )}
-                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -2242,7 +2291,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
