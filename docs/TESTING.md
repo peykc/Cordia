@@ -93,6 +93,14 @@ Use this as a minimum pass before release. Tick off each item; note any failures
 - [ ] Messages: persistence mode and “max messages to sync” save and are used.
 - [ ] Downloads: preferred directory and attachment approval (ask/always) apply to next transfer.
 
+#### Per-server sharing and download dedupe
+
+- [ ] **Per-server upload button**: In Server A, share an image (send or “Share in this chat” after download). Open Server B (same account); send or receive the same image (same file content). In Server B the upload/“Share in this chat” button is still visible until you click it; after clicking, it disappears. In Transfer Center → Uploads, the file appears once with “Shared in 2 servers” (or “Shared in 1 server” if only one).
+- [ ] **No duplicate upload rows**: Share the same file in multiple servers; Uploads list shows one row per file (by content), not one per server.
+- [ ] **Unshare clears per-server state**: In Transfer Center, remove a file from uploads (trash). The upload/“Share again” button reappears in every server chat where that file appears.
+- [ ] **Download once, reuse**: User A sends an image in Server 1. User B downloads it. User A (or another user) sends the same image again in Server 1 or Server 2. User B sees it as already available (no second download); preview and “Share in this chat” work from the cached path.
+- [ ] **Upload from cache**: After dedupe (same image in two messages), click “Share in this chat” on the second message; it should use the cached file and not re-register a new copy; uploads list still has one row for that content.
+
 #### Edge cases and recovery
 
 - [ ] One user disconnects from Beacon briefly; other user’s presence updates; reconnecting restores.

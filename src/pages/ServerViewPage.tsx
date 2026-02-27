@@ -35,8 +35,15 @@ import { FileIcon, IconForCategory } from '../components/FileIcon'
 import { ImageDownPlay } from '../components/icons'
 import { CustomVideoPlayer } from '../components/CustomVideoPlayer'
 import { ChatMediaSlot, ChatFileRowSlot } from '../components/ChatMediaSlot'
+import { MessageBubble } from '../components/MessageBubble'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
+import {
+  CHAT_MEDIA_MAX_W,
+  CHAT_MEDIA_MAX_H,
+  getSingleAttachmentSize,
+  getSingleAttachmentAspectRatio,
+} from '../lib/chatMessageLayout'
 
 /** Get intrinsic dimensions for a media URL so we can store aspect on the message (shimmer correct on load). */
 function getMediaDimensions(
@@ -144,6 +151,9 @@ function ServerViewPage() {
     hasAccessibleCompletedDownload,
     refreshSharedAttachments,
     notifyAttachmentReshared,
+    markSharedInServer,
+    isSharedInServer,
+    getCachedPathForSha,
   } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
@@ -200,6 +210,9 @@ function ServerViewPage() {
   const fetchedUnsharedIdsRef = useRef<Set<string>>(new Set())
   /** Aspect ratio per single-attachment (msg.id + attachment_id) so container/shimmer follow media ratio. */
   const [singleAttachmentAspect, setSingleAttachmentAspect] = useState<Record<string, { w: number; h: number }>>({})
+  /** Optimistically hide Share/Upload button on click to prevent double-clicks before async completes. */
+  const [justSharedKeys, setJustSharedKeys] = useState<Set<string>>(new Set())
+  const shareInProgressRef = useRef(false)
 
   const MESSAGE_INPUT_MAX_HEIGHT = 100
   const DRAFT_SAVE_DEBOUNCE_MS = 300
@@ -510,6 +523,9 @@ function ServerViewPage() {
             text: mediaAttachments.length > 0 ? undefined : text || undefined,
           })
         }
+        for (const att of allAttachments) {
+          if (att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
+        }
       } else {
         await sendMessage({
           serverId: server.id,
@@ -579,23 +595,44 @@ function ServerViewPage() {
   }
 
   const handleShareAgainAttachment = async (
-    att: { attachment_id: string; file_name: string; size_bytes: number },
+    att: { attachment_id: string; file_name: string; size_bytes: number; sha256?: string },
     isOwn: boolean,
     existingPath?: string | null
   ) => {
+    const key = isOwn ? `att:${att.attachment_id}` : `sha:${att.sha256 ?? ''}`
+    shareInProgressRef.current = true
+    setJustSharedKeys((prev) => new Set(prev).add(key))
     try {
       if (isOwn) {
         await shareAttachmentAgain(att.attachment_id, existingPath ?? undefined)
-        await refreshSharedAttachments()
+        await refreshSharedAttachments(att.attachment_id)
+        if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
         if (server?.signing_pubkey && groupChat?.id) {
           await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, att.attachment_id)
         }
         return
       }
       if (!existingPath) return
-      await registerAttachmentFromPath(existingPath, 'program_copy')
+      const existingBySha = att.sha256 ? sharedAttachments.find((s) => s.sha256 === att.sha256) : null
+      if (existingBySha) {
+        if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
+        if (server?.signing_pubkey && groupChat?.id) {
+          await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, existingBySha.attachment_id)
+        }
+        return
+      }
+      const result = await registerAttachmentFromPath(existingPath, 'program_copy')
       await refreshSharedAttachments()
+      if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
+      if (server?.signing_pubkey && groupChat?.id) {
+        await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, result.attachment_id)
+      }
     } catch (e: unknown) {
+      setJustSharedKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
       const msg = e instanceof Error ? e.message : String(e)
       if (isOwn && msg.includes('no longer exists')) {
         const selected = await open({ title: 'Select the same file (same file required)', multiple: false })
@@ -604,13 +641,34 @@ function ServerViewPage() {
         const meta = await getFileMetadata(path)
         if (meta.size_bytes !== att.size_bytes) return
         await shareAttachmentAgain(att.attachment_id, path)
-        await refreshSharedAttachments()
+        await refreshSharedAttachments(att.attachment_id)
         if (server?.signing_pubkey && groupChat?.id) {
           await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, att.attachment_id)
         }
       }
+    } finally {
+      shareInProgressRef.current = false
     }
   }
+
+  useEffect(() => {
+    if (shareInProgressRef.current) return
+    setJustSharedKeys((prev) => {
+      if (prev.size === 0) return prev
+      const next = new Set(prev)
+      for (const k of prev) {
+        if (k.startsWith('att:')) {
+          const id = k.slice(4)
+          const item = sharedAttachments.find((s) => s.attachment_id === id)
+          if (!item?.can_share_now) next.delete(k)
+        } else if (k.startsWith('sha:')) {
+          const sha = k.slice(4)
+          if (!sharedAttachments.some((s) => s.sha256 === sha)) next.delete(k)
+        }
+      }
+      return next
+    })
+  }, [sharedAttachments])
 
   useEffect(() => {
     if (!server || !groupChat) return
@@ -946,7 +1004,10 @@ function ServerViewPage() {
                                       : []
                                     const alreadyDownloadedAccessible =
                                       messageAttachments.length > 0
-                                        ? messageAttachments.some((a) => hasAccessibleCompletedDownload(a.attachment_id))
+                                        ? messageAttachments.some(
+                                            (a) =>
+                                              hasAccessibleCompletedDownload(a.attachment_id) || !!getCachedPathForSha(a.sha256)
+                                          )
                                         : false
                                     const hostOnlineForAttachment =
                                       messageAttachments.length > 0
@@ -965,8 +1026,8 @@ function ServerViewPage() {
                                           h.attachment_id === att.attachment_id &&
                                           h.status === 'rejected'
                                       )
-                                    const attachmentStateLabelFor = (att: { attachment_id: string }) =>
-                                      hasAccessibleCompletedDownload(att.attachment_id)
+                                    const attachmentStateLabelFor = (att: { attachment_id: string; sha256?: string }) =>
+                                      hasAccessibleCompletedDownload(att.attachment_id) || (att.sha256 ? !!getCachedPathForSha(att.sha256) : false)
                                         ? 'Cached'
                                         : msg.from_user_id === identity?.user_id
                                           ? sharedAttachments.some((s) => s.attachment_id === att.attachment_id && s.can_share_now)
@@ -992,25 +1053,30 @@ function ServerViewPage() {
                                       if (offline) return 'Offline'
                                       return null
                                     }
-                                    const timeStr = new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                    /** Hide Share again when an upload for this attachment is already in progress. */
+                                    const hasActiveUploadForAttachment = (a: { attachment_id: string }) =>
+                                      attachmentTransferRows.some(
+                                        (t) =>
+                                          t.direction === 'upload' &&
+                                          t.attachment_id === a.attachment_id &&
+                                          t.status !== 'completed' &&
+                                          t.status !== 'failed' &&
+                                          t.status !== 'rejected'
+                                      )
                                     return (
-                                      <div
+                                      <MessageBubble
                                         key={msg.id}
-                                        className="group/msg py-px px-1 -mx-1 cursor-default"
-                                        style={{ backgroundColor: hoveredMsgId === msg.id ? 'hsl(var(--muted) / 0.875)' : undefined }}
-                                        onMouseEnter={() => setHoveredMsgId(msg.id)}
-                                        onMouseLeave={() => setHoveredMsgId(null)}
+                                        msg={msg}
+                                        isFirstInGroup={isFirstInGroup}
+                                        displayName={displayName}
+                                        levelColor={levelColor}
+                                        hovered={hoveredMsgId === msg.id}
+                                        onHoverChange={(hovered) => setHoveredMsgId(hovered ? msg.id : null)}
+                                        currentUserId={identity?.user_id}
+                                        lastDeliveredMessageId={lastDeliveredMessageId}
+                                        lastPendingMessageId={lastPendingMessageId}
                                       >
-                                        {isFirstInGroup ? (
-                                          <div className="flex items-baseline gap-2 flex-wrap">
-                                            <span className={cn('text-sm font-medium', levelColor)}>{displayName}</span>
-                                            <span className="text-[10px] text-muted-foreground">
-                                              {timeStr}
-                                            </span>
-                                          </div>
-                                        ) : null}
-                                        <div className={cn(isFirstInGroup ? 'mt-0.5' : '')}>
-                                          {msg.kind === 'mixed' && msg.attachments?.length ? (
+                                        {msg.kind === 'mixed' && msg.attachments?.length ? (
                                             <div className="py-2 space-y-2">
                                               {(() => {
                                                 const mediaAttachments = msg.attachments!.filter((a) =>
@@ -1033,8 +1099,6 @@ function ServerViewPage() {
                                                 {mediaAttachments.map((att) => {
                                                   const count = mediaAttachments.length
                                                   const isSingle = count === 1
-                                                  const MIXED_SINGLE_MAX_W = 320
-                                                  const MIXED_SINGLE_MAX_H = 240
                                                   const mixedSingleKey = isSingle ? `${msg.id}-${att.attachment_id}` : ''
                                                   const mixedSingleAspect = isSingle
                                                     ? (singleAttachmentAspect[mixedSingleKey] ??
@@ -1042,9 +1106,10 @@ function ServerViewPage() {
                                                           ? { w: att.aspect_ratio_w, h: att.aspect_ratio_h }
                                                           : { w: 1, h: 1 }))
                                                     : { w: 16, h: 9 }
-                                                  const mixedSingleRatio = `${mixedSingleAspect.w}/${mixedSingleAspect.h}`
-                                                  const mixedSingleW = Math.min(MIXED_SINGLE_MAX_W, (MIXED_SINGLE_MAX_H * mixedSingleAspect.w) / mixedSingleAspect.h)
-                                                  const mixedSingleH = Math.min(MIXED_SINGLE_MAX_H, (MIXED_SINGLE_MAX_W * mixedSingleAspect.h) / mixedSingleAspect.w)
+                                                  const mixedSingleRatio = getSingleAttachmentAspectRatio(mixedSingleAspect)
+                                                  const { w: mixedSingleW, h: mixedSingleH } = isSingle
+                                                    ? getSingleAttachmentSize(mixedSingleAspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
+                                                    : { w: 320, h: 240 }
                                                   // #region agent log
                                                   if (isSingle) fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:mixed-media-single',message:'Rendering mixed message with single media',data:{msgKind: msg.kind, msgId: msg.id, attachmentId: att.attachment_id, w: mixedSingleAspect.w, h: mixedSingleAspect.h, mixedSingleW, mixedSingleH},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
                                                   // #endregion
@@ -1066,7 +1131,7 @@ function ServerViewPage() {
                                                   )
                                                   const hasPath = isOwn
                                                     ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
-                                                    : completedDownload?.saved_path
+                                                    : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
                                                     : undefined
@@ -1108,7 +1173,7 @@ function ServerViewPage() {
                                                         notDownloaded ? 'bg-muted' : 'bg-muted/30',
                                                         isSingle && 'w-full'
                                                       )}
-                                                      style={isSingle ? { width: mixedSingleW, height: mixedSingleH, maxWidth: MIXED_SINGLE_MAX_W, maxHeight: MIXED_SINGLE_MAX_H, aspectRatio: mixedSingleRatio } : undefined}
+                                                      style={isSingle ? { width: mixedSingleW, height: mixedSingleH, maxWidth: CHAT_MEDIA_MAX_W, maxHeight: CHAT_MEDIA_MAX_H, aspectRatio: mixedSingleRatio } : undefined}
                                                     >
                                                       {notDownloaded ? (
                                                         <NotDownloadedCardByWidth
@@ -1252,7 +1317,7 @@ function ServerViewPage() {
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
-                                                            {isOwn && !sharedItem?.can_share_now && (
+                                                            {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1270,7 +1335,7 @@ function ServerViewPage() {
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && completedDownload?.saved_path && (
+                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button
@@ -1280,7 +1345,7 @@ function ServerViewPage() {
                                                                     className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                     onClick={(e) => {
                                                                       e.stopPropagation()
-                                                                      handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                      handleShareAgainAttachment(att, false, hasPath)
                                                                     }}
                                                                   >
                                                                     <Upload className="h-4 w-4" />
@@ -1390,7 +1455,7 @@ function ServerViewPage() {
                                                                 </span>
                                                               </button>
                                                             )}
-                                                            {isOwn && !sharedItem?.can_share_now && (
+                                                            {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1408,7 +1473,7 @@ function ServerViewPage() {
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && completedDownload?.saved_path && (
+                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button
@@ -1418,7 +1483,7 @@ function ServerViewPage() {
                                                                     className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                     onClick={(e) => {
                                                                       e.stopPropagation()
-                                                                      handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                      handleShareAgainAttachment(att, false, hasPath)
                                                                     }}
                                                                   >
                                                                     <Upload className="h-4 w-4" />
@@ -1468,7 +1533,7 @@ function ServerViewPage() {
                                                     )
                                                     const hasPath = isOwn
                                                       ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
-                                                      : completedDownload?.saved_path
+                                                      : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                     const notDownloaded = !isOwn && !hasAccessibleCompletedDownload(att.attachment_id) && !hasPath
                                                     const stateLabel = attachmentStateLabelFor(att)
                                                     const showDownloadProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
@@ -1577,7 +1642,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && !sharedItem?.can_share_now && (
+                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1595,7 +1660,7 @@ function ServerViewPage() {
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && completedDownload?.saved_path && (
+                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -1605,7 +1670,7 @@ function ServerViewPage() {
                                                                       className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                        handleShareAgainAttachment(att, false, hasPath)
                                                                       }}
                                                                     >
                                                                       <Upload className="h-3.5 w-3.5" />
@@ -1665,7 +1730,7 @@ function ServerViewPage() {
                                                   )
                                                   const hasPath = isOwn
                                                     ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
-                                                    : completedDownload?.saved_path
+                                                    : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
                                                     : undefined
@@ -1677,17 +1742,18 @@ function ServerViewPage() {
                                                   const notDownloaded = !isOwn && !alreadyDownloadedAccessible && !hasPath
                                                   const p = liveDownload ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100))) : 0
                                                   const showProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
-                                                  const CHAT_MEDIA_MAX_W = 320
-                                                  const CHAT_MEDIA_MAX_H = 240
                                                   const singleAspectKey = `${msg.id}-${att.attachment_id}`
                                                   const singleAspect =
                                                     singleAttachmentAspect[singleAspectKey] ??
                                                     (att.aspect_ratio_w != null && att.aspect_ratio_h != null
                                                       ? { w: att.aspect_ratio_w, h: att.aspect_ratio_h }
                                                       : { w: 1, h: 1 })
-                                                  const singleAspectRatio = `${singleAspect.w}/${singleAspect.h}`
-                                                  const singleW = Math.min(CHAT_MEDIA_MAX_W, (CHAT_MEDIA_MAX_H * singleAspect.w) / singleAspect.h)
-                                                  const singleH = Math.min(CHAT_MEDIA_MAX_H, (CHAT_MEDIA_MAX_W * singleAspect.h) / singleAspect.w)
+                                                  const singleAspectRatio = getSingleAttachmentAspectRatio(singleAspect)
+                                                  const { w: singleW, h: singleH } = getSingleAttachmentSize(
+                                                    singleAspect,
+                                                    CHAT_MEDIA_MAX_W,
+                                                    CHAT_MEDIA_MAX_H
+                                                  )
                                                   // #region agent log
                                                   fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:single-attachment-render',message:'Single attachment container values',data:{singleAspectKey, singleAspectW: singleAspect.w, singleAspectH: singleAspect.h, singleW, singleH, category, hasPath: !!hasPath, fromState: !!singleAttachmentAspect[singleAspectKey]},timestamp:Date.now(),hypothesisId:'A,B,C,E'})}).catch(()=>{});
                                                   // #endregion
@@ -1853,7 +1919,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </div>
                                                               </button>
-                                                              {isOwn && !sharedItem?.can_share_now && (
+                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1871,7 +1937,7 @@ function ServerViewPage() {
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && completedDownload?.saved_path && (
+                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -1881,7 +1947,7 @@ function ServerViewPage() {
                                                                       className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                        handleShareAgainAttachment(att, false, hasPath)
                                                                       }}
                                                                     >
                                                                       <Upload className="h-4 w-4" />
@@ -1979,7 +2045,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </button>
                                                               )}
-                                                              {isOwn && !sharedItem?.can_share_now && (
+                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1997,7 +2063,7 @@ function ServerViewPage() {
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && completedDownload?.saved_path && (
+                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -2007,7 +2073,7 @@ function ServerViewPage() {
                                                                       className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                        handleShareAgainAttachment(att, false, hasPath)
                                                                       }}
                                                                     >
                                                                       <Upload className="h-4 w-4" />
@@ -2147,7 +2213,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && !sharedItem?.can_share_now && (
+                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -2165,7 +2231,7 @@ function ServerViewPage() {
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && completedDownload?.saved_path && (
+                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -2175,7 +2241,7 @@ function ServerViewPage() {
                                                                       className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, completedDownload.saved_path)
+                                                                        handleShareAgainAttachment(att, false, hasPath)
                                                                       }}
                                                                     >
                                                                       <Upload className="h-3.5 w-3.5" />
@@ -2194,16 +2260,7 @@ function ServerViewPage() {
                                           ) : (
                                             <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
                                           )}
-                                        </div>
-                                        {msg.from_user_id === identity?.user_id && (msg.id === lastDeliveredMessageId || msg.id === lastPendingMessageId) && (
-                                          <div className="text-[10px] text-muted-foreground mt-0.5">
-                                            {msg.id === lastDeliveredMessageId ? 'Delivered' : 'Pending'}
-                                            {msg.id === lastPendingMessageId && (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id).length > 0 && (
-                                              <span className="ml-1">({(msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id).length} online)</span>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
+                                      </MessageBubble>
                                     )
                                   })}
                                 </div>

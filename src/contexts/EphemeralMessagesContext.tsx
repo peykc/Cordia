@@ -169,9 +169,17 @@ interface EphemeralMessagesContextType {
   removeTransferHistoryEntry: (requestId: string) => void
   cancelTransferRequest: (requestId: string) => void
   sharedAttachments: SharedAttachmentItem[]
-  refreshSharedAttachments: () => Promise<void>
+  refreshSharedAttachments: (attachmentIdJustShared?: string) => Promise<void>
   unshareAttachmentById: (attachmentId: string) => Promise<void>
   notifyAttachmentReshared: (signingPubkey: string, chatId: string, attachmentId: string) => Promise<void>
+  /** Per-server exposure: which content (by sha256) is shared in which server. */
+  markSharedInServer: (serverSigningPubkey: string, sha256: string) => void
+  isSharedInServer: (serverSigningPubkey: string, sha256: string) => boolean
+  getServersForSha: (sha256: string) => string[]
+  /** Remove this content from one server's "shared" list (upload button reappears in that server). Does not unshare from backend. */
+  unshareFromServer: (serverSigningPubkey: string, sha256: string) => void
+  /** Path for content we already have (e.g. from a previous download with same sha256). Used to avoid re-downloading. */
+  getCachedPathForSha: (sha256: string | undefined) => string | null
 }
 
 export interface AttachmentTransferState {
@@ -189,6 +197,7 @@ export interface AttachmentTransferState {
   debug_eta_seconds?: number
   saved_path?: string
   error?: string
+  sha256?: string
 }
 
 export interface TransferHistoryEntry {
@@ -214,6 +223,8 @@ type MessageBuckets = Record<string, EphemeralChatMessage[]>
 const PERSIST_KEY_PREFIX = 'cordia:ephemeral-bucket'
 const TRANSFER_HISTORY_KEY_PREFIX = 'cordia:attachment-transfer-history'
 const UNREAD_STATE_KEY_PREFIX = 'cordia:ephemeral-unread-state'
+const SERVER_SHARED_SHA_KEY_PREFIX = 'cordia:server-shared-sha'
+const CONTENT_CACHE_SHA_KEY_PREFIX = 'cordia:content-cache-sha'
 
 type UnreadState = {
   unread_count_by_server: Record<string, number>
@@ -249,6 +260,14 @@ function transferHistoryKeyForAccount(accountId: string | null): string {
 
 function unreadStateKeyForAccount(accountId: string | null): string {
   return accountId ? `${UNREAD_STATE_KEY_PREFIX}:${accountId}` : UNREAD_STATE_KEY_PREFIX
+}
+
+function serverSharedShaKeyForAccount(accountId: string | null): string {
+  return accountId ? `${SERVER_SHARED_SHA_KEY_PREFIX}:${accountId}` : SERVER_SHARED_SHA_KEY_PREFIX
+}
+
+function contentCacheShaKeyForAccount(accountId: string | null): string {
+  return accountId ? `${CONTENT_CACHE_SHA_KEY_PREFIX}:${accountId}` : CONTENT_CACHE_SHA_KEY_PREFIX
 }
 
 function storageBytes(input: string): number {
@@ -315,6 +334,10 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const [attachmentTransfers, setAttachmentTransfers] = useState<AttachmentTransferState[]>([])
   const [transferHistory, setTransferHistory] = useState<TransferHistoryEntry[]>([])
   const [sharedAttachments, setSharedAttachments] = useState<SharedAttachmentItem[]>([])
+  /** Per server (signing_pubkey) -> set of sha256 that user has shared in that server. Persisted. */
+  const [serverSharedSha, setServerSharedSha] = useState<Record<string, string[]>>({})
+  /** Content cache: sha256 -> local path (from completed downloads). Avoids re-downloading same file. Persisted. */
+  const [contentCacheBySha, setContentCacheBySha] = useState<Record<string, string>>({})
   const [hydrated, setHydrated] = useState(false)
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferDataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map())
@@ -697,12 +720,14 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       try {
         const savePath = await finishDownloadStream(requestId)
         if (!downloadStreamStateRef.current.has(requestId)) return
+        const sha = attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.sha256
         upsertTransfer(requestId, (prev) => ({
           ...(prev as AttachmentTransferState),
           status: 'completed',
           progress: 1,
           saved_path: savePath,
         }))
+        if (sha) setContentCacheBySha((c) => ({ ...c, [sha]: savePath }))
         cleanupTransferPeer(requestId)
         tryStartNextQueuedDownload()
       } catch {
@@ -1095,6 +1120,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       setUnreadState({ unread_count_by_server: {}, last_seen_at_by_server: {} })
       setTransferHistory([])
       setSharedAttachments([])
+      setServerSharedSha({})
+      setContentCacheBySha({})
       setHydrated(true)
       return
     }
@@ -1132,6 +1159,30 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     } catch {
       setTransferHistory([])
+    }
+
+    try {
+      const rawSha = window.localStorage.getItem(serverSharedShaKeyForAccount(currentAccountId))
+      if (!rawSha) {
+        setServerSharedSha({})
+      } else {
+        const parsed = JSON.parse(rawSha) as Record<string, string[]>
+        setServerSharedSha(typeof parsed === 'object' && parsed !== null ? parsed : {})
+      }
+    } catch {
+      setServerSharedSha({})
+    }
+
+    try {
+      const rawCache = window.localStorage.getItem(contentCacheShaKeyForAccount(currentAccountId))
+      if (!rawCache) {
+        setContentCacheBySha({})
+      } else {
+        const parsed = JSON.parse(rawCache) as Record<string, string>
+        setContentCacheBySha(typeof parsed === 'object' && parsed !== null ? parsed : {})
+      }
+    } catch {
+      setContentCacheBySha({})
     }
 
     listSharedAttachments()
@@ -1304,6 +1355,30 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       // ignore local storage write failures
     }
   }, [transferHistory, currentAccountId])
+
+  useEffect(() => {
+    if (!currentAccountId) return
+    try {
+      window.localStorage.setItem(
+        serverSharedShaKeyForAccount(currentAccountId),
+        JSON.stringify(serverSharedSha)
+      )
+    } catch {
+      // ignore local storage write failures
+    }
+  }, [serverSharedSha, currentAccountId])
+
+  useEffect(() => {
+    if (!currentAccountId) return
+    try {
+      window.localStorage.setItem(
+        contentCacheShaKeyForAccount(currentAccountId),
+        JSON.stringify(contentCacheBySha)
+      )
+    } catch {
+      // ignore
+    }
+  }, [contentCacheBySha, currentAccountId])
 
   useEffect(() => {
     if (!currentAccountId) return
@@ -1998,6 +2073,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     if (!identity?.user_id || !att?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
     const attachmentId = att.attachment_id
     if (hasAccessibleCompletedDownload(attachmentId)) return
+    if (att.sha256 && getCachedPathForSha(att.sha256)) return
     setTransferHistory((prev) =>
       prev.filter(
         (h) =>
@@ -2032,6 +2108,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       direction: 'download',
       status: queueInstead ? 'queued' : 'requesting',
       progress: 0,
+      sha256: att.sha256,
     }))
     const now = new Date().toISOString()
     upsertHistory(request_id, () => ({
@@ -2063,10 +2140,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     dispatchDownloadRequest(peerUserId, request_id, attachmentId)
   }
 
-  const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = async () => {
+  const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = async (
+    attachmentIdJustShared?: string
+  ) => {
     try {
       const list = await listSharedAttachments()
-      setSharedAttachments(list)
+      const finalList =
+        attachmentIdJustShared != null
+          ? list.map((s) =>
+              s.attachment_id === attachmentIdJustShared ? { ...s, can_share_now: true } : s
+            )
+          : list
+      setSharedAttachments(finalList)
     } catch {
       setSharedAttachments([])
     }
@@ -2074,12 +2159,69 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const unshareAttachmentById: EphemeralMessagesContextType['unshareAttachmentById'] = async (attachmentId) => {
     if (!attachmentId) return
+    const shaToRemove = sharedAttachments.find((s) => s.attachment_id === attachmentId)?.sha256
     try {
       await unshareAttachment(attachmentId)
       await refreshSharedAttachments()
+      if (shaToRemove) {
+        setServerSharedSha((prev) => {
+          const next = { ...prev }
+          for (const serverKey of Object.keys(next)) {
+            const arr = next[serverKey].filter((s) => s !== shaToRemove)
+            if (arr.length === 0) delete next[serverKey]
+            else next[serverKey] = arr
+          }
+          return next
+        })
+      }
     } catch {
       // ignore for now
     }
+  }
+
+  const markSharedInServer: EphemeralMessagesContextType['markSharedInServer'] = (serverSigningPubkey, sha256) => {
+    if (!serverSigningPubkey || !sha256) return
+    setServerSharedSha((prev) => {
+      const list = prev[serverSigningPubkey] ?? []
+      if (list.includes(sha256)) return prev
+      return { ...prev, [serverSigningPubkey]: [...list, sha256] }
+    })
+  }
+
+  const isSharedInServer: EphemeralMessagesContextType['isSharedInServer'] = (serverSigningPubkey, sha256) => {
+    if (!serverSigningPubkey || !sha256) return false
+    const list = serverSharedSha[serverSigningPubkey]
+    return Array.isArray(list) && list.includes(sha256)
+  }
+
+  const getServersForSha: EphemeralMessagesContextType['getServersForSha'] = (sha256) => {
+    if (!sha256) return []
+    return Object.keys(serverSharedSha).filter((serverKey) =>
+      Array.isArray(serverSharedSha[serverKey]) && serverSharedSha[serverKey].includes(sha256)
+    )
+  }
+
+  const getCachedPathForSha: EphemeralMessagesContextType['getCachedPathForSha'] = (sha256) => {
+    if (!sha256) return null
+    const fromDownloadCache = contentCacheBySha[sha256]
+    if (fromDownloadCache) return fromDownloadCache
+    // Same content may exist from our own upload (e.g. we sent in Server 1, someone else sent same file in Server 2)
+    const fromShared = sharedAttachments.find((s) => s.sha256 === sha256 && (s.file_path ?? '').length > 0)
+    return fromShared?.file_path ?? null
+  }
+
+  const unshareFromServer: EphemeralMessagesContextType['unshareFromServer'] = (serverSigningPubkey, sha256) => {
+    if (!serverSigningPubkey || !sha256) return
+    setServerSharedSha((prev) => {
+      const list = prev[serverSigningPubkey]
+      if (!list) return prev
+      const next = list.filter((s) => s !== sha256)
+      if (next.length === 0) {
+        const { [serverSigningPubkey]: _, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [serverSigningPubkey]: next }
+    })
   }
 
   const notifyAttachmentReshared: EphemeralMessagesContextType['notifyAttachmentReshared'] = async (
@@ -2121,8 +2263,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       refreshSharedAttachments,
       unshareAttachmentById,
       notifyAttachmentReshared,
+      markSharedInServer,
+      isSharedInServer,
+      getServersForSha,
+      unshareFromServer,
+      getCachedPathForSha,
     }),
-    [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments]
+    [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments, serverSharedSha, contentCacheBySha]
   )
 
   return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>

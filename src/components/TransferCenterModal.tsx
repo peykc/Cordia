@@ -40,15 +40,20 @@ export function TransferCenterModal() {
     [transferHistory]
   )
 
+  const uploadRowsCount = useMemo(() => {
+    const shas = new Set<string>()
+    for (const s of sharedAttachments) shas.add(s.sha256 || s.attachment_id)
+    return shas.size
+  }, [sharedAttachments])
+
   if (!isOpen || !effectiveAnchorRect) return null
 
   const popupWidth = Math.min(isSmall ? 430 : 760, width - 24)
   const rowHeight = 52
   const rowGap = 6
   const maxListEntries = 6
-  const uploadCount = sharedAttachments.length
   const visibleDownloadRows = downloadRowsCount === 0 ? 0 : Math.min(downloadRowsCount, maxListEntries)
-  const visibleUploadRows = uploadCount === 0 ? 0 : Math.min(uploadCount, maxListEntries)
+  const visibleUploadRows = uploadRowsCount === 0 ? 0 : Math.min(uploadRowsCount, maxListEntries)
   const visibleRows = Math.max(visibleDownloadRows, visibleUploadRows, 1)
   const listHeight = visibleRows * rowHeight + (visibleRows - 1) * rowGap
   const headerHeight = 40
