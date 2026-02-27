@@ -16,6 +16,21 @@ const WIDTH_LARGE = 720
 /** Truncation levels when compact layout overflows: 0=none, 1=time above, 2=+PiP above, 3=+speed above */
 type TruncationLevel = 0 | 1 | 2 | 3
 
+const VIDEO_VOLUME_STORAGE_KEY = 'cordia:video-player:volume'
+
+function loadStoredVolume(): { volume: number; muted: boolean } {
+  try {
+    const raw = localStorage.getItem(VIDEO_VOLUME_STORAGE_KEY)
+    if (!raw) return { volume: 1, muted: false }
+    const parsed = JSON.parse(raw) as { volume?: number; muted?: boolean }
+    const volume = typeof parsed.volume === 'number' ? Math.max(0, Math.min(1, parsed.volume)) : 1
+    const muted = !!parsed.muted
+    return { volume, muted }
+  } catch {
+    return { volume: 1, muted: false }
+  }
+}
+
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
   const m = Math.floor(seconds / 60)
@@ -48,8 +63,8 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [volume, setVolume] = useState(1)
-  const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(() => loadStoredVolume().volume)
+  const [muted, setMuted] = useState(() => loadStoredVolume().muted)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
   const [isInPictureInPicture, setIsInPictureInPicture] = useState(false)
@@ -93,25 +108,33 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   }, [])
 
   // When compact: detect overflow and set truncation level. Truncation only when compact layout would collide.
+  // Hysteresis prevents flip-flop at boundary sizes (un-truncate only when we have buffer).
+  const truncationLevelRef = useRef(truncationLevel)
+  truncationLevelRef.current = truncationLevel
+  const OVERFLOW_HYSTERESIS_PX = 24
+
   useLayoutEffect(() => {
     if (!isCompact) {
       setTruncationLevel(0)
       return
     }
-    // When truncated, we measure the hidden full row to know when we can un-truncate.
-    // When not truncated, we measure the visible row to know when we need to truncate.
-    const rowToMeasure = truncationLevel > 0 ? measureRowRef.current : belowBarRowRef.current
+    const rowToMeasure = truncationLevelRef.current > 0 ? measureRowRef.current : belowBarRowRef.current
     if (!rowToMeasure) return
 
     const checkOverflow = () => {
       const scrollW = rowToMeasure.scrollWidth
       const clientW = rowToMeasure.clientWidth
-      if (truncationLevel > 0) {
-        // Measuring hidden full row: if it fits, we can un-truncate
-        if (scrollW <= clientW) setTruncationLevel(0)
+      const current = truncationLevelRef.current
+      let next: TruncationLevel | null = null
+      if (current > 0) {
+        if (scrollW + OVERFLOW_HYSTERESIS_PX <= clientW) next = 0
       } else {
-        // Measuring visible full row: if overflow, apply full truncation
-        if (scrollW > clientW) setTruncationLevel(3)
+        if (scrollW > clientW) next = 3
+      }
+      if (next !== null) {
+        requestAnimationFrame(() => {
+          setTruncationLevel((prev) => (next === 0 && prev > 0 ? 0 : next === 3 && prev < 3 ? 3 : prev))
+        })
       }
     }
 
@@ -210,15 +233,17 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     const onPause = () => {
       setPlaying(false)
       setCurrentTime(v.currentTime)
+      setIsBuffering(false)
     }
+    const onWaiting = () => setIsBuffering(true)
+    const onCanPlay = () => setIsBuffering(false)
+    const onPlaying = () => setIsBuffering(false)
+    const onSeeked = () => setIsBuffering(false)
     const onEnded = () => {
       setPlaying(false)
       setCurrentTime(v.currentTime)
+      setIsBuffering(false)
     }
-    const onWaiting = () => setIsBuffering(true)
-    const onSeeking = () => setIsBuffering(true)
-    const onCanPlay = () => setIsBuffering(false)
-    const onPlaying = () => setIsBuffering(false)
 
     v.addEventListener('loadedmetadata', onLoadedMetadata)
     v.addEventListener('durationchange', onDurationChange)
@@ -227,9 +252,9 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     v.addEventListener('pause', onPause)
     v.addEventListener('ended', onEnded)
     v.addEventListener('waiting', onWaiting)
-    v.addEventListener('seeking', onSeeking)
     v.addEventListener('canplay', onCanPlay)
     v.addEventListener('playing', onPlaying)
+    v.addEventListener('seeked', onSeeked)
 
     return () => {
       v.removeEventListener('loadedmetadata', onLoadedMetadata)
@@ -239,15 +264,23 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
       v.removeEventListener('pause', onPause)
       v.removeEventListener('ended', onEnded)
       v.removeEventListener('waiting', onWaiting)
-      v.removeEventListener('seeking', onSeeking)
       v.removeEventListener('canplay', onCanPlay)
       v.removeEventListener('playing', onPlaying)
+      v.removeEventListener('seeked', onSeeked)
     }
   }, [src, onAspectRatio, autoPlay])
 
   useEffect(() => {
     setIsBuffering(false)
   }, [src])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIDEO_VOLUME_STORAGE_KEY, JSON.stringify({ volume, muted }))
+    } catch {
+      // localStorage may be full or unavailable (e.g. private mode)
+    }
+  }, [volume, muted])
 
   // Smooth progress bar: use requestAnimationFrame while playing instead of timeupdate (which fires ~250ms)
   useEffect(() => {

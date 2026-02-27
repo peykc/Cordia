@@ -4,8 +4,10 @@
  * stays consistent (mixed single, single-attachment block, etc.).
  */
 
-export const CHAT_MEDIA_MAX_W = 320
+export const CHAT_MEDIA_MAX_W = 520
 export const CHAT_MEDIA_MAX_H = 240
+export const CHAT_MEDIA_MIN_W = 120
+export const CHAT_MEDIA_MIN_H = 90
 
 export type Aspect = { w: number; h: number }
 

@@ -177,6 +177,19 @@ fn attachment_index_path(base: &PathBuf) -> PathBuf {
     base.join("index.json")
 }
 
+/// Serializes all attachment index load/modify/save to prevent races when multiple
+/// prepare threads run concurrently and overwrite each other's saves.
+static ATTACHMENT_INDEX_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn with_attachment_index_lock<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let lock = ATTACHMENT_INDEX_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap();
+    f()
+}
+
 fn load_attachment_index(base: &PathBuf) -> AttachmentIndex {
     let path = attachment_index_path(base);
     if !path.exists() {
@@ -427,30 +440,32 @@ fn register_attachment_from_path(
     };
 
     let base = account_attachment_dir(&account_id)?;
-    let mut index = load_attachment_index(&base);
-    let attachment_id = uuid::Uuid::new_v4().to_string();
     let source_path_str = source.to_string_lossy().to_string();
-
-    let record = AttachmentRecord {
-        attachment_id: attachment_id.clone(),
-        sha256: String::new(),
-        file_name: file_name.clone(),
-        extension: extension.clone(),
-        size_bytes,
-        storage_mode: mode.clone(),
-        source_path: if matches!(mode, AttachmentStorageMode::CurrentPath) {
-            Some(source_path_str.clone())
-        } else {
-            None
-        },
-        cached_file_name: None,
-        thumbnail_path: None,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        status: "preparing".to_string(),
-        shared: true,
-    };
-    index.records.insert(attachment_id.clone(), record);
-    save_attachment_index(&base, &index)?;
+    let attachment_id = with_attachment_index_lock(|| -> Result<String, String> {
+        let mut index = load_attachment_index(&base);
+        let attachment_id = uuid::Uuid::new_v4().to_string();
+        let record = AttachmentRecord {
+            attachment_id: attachment_id.clone(),
+            sha256: String::new(),
+            file_name: file_name.clone(),
+            extension: extension.clone(),
+            size_bytes,
+            storage_mode: mode.clone(),
+            source_path: if matches!(mode, AttachmentStorageMode::CurrentPath) {
+                Some(source_path_str.clone())
+            } else {
+                None
+            },
+            cached_file_name: None,
+            thumbnail_path: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            status: "preparing".to_string(),
+            shared: true,
+        };
+        index.records.insert(attachment_id.clone(), record);
+        save_attachment_index(&base, &index)?;
+        Ok(attachment_id)
+    })?;
 
     let app_handle = window.app_handle().clone();
     let attachment_id_clone = attachment_id.clone();
@@ -471,11 +486,13 @@ fn register_attachment_from_path(
         );
         if let Err(ref err) = result {
             if let Ok(base) = account_attachment_dir(&account_id) {
-                let mut index = load_attachment_index(&base);
-                if let Some(rec) = index.records.get_mut(&attachment_id_clone) {
-                    rec.status = "failed".to_string();
-                    let _ = save_attachment_index(&base, &index);
-                }
+                let _ = with_attachment_index_lock(|| {
+                    let mut index = load_attachment_index(&base);
+                    if let Some(rec) = index.records.get_mut(&attachment_id_clone) {
+                        rec.status = "failed".to_string();
+                        let _ = save_attachment_index(&base, &index);
+                    }
+                });
             }
             eprintln!("Attachment prep failed for {}: {}", attachment_id_clone, err);
         }
@@ -580,39 +597,41 @@ fn prepare_attachment_background(
             sha
         }
     };
-    let mut index = load_attachment_index(&base);
-
-    let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
-        Some(existing.clone())
-    } else if matches!(mode, AttachmentStorageMode::ProgramCopy) {
-        let ext_suffix = if extension.is_empty() {
-            "".to_string()
-        } else {
-            format!(".{}", extension)
-        };
-        let file_name_cache = format!("{}{}", sha256, ext_suffix);
-        let target = cache_dir.join(&file_name_cache);
-        if !target.exists() {
-            std::fs::copy(&source, &target)
-                .map_err(|e| format!("Failed to copy attachment to cache: {}", e))?;
-        }
-        index.sha_to_cached_file_name.insert(sha256.clone(), file_name_cache.clone());
-        Some(file_name_cache)
-    } else {
-        None
-    };
-
-    if let Some(rec) = index.records.get_mut(attachment_id) {
-        rec.sha256 = sha256.clone();
-        rec.cached_file_name = cached_file_name.clone();
-        rec.source_path = if matches!(mode, AttachmentStorageMode::CurrentPath) {
-            Some(source_path.to_string())
+    let cached_file_name = with_attachment_index_lock(|| -> Result<Option<String>, String> {
+        let mut index = load_attachment_index(&base);
+        let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
+            Some(existing.clone())
+        } else if matches!(mode, AttachmentStorageMode::ProgramCopy) {
+            let ext_suffix = if extension.is_empty() {
+                "".to_string()
+            } else {
+                format!(".{}", extension)
+            };
+            let file_name_cache = format!("{}{}", sha256, ext_suffix);
+            let target = cache_dir.join(&file_name_cache);
+            if !target.exists() {
+                std::fs::copy(&source, &target)
+                    .map_err(|e| format!("Failed to copy attachment to cache: {}", e))?;
+            }
+            index.sha_to_cached_file_name.insert(sha256.clone(), file_name_cache.clone());
+            Some(file_name_cache)
         } else {
             None
         };
-        rec.status = "ready".to_string();
-    }
-    save_attachment_index(&base, &index)?;
+
+        if let Some(rec) = index.records.get_mut(attachment_id) {
+            rec.sha256 = sha256.clone();
+            rec.cached_file_name = cached_file_name.clone();
+            rec.source_path = if matches!(mode, AttachmentStorageMode::CurrentPath) {
+                Some(source_path.to_string())
+            } else {
+                None
+            };
+            rec.status = "ready".to_string();
+        }
+        save_attachment_index(&base, &index)?;
+        Ok(cached_file_name)
+    })?;
 
     if is_video_ext(extension) || is_image_ext(extension) {
         let extract_from = if let Some(cache_name) = &cached_file_name {
@@ -622,11 +641,13 @@ fn prepare_attachment_background(
         };
         let thumb_path = base.join("thumbs").join(format!("{}.jpg", attachment_id));
         if extract_thumbnail(&extract_from, &thumb_path, extension) {
-            let mut index = load_attachment_index(&base);
-            if let Some(rec) = index.records.get_mut(attachment_id) {
-                rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
-                let _ = save_attachment_index(&base, &index);
-            }
+            with_attachment_index_lock(|| {
+                let mut index = load_attachment_index(&base);
+                if let Some(rec) = index.records.get_mut(attachment_id) {
+                    rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
+                    let _ = save_attachment_index(&base, &index);
+                }
+            });
         }
     }
 
@@ -637,7 +658,7 @@ fn prepare_attachment_background(
 fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegistrationResult>, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let index = load_attachment_index(&base);
+    let index = with_attachment_index_lock(|| load_attachment_index(&base));
     let Some(rec) = index.records.get(&attachment_id) else {
         return Ok(None);
     };
@@ -682,7 +703,7 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
 fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let index = load_attachment_index(&base);
+    let index = with_attachment_index_lock(|| load_attachment_index(&base));
     let rec = index
         .records
         .get(&attachment_id)
@@ -708,7 +729,7 @@ fn read_attachment_chunk(attachment_id: String, offset: u64, length: usize) -> R
     }
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let index = load_attachment_index(&base);
+    let index = with_attachment_index_lock(|| load_attachment_index(&base));
     let rec = index
         .records
         .get(&attachment_id)
@@ -740,7 +761,7 @@ fn read_attachment_chunk(attachment_id: String, offset: u64, length: usize) -> R
 fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let index = load_attachment_index(&base);
+    let index = with_attachment_index_lock(|| load_attachment_index(&base));
     let mut out: Vec<SharedAttachmentItem> = index
         .records
         .values()
@@ -790,63 +811,67 @@ fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
 fn unshare_attachment(attachment_id: String) -> Result<bool, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let mut index = load_attachment_index(&base);
-    let Some(rec) = index.records.get_mut(&attachment_id) else {
-        return Ok(false);
-    };
-    rec.shared = false;
-    save_attachment_index(&base, &index)?;
-    Ok(true)
+    with_attachment_index_lock(|| -> Result<bool, String> {
+        let mut index = load_attachment_index(&base);
+        let Some(rec) = index.records.get_mut(&attachment_id) else {
+            return Ok(false);
+        };
+        rec.shared = false;
+        save_attachment_index(&base, &index)?;
+        Ok(true)
+    })
 }
 
 #[tauri::command]
 fn share_attachment_again(attachment_id: String, new_path: Option<String>) -> Result<bool, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let mut index = load_attachment_index(&base);
-    let Some(rec) = index.records.get_mut(&attachment_id) else {
-        return Ok(false);
-    };
-    if rec.shared {
-        return Ok(true);
-    }
-    let file_exists = if let Some(cache_name) = &rec.cached_file_name {
-        base.join("cache").join(cache_name).exists()
-    } else if let Some(src) = &rec.source_path {
-        PathBuf::from(src).exists()
-    } else {
-        false
-    };
-    if !file_exists {
-        if let Some(ref path) = new_path {
-            let source = PathBuf::from(path.trim());
-            if !source.exists() {
-                return Err("Selected file not found".to_string());
-            }
-            let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file: {}", e))?;
-            if !meta.is_file() {
-                return Err("Selected path is not a file".to_string());
-            }
-            if meta.len() != rec.size_bytes {
-                return Err("File size does not match original; must be the same file".to_string());
-            }
-            if !rec.sha256.is_empty() {
-                if let Ok(actual_sha) = sha256_file_streaming(&source) {
-                    if actual_sha != rec.sha256 {
-                        return Err("File content does not match original; must be the same file".to_string());
+    with_attachment_index_lock(|| -> Result<bool, String> {
+        let mut index = load_attachment_index(&base);
+        let Some(rec) = index.records.get_mut(&attachment_id) else {
+            return Ok(false);
+        };
+        if rec.shared {
+            return Ok(true);
+        }
+        let file_exists = if let Some(cache_name) = &rec.cached_file_name {
+            base.join("cache").join(cache_name).exists()
+        } else if let Some(src) = &rec.source_path {
+            PathBuf::from(src).exists()
+        } else {
+            false
+        };
+        if !file_exists {
+            if let Some(ref path) = new_path {
+                let source = PathBuf::from(path.trim());
+                if !source.exists() {
+                    return Err("Selected file not found".to_string());
+                }
+                let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file: {}", e))?;
+                if !meta.is_file() {
+                    return Err("Selected path is not a file".to_string());
+                }
+                if meta.len() != rec.size_bytes {
+                    return Err("File size does not match original; must be the same file".to_string());
+                }
+                if !rec.sha256.is_empty() {
+                    if let Ok(actual_sha) = sha256_file_streaming(&source) {
+                        if actual_sha != rec.sha256 {
+                            return Err("File content does not match original; must be the same file".to_string());
+                        }
                     }
                 }
+                rec.source_path = Some(source.to_string_lossy().to_string());
+                rec.cached_file_name = None;
+                rec.storage_mode = AttachmentStorageMode::CurrentPath;
+            } else {
+                return Err("File no longer exists at original path".to_string());
             }
-            rec.source_path = Some(source.to_string_lossy().to_string());
-            rec.cached_file_name = None;
-            rec.storage_mode = AttachmentStorageMode::CurrentPath;
-        } else {
-            return Err("File no longer exists at original path".to_string());
         }
-    }
-    rec.shared = true;
-    save_attachment_index(&base, &index)?;
-    Ok(true)
+        rec.shared = true;
+        save_attachment_index(&base, &index)?;
+        Ok(true)
+    })
 }
 
 #[tauri::command]

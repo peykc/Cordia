@@ -220,6 +220,8 @@ export function MediaPreviewModal({ type, url, attachmentId, fileName, onClose }
                 onCanPlay={() => setVideoReady(true)}
                 onAspectRatio={(w, h) => setVideoAspect({ w, h })}
                 showControls={showMediaControls}
+                keepControlsWhenPaused
+                autoPlay
                 className="w-full h-full rounded-none"
               />
             </div>

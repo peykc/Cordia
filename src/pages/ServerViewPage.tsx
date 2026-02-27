@@ -42,6 +42,7 @@ import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
 import {
   CHAT_MEDIA_MAX_W,
   CHAT_MEDIA_MAX_H,
+  CHAT_MEDIA_MIN_W,
   getSingleAttachmentSize,
   getSingleAttachmentAspectRatio,
 } from '../lib/chatMessageLayout'
@@ -211,6 +212,10 @@ function ServerViewPage() {
     size_bytes: number
     storage_mode: 'current_path' | 'program_copy'
     spoiler?: boolean
+    attachment_id?: string
+    ready?: boolean
+    /** SHA compute progress 0–100 while preparing */
+    preparePercent?: number
   }
   const [stagedAttachments, setStagedAttachments] = useState<StagedAttachment[]>([])
   const { setMediaPreview } = useMediaPreview()
@@ -458,11 +463,36 @@ function ServerViewPage() {
   }
 
   useEffect(() => {
+    const unlistenPromise = listen<{ attachment_id: string; ok: boolean; error?: string }>(
+      'cordia:attachment-ready',
+      (event) => {
+        const { attachment_id, ok } = event.payload ?? {}
+        if (attachment_id == null || !ok) return
+        setStagedAttachments((prev) =>
+          prev.some((a) => a.attachment_id === attachment_id)
+            ? prev.map((a) => (a.attachment_id === attachment_id ? { ...a, ready: true } : a))
+            : prev
+        )
+      }
+    )
+    return () => {
+      unlistenPromise.then((fn) => fn()).catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
     const unlistenPromise = listen<{ attachment_id: string; percent: number }>(
       'cordia:attachment-sha-progress',
       (event) => {
         const { attachment_id, percent } = event.payload ?? {}
         if (attachment_id == null || percent == null) return
+        setStagedAttachments((prev) =>
+          prev.some((a) => a.attachment_id === attachment_id)
+            ? prev.map((a) =>
+                a.attachment_id === attachment_id ? { ...a, preparePercent: Math.min(100, percent) } : a
+              )
+            : prev
+        )
         const ref = bundlingProgressRef.current
         if (!ref) return
         ref.progressByAtt[attachment_id] = percent
@@ -480,19 +510,6 @@ function ServerViewPage() {
     }
   }, [updateBundlingProgress])
 
-  const waitForAttachmentReady = (attachmentId: string): Promise<void> =>
-    new Promise((resolve, reject) => {
-      const unlistenRef = { current: null as (() => void) | null }
-      listen<{ attachment_id: string; ok: boolean; error?: string }>('cordia:attachment-ready', (event) => {
-        if (event.payload?.attachment_id !== attachmentId) return
-        unlistenRef.current?.()
-        if (event.payload.ok) resolve()
-        else reject(new Error(event.payload?.error ?? 'Attachment preparation failed'))
-      }).then((fn) => {
-        unlistenRef.current = fn
-      })
-    })
-
   const handleSendMessage = async () => {
     if (!server || !groupChat || !identity || !canSendMessages) return
     const text = messageDraft.trim().slice(0, MESSAGE_MAX_LENGTH)
@@ -503,10 +520,22 @@ function ServerViewPage() {
     const toSend = [...stagedAttachments]
     setStagedAttachments([])
 
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:start',message:'send started',data:{toSendCount:toSend.length,hasText:!!text},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+
     try {
       if (toSend.length > 0) {
+        const allPrepared = toSend.every((a) => a.attachment_id && a.ready)
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:prepared',message:'allPrepared check',data:{allPrepared,toSendCount:toSend.length,timestamp:Date.now(),hypothesisId:'H6'}})}).catch(()=>{});
+        // #endregion
+        if (!allPrepared) {
+          throw new Error('Attachments are still preparing. Please wait.')
+        }
+        const attachmentIds = toSend.map((a) => a.attachment_id!).filter(Boolean)
         const messageId = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-        bundlingProgressRef.current = { messageId, attachmentIds: [], progressByAtt: {} }
+        bundlingProgressRef.current = { messageId, attachmentIds, progressByAtt: {} }
         addBundlingMessage({
           messageId,
           signingPubkey: server.signing_pubkey,
@@ -527,19 +556,10 @@ function ServerViewPage() {
             if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
           })
         })
-        const registered = await Promise.all(
-          toSend.map((att) => registerAttachmentFromPath(att.path, att.storage_mode))
-        )
-        if (bundlingProgressRef.current?.messageId === messageId) {
-          bundlingProgressRef.current.attachmentIds = registered.map((r) => r.attachment_id)
-          const ref = bundlingProgressRef.current
-          const total = ref.attachmentIds.reduce((sum, id) => sum + (ref.progressByAtt[id] ?? 0), 0)
-          if (ref.attachmentIds.length > 0 && total > 0) {
-            updateBundlingProgress(messageId, Math.min(100, Math.round(total / ref.attachmentIds.length)))
-          }
-        }
-        await Promise.all(registered.map((r) => waitForAttachmentReady(r.attachment_id)))
-        const records = await Promise.all(registered.map((r) => getAttachmentRecord(r.attachment_id)))
+        const records = await Promise.all(attachmentIds.map((id) => getAttachmentRecord(id)))
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:records',message:'getAttachmentRecord results',data:{recCount:records.length,allHaveSha:records.every(r=>!!r?.sha256),timestamp:Date.now(),hypothesisId:'H6'}})}).catch(()=>{});
+        // #endregion
         const isMediaFile = (fileName: string) =>
           isMediaType(getFileTypeFromExt(fileName) as Parameters<typeof isMediaType>[0])
         const dimensions = await Promise.all(
@@ -550,6 +570,9 @@ function ServerViewPage() {
             return getMediaDimensions(url, cat === 'video' ? 'video' : 'image')
           })
         )
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:afterDimensions',message:'getMediaDimensions done',data:{dimCount:dimensions.length},timestamp:Date.now(),hypothesisId:'H4b'})}).catch(()=>{});
+        // #endregion
         const allAttachments = records.map((rec, i) => {
           if (!rec?.sha256) throw new Error('Attachment not ready')
           const dim = dimensions[i]
@@ -564,6 +587,9 @@ function ServerViewPage() {
           }
         })
         bundlingProgressRef.current = null
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:beforeSend',message:'calling sendMixedMessage',data:{attCount:allAttachments.length},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+        // #endregion
         await sendMixedMessage({
           serverId: server.id,
           signingPubkey: server.signing_pubkey,
@@ -576,6 +602,9 @@ function ServerViewPage() {
         for (const att of allAttachments) {
           if (att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
         }
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:success',message:'send completed',data:{attCount:allAttachments.length},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+        // #endregion
       } else {
         await sendMessage({
           serverId: server.id,
@@ -593,6 +622,9 @@ function ServerViewPage() {
         })
       })
     } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:catch',message:'send failed, restoring staged',data:{error:String(error),toSendCount:toSend.length},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
       console.warn('Failed to send:', error)
       bundlingProgressRef.current = null
       setMessageDraft(text)
@@ -617,6 +649,10 @@ function ServerViewPage() {
       const storage_mode = copyToCordia ? 'program_copy' : 'current_path'
       for (const p of paths) {
         const meta = await getFileMetadata(p)
+        const result = await registerAttachmentFromPath(p, storage_mode)
+        const attachment_id = result.attachment_id
+        const rec = await getAttachmentRecord(attachment_id)
+        const ready = rec?.status === 'ready'
         setStagedAttachments((prev) => [
           ...prev,
           {
@@ -627,6 +663,8 @@ function ServerViewPage() {
             size_bytes: meta.size_bytes,
             storage_mode,
             spoiler: false,
+            attachment_id,
+            ready: ready ?? false,
           },
         ])
       }
@@ -1249,9 +1287,9 @@ function ServerViewPage() {
                                                       className={cn(
                                                         'group relative rounded-lg overflow-hidden border border-border/50',
                                                         notDownloaded ? 'bg-muted' : 'bg-muted/30',
-                                                        isSingle && 'w-full'
+                                                        isSingle && 'w-full min-w-0'
                                                       )}
-                                                      style={isSingle ? { width: mixedSingleW, height: mixedSingleH, maxWidth: CHAT_MEDIA_MAX_W, maxHeight: CHAT_MEDIA_MAX_H, aspectRatio: mixedSingleRatio } : undefined}
+                                                      style={isSingle ? { width: '100%', minWidth: CHAT_MEDIA_MIN_W, maxWidth: mixedSingleW, aspectRatio: mixedSingleRatio } : undefined}
                                                     >
                                                       {notDownloaded ? (
                                                         <NotDownloadedCardByWidth
@@ -1837,17 +1875,16 @@ function ServerViewPage() {
                                                   // #endregion
                                                   if (isMedia) {
                                                     return (
-                                                      <div className="space-y-1">
+                                                      <div className="space-y-1 w-full min-w-0">
                                                         <div
                                                           className={cn(
-                                                            'relative rounded-lg overflow-hidden border border-border/50',
+                                                            'relative rounded-lg overflow-hidden border border-border/50 w-full min-w-0',
                                                             notDownloaded && 'bg-muted'
                                                           )}
                                                           style={{
-                                                            width: singleW,
-                                                            height: singleH,
-                                                            maxWidth: CHAT_MEDIA_MAX_W,
-                                                            maxHeight: CHAT_MEDIA_MAX_H,
+                                                            width: '100%',
+                                                            minWidth: CHAT_MEDIA_MIN_W,
+                                                            maxWidth: singleW,
                                                             aspectRatio: singleAspectRatio,
                                                           }}
                                                         >
@@ -2389,7 +2426,13 @@ function ServerViewPage() {
                               <div className="min-w-0 flex-1 flex flex-col gap-1">
                                 <FilenameEllipsis name={att.file_name} className="text-xs truncate" />
                                 <div className="flex items-center gap-1">
-                                  <span className="text-[10px] text-muted-foreground">{formatBytes(att.size_bytes)}</span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {att.ready
+                                      ? formatBytes(att.size_bytes)
+                                      : att.preparePercent != null
+                                        ? `Preparing ${att.preparePercent}%`
+                                        : 'Preparing…'}
+                                  </span>
                                 </div>
                                 <div className="flex items-center gap-1 mt-0.5">
                                   <Tooltip content={att.spoiler ? 'Marked as spoiler' : 'Mark as spoiler'} side="top">
@@ -2472,18 +2515,27 @@ function ServerViewPage() {
                         className="w-full min-h-[44px] resize-none overflow-y-hidden [scrollbar-gutter:stable_both-edges] px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
                         disabled={!canSendMessages}
                       />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        className="h-11 px-4 gap-2 shrink-0"
-                        disabled={
-                          !canSendMessages ||
-                          (messageDraft.trim().length === 0 && stagedAttachments.length === 0)
+                      <Tooltip
+                        content={
+                          stagedAttachments.length > 0 && stagedAttachments.some((a) => !a.ready)
+                            ? 'Wait for attachments to finish preparing'
+                            : 'Send'
                         }
                       >
-                        <Send className="h-4 w-4" />
-                        Send
-                      </Button>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="h-11 px-4 gap-2 shrink-0"
+                          disabled={
+                            !canSendMessages ||
+                            (messageDraft.trim().length === 0 && stagedAttachments.length === 0) ||
+                            (stagedAttachments.length > 0 && stagedAttachments.some((a) => !a.ready))
+                          }
+                        >
+                          <Send className="h-4 w-4" />
+                          Send
+                        </Button>
+                      </Tooltip>
                     </div>
                   </form>
                 </div>
