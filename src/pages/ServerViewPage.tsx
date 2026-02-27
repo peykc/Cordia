@@ -6,7 +6,7 @@ import { open, confirm } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { Button } from '../components/ui/button'
-import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, getFileMetadata, registerAttachmentFromPath, getAttachmentRecord, shareAttachmentAgain } from '../lib/tauri'
+import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, getFileMetadata, computeFileSha256, registerAttachmentFromPath, getAttachmentRecord, shareAttachmentAgain } from '../lib/tauri'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { UserCard } from '../components/UserCard'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -19,6 +19,7 @@ import { Slider } from '../components/ui/slider'
 import { Label } from '../components/ui/label'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { useBeacon } from '../contexts/BeaconContext'
+import { useToast } from '../contexts/ToastContext'
 import { TransferCenterButton } from '../components/TransferCenterButton'
 import { NotificationCenterButton } from '../components/NotificationCenterButton'
 import { Tooltip } from '../components/Tooltip'
@@ -156,6 +157,7 @@ function ServerViewPage() {
     getCachedPathForSha,
   } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
+  const { toast } = useToast()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
     if (identity?.user_id === userId) {
@@ -653,7 +655,17 @@ function ServerViewPage() {
         const path = Array.isArray(selected) ? selected?.[0] : selected
         if (!path) return
         const meta = await getFileMetadata(path)
-        if (meta.size_bytes !== att.size_bytes) return
+        if (meta.size_bytes !== att.size_bytes) {
+          toast('File size does not match. Please select the exact same file.')
+          return
+        }
+        if (att.sha256) {
+          const actualSha = await computeFileSha256(path)
+          if (actualSha.toLowerCase() !== att.sha256.toLowerCase()) {
+            toast('File content does not match. Please select the exact same file.')
+            return
+          }
+        }
         await shareAttachmentAgain(att.attachment_id, path)
         await refreshSharedAttachments(att.attachment_id)
         if (server?.signing_pubkey && groupChat?.id) {

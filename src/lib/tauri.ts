@@ -161,6 +161,11 @@ export async function getFileMetadata(path: string): Promise<{ file_name: string
   return await invoke('get_file_metadata', { path })
 }
 
+/** Computes SHA256 of a file (hex-encoded). For integrity verification before re-sharing. */
+export async function computeFileSha256(path: string): Promise<string> {
+  return await invoke('compute_file_sha256', { path })
+}
+
 export async function registerAttachmentFromPath(
   path: string,
   storageMode: 'current_path' | 'program_copy'

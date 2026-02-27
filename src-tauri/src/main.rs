@@ -331,6 +331,20 @@ fn get_file_metadata(path: String) -> Result<FileMetadataResult, String> {
     })
 }
 
+/// Computes SHA256 of a file (hex-encoded). Used for integrity verification before re-sharing.
+#[tauri::command]
+fn compute_file_sha256(path: String) -> Result<String, String> {
+    let source = PathBuf::from(path.trim());
+    if !source.exists() {
+        return Err("File not found".to_string());
+    }
+    let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    if !meta.is_file() {
+        return Err("Path must be a file".to_string());
+    }
+    sha256_file_streaming(&source)
+}
+
 #[tauri::command]
 fn register_attachment_from_path(
     window: tauri::Window,
@@ -2484,6 +2498,7 @@ fn main() {
             decrypt_ephemeral_chat_message,
             decrypt_ephemeral_chat_message_by_signing_pubkey,
             get_file_metadata,
+            compute_file_sha256,
             register_attachment_from_path,
             get_attachment_record,
             read_attachment_bytes,
