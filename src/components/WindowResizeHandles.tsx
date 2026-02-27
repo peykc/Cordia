@@ -5,8 +5,8 @@ import {
   LogicalPosition,
 } from '@tauri-apps/api/window'
 
-const EDGE_SIZE = 4
-const CORNER_SIZE = 8
+const EDGE_SIZE = 16
+const CORNER_SIZE = 24
 const MIN_WIDTH = 375
 const MIN_HEIGHT = 425
 
@@ -114,7 +114,7 @@ export function WindowResizeHandles() {
     []
   )
 
-  const base = 'absolute select-none touch-none z-[100] pointer-events-auto'
+  const base = 'absolute select-none touch-none z-[200] pointer-events-auto'
   const style = { WebkitAppRegion: 'no-drag' as const } as React.CSSProperties
 
   return (

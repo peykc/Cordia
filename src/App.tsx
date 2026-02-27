@@ -17,6 +17,8 @@ import { ActiveServerProvider } from './contexts/ActiveServerContext'
 import { SettingsModalProvider } from './contexts/SettingsModalContext'
 import { TransferCenterModalProvider } from './contexts/TransferCenterModalContext'
 import { NotificationsModalProvider } from './contexts/NotificationsModalContext'
+import { MediaPreviewProvider, useMediaPreview } from './contexts/MediaPreviewContext'
+import { VideoFullscreenProvider, useVideoFullscreen } from './contexts/VideoFullscreenContext'
 import TitleBar from './components/TitleBar'
 import { WindowResizeHandles } from './components/WindowResizeHandles'
 import { ServerSyncBootstrap } from './components/ServerSyncBootstrap'
@@ -24,6 +26,7 @@ import { AppUpdater } from './components/AppUpdater'
 import { SettingsModal } from './components/SettingsModal'
 import { TransferCenterModal } from './components/TransferCenterModal'
 import { NotificationsModal } from './components/NotificationsModal'
+import { MediaPreviewModal } from './components/MediaPreviewModal'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
 import AccountSetupPage from './pages/AccountSetupPage'
@@ -63,6 +66,83 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function MediaPreviewRoot() {
+  const { mediaPreview, setMediaPreview } = useMediaPreview()
+  if (!mediaPreview) return null
+  return (
+    <MediaPreviewModal
+      type={mediaPreview.type}
+      url={mediaPreview.url}
+      attachmentId={mediaPreview.attachmentId}
+      fileName={mediaPreview.fileName}
+      onClose={() => {
+        if (mediaPreview.url?.startsWith('blob:')) URL.revokeObjectURL(mediaPreview.url)
+        setMediaPreview(null)
+      }}
+    />
+  )
+}
+
+function AppLayout() {
+  const { isNativeVideoFullscreen } = useVideoFullscreen()
+  return (
+    <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20 relative">
+      {!isNativeVideoFullscreen && <WindowResizeHandles />}
+      <AppUpdater />
+      <TitleBar />
+      <div className="relative z-40" aria-hidden>
+        <MediaPreviewRoot />
+      </div>
+      <div className="flex-1 overflow-auto min-h-0 relative z-0">
+        <Routes>
+          <Route path="/" element={<SplashPage />} />
+          <Route path="/account/select" element={<AccountSelectPage />} />
+          <Route path="/account/setup" element={<AccountSetupPage />} />
+          <Route path="/account/restore" element={<AccountRestorePage />} />
+          {/* Redirect old identity URLs to account URLs */}
+          <Route path="/identity/setup" element={<Navigate to="/account/setup" replace />} />
+          <Route path="/identity/restore" element={<Navigate to="/account/restore" replace />} />
+          <Route
+            path="/home"
+            element={
+              <ProtectedRoute>
+                <ServerListPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/home/:serverId"
+            element={
+              <ProtectedRoute>
+                <ServerViewPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <SettingsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/transfers"
+            element={
+              <ProtectedRoute>
+                <TransfersPage />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </div>
+      <SettingsModal />
+      <TransferCenterModal />
+      <NotificationsModal />
+    </div>
+  )
+}
+
 function App() {
   return (
     <IdentityProvider>
@@ -83,60 +163,14 @@ function App() {
                               <SettingsModalProvider>
                                 <TransferCenterModalProvider>
                                 <NotificationsModalProvider>
+                                <MediaPreviewProvider>
+                                <VideoFullscreenProvider>
                                 <ServerSyncBootstrap />
                                 <Router>
-                    <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20 relative">
-                      <WindowResizeHandles />
-                      <AppUpdater />
-                      <TitleBar />
-                      <div className="flex-1 overflow-auto min-h-0">
-                        <Routes>
-                          <Route path="/" element={<SplashPage />} />
-                          <Route path="/account/select" element={<AccountSelectPage />} />
-                          <Route path="/account/setup" element={<AccountSetupPage />} />
-                          <Route path="/account/restore" element={<AccountRestorePage />} />
-                          {/* Redirect old identity URLs to account URLs */}
-                          <Route path="/identity/setup" element={<Navigate to="/account/setup" replace />} />
-                          <Route path="/identity/restore" element={<Navigate to="/account/restore" replace />} />
-                          <Route
-                            path="/home"
-                            element={
-                              <ProtectedRoute>
-                                <ServerListPage />
-                              </ProtectedRoute>
-                            }
-                          />
-                          <Route
-                            path="/home/:serverId"
-                            element={
-                              <ProtectedRoute>
-                                <ServerViewPage />
-                              </ProtectedRoute>
-                            }
-                          />
-                          <Route
-                            path="/settings"
-                            element={
-                              <ProtectedRoute>
-                                <SettingsPage />
-                              </ProtectedRoute>
-                            }
-                          />
-                          <Route
-                            path="/transfers"
-                            element={
-                              <ProtectedRoute>
-                                <TransfersPage />
-                              </ProtectedRoute>
-                            }
-                          />
-                        </Routes>
-                      </div>
-                      <SettingsModal />
-                      <TransferCenterModal />
-                      <NotificationsModal />
-                    </div>
+                                  <AppLayout />
                                 </Router>
+                                </VideoFullscreenProvider>
+                                </MediaPreviewProvider>
                                 </NotificationsModalProvider>
                                 </TransferCenterModalProvider>
                               </SettingsModalProvider>

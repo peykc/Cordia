@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { FolderOpen, Trash2, X, MoreHorizontal } from 'lucide-react'
 import { FileIcon } from './FileIcon'
-import { MediaPreviewModal } from './MediaPreviewModal'
+import { useMediaPreview } from '../contexts/MediaPreviewContext'
 import { Button } from './ui/button'
 import { FilenameEllipsis } from './FilenameEllipsis'
 import { formatBytes } from '../lib/bytes'
@@ -41,17 +41,17 @@ export function TransferCenterPanel() {
     cancelTransferRequest,
     unshareAttachmentById,
   } = useEphemeralMessages()
-  const [mediaPreview, setMediaPreview] = useState<{
-    type: 'image' | 'video'
-    url: string | null
-    attachmentId?: string
-    fileName?: string
-  } | null>(null)
+  const { setMediaPreview } = useMediaPreview()
 
   const downloadRows = useMemo(
     () =>
       transferHistory
-        .filter((h) => h.direction === 'download')
+        .filter(
+          (h) =>
+            h.direction === 'download' &&
+            h.status !== 'rejected' &&
+            h.status !== 'failed'
+        )
         .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
     [transferHistory]
   )
@@ -86,20 +86,7 @@ export function TransferCenterPanel() {
   const uploadMoreCount = sharedAttachments.length > MAX_LIST_ENTRIES ? sharedAttachments.length - (MAX_LIST_ENTRIES - 1) : 0
 
   return (
-    <>
-      {mediaPreview && (
-        <MediaPreviewModal
-          type={mediaPreview.type}
-          url={mediaPreview.url}
-          attachmentId={mediaPreview.attachmentId}
-          fileName={mediaPreview.fileName}
-          onClose={() => {
-            if (mediaPreview.url?.startsWith('blob:')) URL.revokeObjectURL(mediaPreview.url)
-            setMediaPreview(null)
-          }}
-        />
-      )}
-      <div className="flex min-h-0">
+    <div className="flex min-h-0">
         <section className="flex-1 min-w-0 flex flex-col pr-2 shrink-0">
           <div className="px-1 pb-1">
             <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Downloads</h2>
@@ -175,7 +162,6 @@ export function TransferCenterPanel() {
                           size="icon"
                           className="h-6 w-6 text-amber-300 hover:text-amber-200"
                           onClick={() => cancelTransferRequest(row.request_id)}
-                          title="Cancel and remove transfer"
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -187,7 +173,6 @@ export function TransferCenterPanel() {
                           size="icon"
                           className="h-6 w-6 text-red-300 hover:text-red-200"
                           onClick={() => removeTransferHistoryEntry(row.request_id)}
-                          title={inaccessible ? 'Remove inaccessible entry' : 'Remove rejected entry'}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -269,7 +254,6 @@ export function TransferCenterPanel() {
                         size="icon"
                         className="h-6 w-6 text-red-300 hover:text-red-200"
                         onClick={() => unshareAttachmentById(item.attachment_id)}
-                        title="Remove from sharing"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -291,6 +275,5 @@ export function TransferCenterPanel() {
           </div>
         </section>
       </div>
-    </>
   )
 }

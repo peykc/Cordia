@@ -1,10 +1,13 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, type RefObject } from 'react'
 import { UserPlus, UserMinus, Clock } from 'lucide-react'
 import { Button } from './ui/button'
+import { Tooltip } from './Tooltip'
+import { useWindowSize } from '../lib/useWindowSize'
 
 export function UserProfileCard({
   open,
   anchorRect,
+  anchorRef,
   onClose,
   avatarDataUrl,
   fallbackColorStyle,
@@ -20,6 +23,8 @@ export function UserProfileCard({
 }: {
   open: boolean
   anchorRect: DOMRect | null
+  /** When set, position is read from this element so the card follows the button (e.g. on resize). */
+  anchorRef?: RefObject<HTMLElement | null>
   onClose: () => void
   avatarDataUrl: string | null
   fallbackColorStyle?: React.CSSProperties
@@ -34,6 +39,11 @@ export function UserProfileCard({
   onSendFriendRequest?: () => void
   onRemoveFriend?: () => void
 }) {
+  const { width, height } = useWindowSize()
+  const effectiveAnchorRect = open
+    ? (anchorRef?.current?.getBoundingClientRect() ?? anchorRect)
+    : null
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -44,16 +54,16 @@ export function UserProfileCard({
   }, [open, onClose])
 
   const pos = useMemo(() => {
-    if (!open || !anchorRect) return null
+    if (!open || !effectiveAnchorRect) return null
     const cardW = 180
     const margin = 10
     const left = Math.min(
-      Math.max(anchorRect.left + anchorRect.width / 2 - cardW / 2, margin),
-      window.innerWidth - cardW - margin
+      Math.max(effectiveAnchorRect.left + effectiveAnchorRect.width / 2 - cardW / 2, margin),
+      width - cardW - margin
     )
-    const top = Math.min(anchorRect.bottom + 10, window.innerHeight - 260 - margin)
+    const top = Math.min(effectiveAnchorRect.bottom + 10, height - 260 - margin)
     return { left, top, width: cardW }
-  }, [open, anchorRect])
+  }, [open, effectiveAnchorRect, width, height])
 
   const createdLabel = accountCreatedAt
     ? (() => {
@@ -117,41 +127,44 @@ export function UserProfileCard({
             {showFriendAction && (
               <div className="absolute right-0 bottom-0">
                 {isFriend && onRemoveFriend ? (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
-                    title="Remove from friends"
-                    onClick={() => {
-                      onRemoveFriend()
-                      onClose()
-                    }}
-                  >
-                    <UserMinus className="h-4 w-4" />
-                  </Button>
+                  <Tooltip content="Remove from friends" side="top">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
+                      onClick={() => {
+                        onRemoveFriend()
+                        onClose()
+                      }}
+                    >
+                      <UserMinus className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
                 ) : isPendingOutgoing ? (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
-                    title="Pending"
-                    disabled
-                  >
-                    <Clock className="h-4 w-4" />
-                  </Button>
+                  <Tooltip content="Pending" side="top">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 shrink-0 rounded-none font-light text-muted-foreground"
+                      disabled
+                    >
+                      <Clock className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
                 ) : onSendFriendRequest ? (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 rounded-none font-light"
-                    title="Send friend request"
-                    onClick={() => {
-                      onSendFriendRequest()
-                      onClose()
-                    }}
-                  >
-                    <UserPlus className="h-4 w-4" />
-                  </Button>
+                  <Tooltip content="Send friend request" side="top">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 shrink-0 rounded-none font-light"
+                      onClick={() => {
+                        onSendFriendRequest()
+                        onClose()
+                      }}
+                    >
+                      <UserPlus className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
                 ) : null}
               </div>
             )}

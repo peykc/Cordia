@@ -227,7 +227,7 @@ export function FriendsOverlay({ isOpen, onClose, onOpenProfile, getServerById }
         onMouseDown={(e) => e.stopPropagation()}
       >
         <header className="h-14 shrink-0 border-b-2 border-border px-4 flex items-center">
-          <Button variant="ghost" size="icon" className="h-8 w-8 mr-2" title="Close" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="h-8 w-8 mr-2" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
           <div className="w-px h-6 bg-foreground/20 mr-3" />

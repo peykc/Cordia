@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { ArrowUpDown } from 'lucide-react'
 import { Button } from './ui/button'
+import { Tooltip } from './Tooltip'
 import { useTransferCenterModal } from '../contexts/TransferCenterModalContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 
@@ -23,13 +24,13 @@ export function TransferCenterButton() {
       : 0
 
   return (
+    <Tooltip content="Open transfer center" side="bottom">
 <Button
     ref={anchorRef as React.Ref<HTMLButtonElement>}
     type="button"
     variant="ghost"
     size="icon"
     className="h-8 w-8 relative overflow-hidden rounded-none"
-    title="Open transfer center"
     onClick={(e) => {
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
         openTransferCenter(rect)
@@ -49,6 +50,7 @@ export function TransferCenterButton() {
         </span>
       )}
     </Button>
+    </Tooltip>
   )
 }
 

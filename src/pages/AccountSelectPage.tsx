@@ -4,6 +4,7 @@ import { useAccount } from '../contexts/AccountContext'
 import type { CSSProperties } from 'react'
 import { Plus, X, Download, Loader2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
+import { Tooltip } from '../components/Tooltip'
 import { deleteAccount, exportFullIdentityForAccount } from '../lib/tauri'
 import { useToast } from '../contexts/ToastContext'
 
@@ -204,14 +205,15 @@ function AccountSelectPage() {
                     <span className="text-lg font-semibold">{initialsFor(displayName)}</span>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteClick(accountId, e)}
-                    className="absolute top-1 right-1 h-5 w-5 rounded-none bg-destructive/90 hover:bg-destructive text-white opacity-0 group-hover/account:opacity-100 transition-opacity duration-200 flex items-center justify-center"
-                    title="Delete account"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  <Tooltip content="Delete account" side="bottom">
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteClick(accountId, e)}
+                      className="absolute top-1 right-1 h-5 w-5 rounded-none bg-destructive/90 hover:bg-destructive text-white opacity-0 group-hover/account:opacity-100 transition-opacity duration-200 flex items-center justify-center"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Tooltip>
 
                   <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 pointer-events-none z-20">
                     <div className="bg-popover border-2 border-border rounded-none shadow-lg p-3 space-y-1 text-xs text-muted-foreground whitespace-nowrap">

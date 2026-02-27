@@ -180,6 +180,16 @@ export async function unshareAttachment(attachmentId: string): Promise<boolean> 
   return await invoke('unshare_attachment', { attachmentId })
 }
 
+export async function shareAttachmentAgain(
+  attachmentId: string,
+  newPath?: string | null
+): Promise<boolean> {
+  return await invoke('share_attachment_again', {
+    attachmentId,
+    newPath: newPath ?? null,
+  })
+}
+
 export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Array> {
   const data = await invoke<number[]>('read_attachment_bytes', { attachmentId })
   return new Uint8Array(data)

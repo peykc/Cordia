@@ -165,7 +165,6 @@ export function NotificationsModal() {
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                title="Back"
                 onClick={() => setView('list')}
               >
                 <ChevronLeft className="h-4 w-4" />
@@ -182,7 +181,6 @@ export function NotificationsModal() {
             variant="ghost"
             size="icon"
             className="h-7 w-7 ml-auto"
-            title="Close"
             onClick={closeNotifications}
           >
             <X className="h-3.5 w-3.5" />
@@ -260,7 +258,6 @@ export function NotificationsModal() {
                             size="sm"
                             className="h-7 px-1.5 text-muted-foreground hover:text-destructive shrink-0"
                             onClick={() => cancelPendingTo(userId)}
-                            title="Cancel"
                           >
                             <XCircle className="h-3 w-3" />
                           </Button>
@@ -300,7 +297,6 @@ export function NotificationsModal() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-green-600"
-                          title="Accept"
                           onClick={async () => {
                             remoteProfiles.applyUpdate({
                               user_id: entry.userId,
@@ -321,7 +317,6 @@ export function NotificationsModal() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-destructive"
-                          title="Decline"
                           onClick={async () => {
                             if (entry.fromRequest) await declineFriendRequest(entry.userId).catch(() => {})
                             if (entry.fromRedemption) await declineCodeRedemption(entry.userId).catch(() => {})

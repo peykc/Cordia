@@ -5,7 +5,7 @@ import {
   FileBox,
   FileType,
   Folder,
-  FolderArchive,
+  FileArchive,
   FileImage,
   FileVideo,
   File,
@@ -33,7 +33,7 @@ type Props = {
   boxSize?: number
 }
 
-function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?: string }) {
+export function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?: string }) {
   const common = { className, size: ICON_SIZE }
   switch (cat) {
     case 'music':
@@ -45,7 +45,7 @@ function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?
     case 'text':
       return <FileType {...common} />
     case 'archive':
-      return <FolderArchive {...common} />
+      return <FileArchive {...common} />
     case 'folder':
       return <Folder {...common} />
     case 'image':
@@ -158,7 +158,6 @@ export function FileIcon({
         className={`${boxCls} cursor-pointer hover:opacity-90 transition-opacity`}
         style={{ width: boxSize, height: boxSize }}
         onClick={() => onMediaClick?.(fullImageUrl, 'image', undefined, fileName)}
-        title="Click to expand"
       >
         <img
           src={mediaUrl}
@@ -187,7 +186,6 @@ export function FileIcon({
             onMediaClick?.(null, 'video', attachmentId, fileName)
           }
         }}
-        title="Click to play"
       >
         {hasThumbnail ? (
           <>

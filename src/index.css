@@ -172,6 +172,18 @@
       transform: translate(-50%, 1rem);
     }
   }
+
+  .animate-shimmer {
+    animation: shimmer 1.8s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
 }
 
 /* Ensure window can be resized from all edges */

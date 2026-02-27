@@ -7,7 +7,6 @@ import { useBeacon } from '../contexts/BeaconContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { fetchAndImportServerHintOpaque, listServers, listFriends } from '../lib/tauri'
-import { requestMicrophonePermission } from '../lib/audio'
 
 const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug ingest removed */ }
 
@@ -26,7 +25,6 @@ export function ServerSyncBootstrap() {
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const ranForSessionRef = useRef<string | null>(null)
-  const micPermissionRequestedRef = useRef(false)
   const isSyncingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttemptRef = useRef(0)
@@ -41,13 +39,6 @@ export function ServerSyncBootstrap() {
   const pendingOutboundRef = useRef<string[]>([])
   const profilePushRef = useRef({ profile, identity, accountInfoMap, currentAccountId })
   profilePushRef.current = { profile, identity, accountInfoMap, currentAccountId }
-
-  // Request microphone permission once when user is logged in so the prompt appears in one place
-  useEffect(() => {
-    if (!currentAccountId || micPermissionRequestedRef.current) return
-    micPermissionRequestedRef.current = true
-    requestMicrophonePermission()
-  }, [currentAccountId])
 
   useEffect(() => {
     // Only run when logged in + beacon URL exists

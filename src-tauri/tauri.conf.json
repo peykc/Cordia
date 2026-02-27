@@ -2,7 +2,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:1420",
+    "devPath": "http://localhost:1422",
     "distDir": "../dist",
     "withGlobalTauri": false
   },
@@ -32,7 +32,9 @@
         "minimize": true,
         "unmaximize": true,
         "unminimize": true,
-        "startDragging": true
+        "startDragging": true,
+        "setFullscreen": true,
+        "setResizable": true
       },
       "protocol": {
         "asset": true,

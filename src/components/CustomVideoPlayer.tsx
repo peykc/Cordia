@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize2, Gauge } from 'lucide-react'
+import { Play, Pause, Volume2, VolumeX, Maximize, Minimize2, ChevronUp, ChevronDown, PictureInPicture } from 'lucide-react'
+import { getCurrent } from '@tauri-apps/api/window'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
+import { useVideoFullscreen } from '../contexts/VideoFullscreenContext'
 
-const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+const PLAYBACK_SPEED_MIN = 0.25
+const PLAYBACK_SPEED_MAX = 2
+const PLAYBACK_SPEED_STEP = 0.25
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -20,10 +24,18 @@ type Props = {
   onAspectRatio?: (videoWidth: number, videoHeight: number) => void
   /** When false, controls are hidden (e.g. when not hovering) */
   showControls?: boolean
+  /** When true (e.g. in-chat player), keep controls visible while video is paused */
+  keepControlsWhenPaused?: boolean
+  /** Start playing as soon as the video can play (e.g. for inline chat playback) */
+  autoPlay?: boolean
+  /** When going fullscreen, pass so we can scroll this element back into view on exit. */
+  getScrollTarget?: () => HTMLElement | null
 }
 
-export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, showControls = false }: Props) {
+export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, showControls = false, keepControlsWhenPaused = false, autoPlay = false, getScrollTarget }: Props) {
+  const { setNativeVideoFullscreen } = useVideoFullscreen()
   const videoRef = useRef<HTMLVideoElement>(null)
+  const hasAutoPlayedRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
   const [playing, setPlaying] = useState(false)
@@ -33,21 +45,93 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   const [muted, setMuted] = useState(false)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const [isInPictureInPicture, setIsInPictureInPicture] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  /** When true, fullscreen is OS-level (Tauri window); container uses fixed inset-0 to fill the window. */
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false)
   const [isDraggingProgress, setIsDraggingProgress] = useState(false)
-  const [isHoveringProgress, setIsHoveringProgress] = useState(false)
   const volumeSliderRef = useRef<HTMLDivElement>(null)
   const [isDraggingVolume, setIsDraggingVolume] = useState(false)
-  const [isHoveringVolume, setIsHoveringVolume] = useState(false)
+  const speedMenuContainerRef = useRef<HTMLDivElement>(null)
 
   const video = videoRef.current
   const volumePct = muted ? 0 : volume
 
   useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement)
+    const handler = () => {
+      if (!isNativeFullscreen) setIsFullscreen(!!document.fullscreenElement)
+    }
     document.addEventListener('fullscreenchange', handler)
     return () => document.removeEventListener('fullscreenchange', handler)
-  }, [])
+  }, [isNativeFullscreen])
+
+  // Sync state when user exits OS-level fullscreen (e.g. Escape key or window event)
+  useEffect(() => {
+    if (!isNativeFullscreen) return
+    let unlisten: (() => void) | undefined
+    getCurrent()
+      .listen('tauri://fullscreen', () => {
+        const appWindow = getCurrent()
+        appWindow
+          .isFullscreen()
+          .then((full) => {
+            if (!full) {
+              appWindow.setResizable(true).catch(() => {})
+              setIsFullscreen(false)
+              setIsNativeFullscreen(false)
+              setNativeVideoFullscreen(false)
+            }
+          })
+          .catch(() => {})
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
+      .catch(() => {})
+    return () => {
+      unlisten?.()
+    }
+  }, [isNativeFullscreen, setNativeVideoFullscreen])
+
+  // Escape key exits fullscreen
+  useEffect(() => {
+    if (!isNativeFullscreen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const appWindow = getCurrent()
+        appWindow
+          .setFullscreen(false)
+          .then(() => appWindow.setResizable(true))
+          .then(() => {
+            setIsFullscreen(false)
+            setIsNativeFullscreen(false)
+            setNativeVideoFullscreen(false)
+          })
+          .catch(() => {
+            appWindow.setResizable(true).catch(() => {})
+          })
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isNativeFullscreen, setNativeVideoFullscreen])
+
+  // When speed menu is open: close on scroll (so chat can scroll) and close on click outside
+  useEffect(() => {
+    if (!showSpeedMenu) return
+    const closeMenu = () => setShowSpeedMenu(false)
+    const onWheel = () => { closeMenu() }
+    const onMouseDown = (e: MouseEvent) => {
+      const el = speedMenuContainerRef.current
+      if (el && !el.contains(e.target as Node)) closeMenu()
+    }
+    document.addEventListener('wheel', onWheel, { passive: true })
+    document.addEventListener('mousedown', onMouseDown, true)
+    return () => {
+      document.removeEventListener('wheel', onWheel)
+      document.removeEventListener('mousedown', onMouseDown, true)
+    }
+  }, [showSpeedMenu])
 
   useEffect(() => {
     const v = videoRef.current
@@ -57,6 +141,12 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
       setDuration(v.duration)
       if (v.videoWidth > 0 && v.videoHeight > 0) {
         onAspectRatio?.(v.videoWidth, v.videoHeight)
+      }
+    }
+    const onCanPlayThrough = () => {
+      if (autoPlay && !hasAutoPlayedRef.current) {
+        hasAutoPlayedRef.current = true
+        v.play().catch(() => {})
       }
     }
     const onDurationChange = () => setDuration(v.duration)
@@ -72,6 +162,7 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
 
     v.addEventListener('loadedmetadata', onLoadedMetadata)
     v.addEventListener('durationchange', onDurationChange)
+    v.addEventListener('canplaythrough', onCanPlayThrough)
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
     v.addEventListener('ended', onEnded)
@@ -79,11 +170,12 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     return () => {
       v.removeEventListener('loadedmetadata', onLoadedMetadata)
       v.removeEventListener('durationchange', onDurationChange)
+      v.removeEventListener('canplaythrough', onCanPlayThrough)
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
       v.removeEventListener('ended', onEnded)
     }
-  }, [src, onAspectRatio])
+  }, [src, onAspectRatio, autoPlay])
 
   // Smooth progress bar: use requestAnimationFrame while playing instead of timeupdate (which fires ~250ms)
   useEffect(() => {
@@ -108,6 +200,33 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     if (!video) return
     video.volume = muted ? 0 : volume
   }, [video, volume, muted])
+
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const onEnter = () => setIsInPictureInPicture(true)
+    const onLeave = () => setIsInPictureInPicture(false)
+    v.addEventListener('enterpictureinpicture', onEnter)
+    v.addEventListener('leavepictureinpicture', onLeave)
+    return () => {
+      v.removeEventListener('enterpictureinpicture', onEnter)
+      v.removeEventListener('leavepictureinpicture', onLeave)
+    }
+  }, [])
+
+  const togglePictureInPicture = async () => {
+    const v = videoRef.current
+    if (!v) return
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture()
+      } else {
+        await v.requestPictureInPicture()
+      }
+    } catch {
+      // PiP not supported or user denied
+    }
+  }
 
   const togglePlay = () => {
     if (!video) return
@@ -219,47 +338,74 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   const toggleFullscreen = async () => {
     const el = containerRef.current
     if (!el) return
-    if (document.fullscreenElement) {
-      await document.exitFullscreen()
+    if (isFullscreen) {
+      if (isNativeFullscreen) {
+        try {
+          const appWindow = getCurrent()
+          await appWindow.setFullscreen(false)
+          await appWindow.setResizable(true)
+          setIsFullscreen(false)
+          setIsNativeFullscreen(false)
+          setNativeVideoFullscreen(false)
+        } catch {
+          getCurrent().setResizable(true).catch(() => {})
+          setIsFullscreen(false)
+          setIsNativeFullscreen(false)
+          setNativeVideoFullscreen(false)
+        }
+      } else {
+        await document.exitFullscreen()
+        setIsFullscreen(false)
+      }
     } else {
-      await el.requestFullscreen()
+      try {
+        const appWindow = getCurrent()
+        await appWindow.setFullscreen(true)
+        await appWindow.setResizable(false)
+        setIsFullscreen(true)
+        setIsNativeFullscreen(true)
+        setNativeVideoFullscreen(true, getScrollTarget)
+      } catch {
+        await el.requestFullscreen()
+      }
     }
   }
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0
 
-  return (
-    <div
-      ref={containerRef}
-      className={cn('relative flex flex-col bg-black overflow-hidden', className)}
-    >
-      <div className="flex-1 min-h-0 flex items-center justify-center">
+  const fullscreenOverlay = isFullscreen && isNativeFullscreen
+
+  const inner = (
+    <>
+      <div className={cn('flex-1 min-h-0 flex items-center justify-center', fullscreenOverlay && 'w-full h-full')}>
         <video
           ref={videoRef}
           src={src}
-          autoPlay
+          autoPlay={autoPlay}
           playsInline
           onClick={togglePlay}
           onCanPlay={onCanPlay}
-          className="max-w-full max-h-full object-cover"
+          className={cn(
+            fullscreenOverlay
+              ? 'w-full h-full min-w-0 min-h-0 object-contain'
+              : 'max-w-full max-h-full object-cover'
+          )}
         />
       </div>
 
-      {/* Controls bar - visible on hover, hide when idle or unhover */}
+      {/* Controls bar - visible on hover, or always when paused if keepControlsWhenPaused */}
       <div
         className={cn(
           'absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent pt-8 pb-2 px-3 transition-opacity duration-200',
-          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          (showControls || (keepControlsWhenPaused && !playing)) ? 'opacity-100' : 'opacity-0 pointer-events-none'
         )}
       >
-        {/* Progress bar - hard corners, thumb on hover/drag. py-px expands hit area 1px above/below without changing bar height. */}
+        {/* Progress bar - hard corners, thumb visible whenever controls are shown. py-px expands hit area 1px above/below without changing bar height. */}
         <div
           ref={progressBarRef}
           className="relative py-px -my-px cursor-pointer mb-2"
           onClick={handleProgressClick}
           onMouseDown={handleProgressMouseDown}
-          onMouseEnter={() => setIsHoveringProgress(true)}
-          onMouseLeave={() => setIsHoveringProgress(false)}
         >
           <div className="h-1.5 bg-white/30 rounded-none">
             <div
@@ -267,12 +413,10 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
               style={{ width: `${progressPct}%` }}
             />
           </div>
-          {(isHoveringProgress || isDraggingProgress) && (
-            <div
-              className="absolute top-1/2 w-2.5 h-2.5 bg-white rounded-none -translate-y-1/2 pointer-events-none"
-              style={{ left: `${progressPct}%`, transform: 'translate(-50%, -50%)' }}
-            />
-          )}
+          <div
+            className="absolute top-1/2 w-2.5 h-2.5 bg-white rounded-none -translate-y-1/2 pointer-events-none"
+            style={{ left: `${progressPct}%`, transform: 'translate(-50%, -50%)' }}
+          />
         </div>
 
         <div className="flex items-center gap-2 text-white text-xs">
@@ -296,7 +440,6 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
               size="icon"
               className="h-8 w-8 text-white hover:bg-white/20 shrink-0"
               onClick={toggleMute}
-              title={muted ? 'Unmute' : 'Mute'}
             >
               {muted ? (
                 <VolumeX className="h-4 w-4" />
@@ -309,8 +452,6 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
               className="relative py-px -my-px cursor-pointer"
               onClick={handleVolumeClick}
               onMouseDown={handleVolumeMouseDown}
-              onMouseEnter={() => setIsHoveringVolume(true)}
-              onMouseLeave={() => setIsHoveringVolume(false)}
             >
               <div className="relative h-1 w-16 bg-white/30 rounded-none">
                 <div
@@ -318,65 +459,91 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
                   style={{ width: `${volumePct * 100}%` }}
                 />
               </div>
-              {(isHoveringVolume || isDraggingVolume) && (
-                <div
-                  className="absolute top-1/2 w-2.5 h-2.5 bg-white rounded-none -translate-y-1/2 pointer-events-none"
-                  style={{ left: `${volumePct * 100}%`, transform: 'translate(-50%, -50%)' }}
-                />
-              )}
+              <div
+                className="absolute top-1/2 w-2.5 h-2.5 bg-white rounded-none -translate-y-1/2 pointer-events-none"
+                style={{ left: `${volumePct * 100}%`, transform: 'translate(-50%, -50%)' }}
+              />
             </div>
           </div>
 
-          {/* Playback speed */}
-          <div className="relative ml-auto">
+          {/* Playback speed: button opens popup with +/- 0.25x controls */}
+          <div ref={speedMenuContainerRef} className="relative ml-auto shrink-0">
             <Button
               variant="ghost"
               size="sm"
               className="h-8 px-2 text-white hover:bg-white/20 shrink-0 gap-1"
               onClick={() => setShowSpeedMenu((s) => !s)}
-              title="Playback speed"
             >
-              <Gauge className="h-4 w-4" />
-              <span>{playbackRate}x</span>
+              <span className="tabular-nums">{playbackRate % 1 === 0 ? `${playbackRate}x` : playbackRate.toFixed(2) + 'x'}</span>
             </Button>
             {showSpeedMenu && (
               <>
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={() => setShowSpeedMenu(false)}
-                />
-                <div className="absolute bottom-full right-0 mb-1 py-1 bg-black/90 border border-white/20 rounded z-20 min-w-[5rem]">
-                  {SPEED_OPTIONS.map((s) => (
-                    <button
-                      key={s}
-                      className={cn(
-                        'w-full px-3 py-1.5 text-left text-xs hover:bg-white/20',
-                        playbackRate === s && 'bg-white/20'
-                      )}
-                      onClick={() => {
-                        setPlaybackRate(s)
-                        setShowSpeedMenu(false)
-                      }}
-                    >
-                      {s}x
-                    </button>
-                  ))}
+                <div className="fixed inset-0 z-10 pointer-events-none" aria-hidden />
+                <div className="absolute bottom-full right-0 mb-1 py-1.5 px-2 bg-black/90 border border-white/20 rounded z-20 flex flex-col items-center gap-0">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-white hover:bg-white/20 shrink-0 rounded"
+                    onClick={() => setPlaybackRate((r) => Math.min(PLAYBACK_SPEED_MAX, Math.round(r / PLAYBACK_SPEED_STEP) * PLAYBACK_SPEED_STEP + PLAYBACK_SPEED_STEP))}
+                    aria-label="Increase speed"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </Button>
+                  <span className="text-xs text-white tabular-nums py-0.5">
+                    {playbackRate % 1 === 0 ? `${playbackRate}x` : playbackRate.toFixed(2) + 'x'}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-white hover:bg-white/20 shrink-0 rounded"
+                    onClick={() => setPlaybackRate((r) => Math.max(PLAYBACK_SPEED_MIN, Math.round(r / PLAYBACK_SPEED_STEP) * PLAYBACK_SPEED_STEP - PLAYBACK_SPEED_STEP))}
+                    aria-label="Decrease speed"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
                 </div>
               </>
             )}
           </div>
+
+          {typeof document !== 'undefined' && document.pictureInPictureEnabled && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-white hover:bg-white/20 shrink-0"
+              onClick={togglePictureInPicture}
+              aria-label={isInPictureInPicture ? 'Exit picture-in-picture' : 'Picture-in-picture'}
+              title={isInPictureInPicture ? 'Exit picture-in-picture' : 'Pop out (picture-in-picture)'}
+            >
+              <PictureInPicture className="h-4 w-4" />
+            </Button>
+          )}
 
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-white hover:bg-white/20 shrink-0"
             onClick={toggleFullscreen}
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           </Button>
         </div>
       </div>
+    </>
+  )
+
+  const wrapper = (
+    <div
+      ref={containerRef}
+      className={cn(
+        'relative flex flex-col bg-black overflow-hidden',
+        fullscreenOverlay && 'fixed inset-0 z-[9999] w-screen h-screen',
+        className
+      )}
+    >
+      {inner}
     </div>
   )
+
+  return wrapper
 }

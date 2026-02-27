@@ -38,6 +38,9 @@ export interface EphemeralAttachmentMeta {
   size_bytes: number
   sha256: string
   spoiler?: boolean
+  /** Optional aspect ratio from sender so shimmer/container can match on first paint. */
+  aspect_ratio_w?: number
+  aspect_ratio_h?: number
 }
 
 export interface EphemeralChatMessage {
@@ -46,8 +49,11 @@ export interface EphemeralChatMessage {
   chat_id: string
   from_user_id: string
   text: string
-  kind?: 'text' | 'attachment'
+  kind?: 'text' | 'attachment' | 'mixed'
+  /** Single attachment (legacy / single-attachment messages). */
   attachment?: EphemeralAttachmentMeta
+  /** Multiple attachments in draft order; attachments render first, then text as caption below. */
+  attachments?: EphemeralAttachmentMeta[]
   sent_at: string
   local_only?: boolean
   delivery_status?: 'pending' | 'delivered'
@@ -68,6 +74,17 @@ interface SendEphemeralAttachmentInput {
   chatId: string
   fromUserId: string
   attachment: EphemeralAttachmentMeta
+}
+
+export interface SendMixedMessageInput {
+  serverId: string
+  signingPubkey: string
+  chatId: string
+  fromUserId: string
+  /** Attachments in display order (draft order). Shown first in chat. */
+  attachments: EphemeralAttachmentMeta[]
+  /** Optional caption, shown below the attachment grid. */
+  text?: string
 }
 
 interface IncomingEphemeralChatDetail {
@@ -91,6 +108,8 @@ interface IncomingEphemeralReceiptDetail {
 type EphemeralPayload =
   | { kind: 'text'; text: string; sent_at: string }
   | { kind: 'attachment'; attachment: EphemeralAttachmentMeta; sent_at: string }
+  | { kind: 'mixed'; attachments: EphemeralAttachmentMeta[]; text?: string; sent_at: string }
+  | { kind: 'attachment_reshared'; attachment_id: string; sent_at: string }
 
 type QueuedDownloadRequest = {
   request_id: string
@@ -141,7 +160,8 @@ interface EphemeralMessagesContextType {
   getUnreadCount: (serverId: string) => number
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
   sendAttachmentMessage: (input: SendEphemeralAttachmentInput) => Promise<void>
-  requestAttachmentDownload: (msg: EphemeralChatMessage) => Promise<void>
+  sendMixedMessage: (input: SendMixedMessageInput) => Promise<void>
+  requestAttachmentDownload: (msg: EphemeralChatMessage, attachment?: EphemeralAttachmentMeta) => Promise<void>
   attachmentTransfers: AttachmentTransferState[]
   transferHistory: TransferHistoryEntry[]
   hasAccessibleCompletedDownload: (attachmentId: string | null | undefined) => boolean
@@ -151,6 +171,7 @@ interface EphemeralMessagesContextType {
   sharedAttachments: SharedAttachmentItem[]
   refreshSharedAttachments: () => Promise<void>
   unshareAttachmentById: (attachmentId: string) => Promise<void>
+  notifyAttachmentReshared: (signingPubkey: string, chatId: string, attachmentId: string) => Promise<void>
 }
 
 export interface AttachmentTransferState {
@@ -1102,7 +1123,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         setTransferHistory([])
       } else {
         const parsed = JSON.parse(raw) as TransferHistoryEntry[]
-        setTransferHistory(Array.isArray(parsed) ? parsed.slice(0, 300) : [])
+        const list = Array.isArray(parsed) ? parsed.slice(0, 300) : []
+        // On launch/login, drop rejected download entries so "Removed" cards are retested (files may have been re-shared).
+        const withoutRejectedDownloads = list.filter(
+          (h) => !(h.direction === 'download' && h.status === 'rejected')
+        )
+        setTransferHistory(withoutRejectedDownloads)
       }
     } catch {
       setTransferHistory([])
@@ -1315,25 +1341,63 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         )
         if (cancelled) return
         const parsed = JSON.parse(plaintext) as Partial<EphemeralPayload> & Record<string, any>
-        const kind = parsed.kind === 'attachment' ? 'attachment' : 'text'
         const payloadSentAt = typeof parsed.sent_at === 'string' ? parsed.sent_at : ''
         const effectiveSentAt = Number.isFinite(Date.parse(payloadSentAt))
           ? payloadSentAt
           : (detail.sent_at || new Date().toISOString())
-        const text = kind === 'attachment'
-          ? (parsed.attachment?.file_name ?? '').trim()
-          : (parsed.text ?? '').trim()
-        if (!text) return
 
-        const msg: EphemeralChatMessage = {
-          id: detail.message_id,
-          signing_pubkey: detail.signing_pubkey,
-          chat_id: detail.chat_id,
-          from_user_id: detail.from_user_id,
-          text,
-          kind,
-          attachment: kind === 'attachment' ? parsed.attachment : undefined,
-          sent_at: effectiveSentAt,
+        if (parsed.kind === 'attachment_reshared' && typeof parsed.attachment_id === 'string' && parsed.attachment_id.trim()) {
+          const attachmentId = parsed.attachment_id.trim()
+          if (detail.from_user_id !== identity?.user_id) {
+            setAttachmentTransfers((prev) =>
+              prev.filter((t) => !(t.direction === 'download' && t.attachment_id === attachmentId && t.status === 'rejected'))
+            )
+            setTransferHistory((prev) =>
+              prev.filter((h) => !(h.direction === 'download' && h.attachment_id === attachmentId && h.status === 'rejected'))
+            )
+          }
+          return
+        }
+
+        let msg: EphemeralChatMessage
+        if (parsed.kind === 'mixed' && Array.isArray(parsed.attachments) && parsed.attachments.length > 0) {
+          const attachments = parsed.attachments as EphemeralAttachmentMeta[]
+          const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
+          msg = {
+            id: detail.message_id,
+            signing_pubkey: detail.signing_pubkey,
+            chat_id: detail.chat_id,
+            from_user_id: detail.from_user_id,
+            text,
+            kind: 'mixed',
+            attachments,
+            sent_at: effectiveSentAt,
+          }
+        } else if (parsed.kind === 'attachment' && parsed.attachment) {
+          const text = (parsed.attachment.file_name ?? '').trim()
+          if (!text) return
+          msg = {
+            id: detail.message_id,
+            signing_pubkey: detail.signing_pubkey,
+            chat_id: detail.chat_id,
+            from_user_id: detail.from_user_id,
+            text,
+            kind: 'attachment',
+            attachment: parsed.attachment,
+            sent_at: effectiveSentAt,
+          }
+        } else {
+          const text = (parsed.text ?? '').trim()
+          if (!text) return
+          msg = {
+            id: detail.message_id,
+            signing_pubkey: detail.signing_pubkey,
+            chat_id: detail.chat_id,
+            from_user_id: detail.from_user_id,
+            text,
+            kind: 'text',
+            sent_at: effectiveSentAt,
+          }
         }
         setMessagesByBucket((prev) => {
           const key = bucketKey(detail.signing_pubkey, detail.chat_id)
@@ -1376,9 +1440,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           const settingsForMessage = messageSettingsFor(m.signing_pubkey)
           const maxBudgetBytes = Math.max(32, settingsForMessage.max_sync_kb) * 1024
           const usedBytes = budgetUsedBySigning.get(m.signing_pubkey) ?? 0
-          const payload = m.kind === 'attachment' && m.attachment
-            ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
-            : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
+          const payload =
+            m.kind === 'mixed' && m.attachments?.length
+              ? JSON.stringify({ kind: 'mixed', attachments: m.attachments, text: m.text || undefined, sent_at: m.sent_at } satisfies EphemeralPayload)
+              : m.kind === 'attachment' && m.attachment
+                ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
+                : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
           const estimate = storageBytes(payload) + 128
           if (usedBytes + estimate > maxBudgetBytes) continue
           budgetUsedBySigning.set(m.signing_pubkey, usedBytes + estimate)
@@ -1483,7 +1550,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
       const relatedMessage = Object.values(messagesByBucketRef.current)
         .flat()
-        .find((m) => m.kind === 'attachment' && m.attachment?.attachment_id === attachmentId)
+        .find(
+          (m) =>
+            (m.kind === 'attachment' && m.attachment?.attachment_id === attachmentId) ||
+            (m.kind === 'mixed' && m.attachments?.some((a) => a.attachment_id === attachmentId))
+        )
       const signingPubkey = relatedMessage?.signing_pubkey ?? ''
       const settings = signingPubkey
         ? getMessageStorageSettings(currentAccountId, signingPubkey)
@@ -1874,9 +1945,58 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       .catch(() => {})
   }
 
-  const requestAttachmentDownload: EphemeralMessagesContextType['requestAttachmentDownload'] = async (msg) => {
-    if (!identity?.user_id || !msg.attachment?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
-    const attachmentId = msg.attachment.attachment_id
+  const sendMixedMessage: EphemeralMessagesContextType['sendMixedMessage'] = async ({
+    serverId,
+    signingPubkey,
+    chatId,
+    fromUserId,
+    attachments,
+    text,
+  }) => {
+    if (!attachments?.length) return
+    const sentAt = new Date().toISOString()
+    const payload = JSON.stringify({
+      kind: 'mixed',
+      attachments,
+      text: text?.trim() || undefined,
+      sent_at: sentAt,
+    } satisfies EphemeralPayload)
+    const encrypted_payload = await encryptEphemeralChatMessage(serverId, payload)
+    const messageId = `${fromUserId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    window.dispatchEvent(
+      new CustomEvent('cordia:send-ephemeral-chat', {
+        detail: {
+          signing_pubkey: signingPubkey,
+          chat_id: chatId,
+          message_id: messageId,
+          encrypted_payload,
+        },
+      })
+    )
+    const localMessage: EphemeralChatMessage = {
+      id: messageId,
+      signing_pubkey: signingPubkey,
+      chat_id: chatId,
+      from_user_id: fromUserId,
+      text: text?.trim() ?? '',
+      kind: 'mixed',
+      attachments,
+      sent_at: sentAt,
+      local_only: true,
+      delivery_status: 'pending',
+      delivered_by: [],
+    }
+    setMessagesByBucket((prev) => appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage))
+    ensureBucketLoaded(signingPubkey, chatId)
+    listSharedAttachments()
+      .then((list) => setSharedAttachments(list))
+      .catch(() => {})
+  }
+
+  const requestAttachmentDownload: EphemeralMessagesContextType['requestAttachmentDownload'] = async (msg, attachment) => {
+    const att = attachment ?? msg.attachment ?? (msg.attachments?.[0])
+    if (!identity?.user_id || !att?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
+    const attachmentId = att.attachment_id
     if (hasAccessibleCompletedDownload(attachmentId)) return
     setTransferHistory((prev) =>
       prev.filter(
@@ -1893,7 +2013,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const duplicateActive = attachmentTransfersRef.current.some(
       (t) =>
         t.direction === 'download' &&
-        (t.message_id === msg.id || t.attachment_id === msg.attachment?.attachment_id) &&
+        (t.message_id === msg.id || t.attachment_id === att.attachment_id) &&
         t.status !== 'completed' &&
         t.status !== 'failed' &&
         t.status !== 'rejected'
@@ -1908,7 +2028,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       attachment_id: attachmentId,
       from_user_id: msg.from_user_id,
       to_user_id: identity.user_id,
-      file_name: msg.attachment!.file_name,
+      file_name: att.file_name,
       direction: 'download',
       status: queueInstead ? 'queued' : 'requesting',
       progress: 0,
@@ -1918,8 +2038,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       request_id,
       message_id: msg.id,
       attachment_id: attachmentId,
-      file_name: msg.attachment!.file_name,
-      size_bytes: msg.attachment!.size_bytes,
+      file_name: att.file_name,
+      size_bytes: att.size_bytes,
       from_user_id: msg.from_user_id,
       to_user_id: identity.user_id,
       direction: 'download',
@@ -1935,8 +2055,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         attachment_id: attachmentId,
         from_user_id: msg.from_user_id,
         to_user_id: identity.user_id,
-        file_name: msg.attachment!.file_name,
-        size_bytes: msg.attachment!.size_bytes,
+        file_name: att.file_name,
+        size_bytes: att.size_bytes,
       })
       return
     }
@@ -1962,6 +2082,26 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }
 
+  const notifyAttachmentReshared: EphemeralMessagesContextType['notifyAttachmentReshared'] = async (
+    signingPubkey,
+    chatId,
+    attachmentId
+  ) => {
+    if (!signingPubkey?.trim() || !chatId?.trim() || !attachmentId?.trim()) return
+    const payload: EphemeralPayload = {
+      kind: 'attachment_reshared',
+      attachment_id: attachmentId.trim(),
+      sent_at: new Date().toISOString(),
+    }
+    const encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(signingPubkey, JSON.stringify(payload))
+    const message_id = `reshared:${attachmentId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    window.dispatchEvent(
+      new CustomEvent('cordia:send-ephemeral-chat', {
+        detail: { signing_pubkey: signingPubkey.trim(), chat_id: chatId.trim(), message_id, encrypted_payload },
+      })
+    )
+  }
+
   const value = useMemo(
     () => ({
       getMessages,
@@ -1969,6 +2109,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       getUnreadCount,
       sendMessage,
       sendAttachmentMessage,
+      sendMixedMessage,
       requestAttachmentDownload,
       attachmentTransfers,
       transferHistory,
@@ -1979,6 +2120,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       sharedAttachments,
       refreshSharedAttachments,
       unshareAttachmentById,
+      notifyAttachmentReshared,
     }),
     [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments]
   )

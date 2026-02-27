@@ -8,6 +8,7 @@ import { useSidebarWidth } from '../contexts/SidebarWidthContext'
 import { useSettingsModal } from '../contexts/SettingsModalContext'
 import { useMemo, useRef, useState, useEffect, type CSSProperties } from 'react'
 import { Button } from './ui/button'
+import { Tooltip } from './Tooltip'
 
 function hashId(s: string) {
   let hash = 0
@@ -174,7 +175,6 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
             type="button"
             onClick={(e) => onAvatarClick((e.currentTarget as HTMLElement).getBoundingClientRect())}
             className="relative shrink-0 rounded-md will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none"
-            title="Your profile"
           >
             {avatarEl}
           </button>
@@ -183,7 +183,6 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
             type="button"
             onClick={() => openSettings('account')}
             className="relative shrink-0 rounded-md will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none"
-            title="Account / Settings"
           >
             {avatarEl}
           </button>
@@ -194,19 +193,22 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           {isInVoice && (
-            <Button variant="ghost" size="icon" onClick={leaveVoice} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10" title="Leave voice call">
-              <PhoneOff className="h-4 w-4" />
-            </Button>
+            <Tooltip content="Leave voice call" side="top">
+              <Button variant="ghost" size="icon" onClick={leaveVoice} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10">
+                <PhoneOff className="h-4 w-4" />
+              </Button>
+            </Tooltip>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            title="Settings"
-            onClick={() => openSettings('account')}
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
+          <Tooltip content="User Settings" side="top">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => openSettings('account')}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </Tooltip>
         </div>
       </div>
     )
@@ -269,25 +271,27 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
             {/* Actions */}
             <div className="flex items-center gap-1">
               {isInVoice && (
+                <Tooltip content="Leave voice call" side="top">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={leaveVoice}
+                    className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                  >
+                    <PhoneOff className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+              )}
+              <Tooltip content="User Settings" side="top">
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={leaveVoice}
-                  className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                  title="Leave voice call"
+                  className="h-8 w-8"
+                  onClick={() => openSettings('account')}
                 >
-                  <PhoneOff className="h-4 w-4" />
+                  <Settings className="h-4 w-4" />
                 </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                title="Settings"
-                onClick={() => openSettings('account')}
-              >
-                <Settings className="h-4 w-4" />
-              </Button>
+              </Tooltip>
             </div>
           </>
         )}
@@ -299,7 +303,6 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
           onMouseDown={handleResizeStart}
           onDoubleClick={handleDoubleClick}
           className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10"
-          title="Drag to resize, double-click to reset"
         >
           <div className="absolute inset-0 -left-1 w-2" />
         </div>

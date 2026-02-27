@@ -160,7 +160,6 @@ export function FriendsDrawerPanel({
           type="button"
           className="relative h-8 w-8 grid place-items-center rounded-none hover:bg-accent/30"
           onClick={handleFriendsClick}
-          title="Friends"
         >
           <Users className="h-4 w-4" />
         </button>

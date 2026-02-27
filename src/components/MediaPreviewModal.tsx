@@ -117,9 +117,9 @@ export function MediaPreviewModal({ type, url, attachmentId, fileName, onClose }
   const displayUrl = resolvedUrl ?? url
 
   return (
-    <div className="fixed top-8 left-0 right-0 bottom-0 z-[80] flex items-center justify-center bg-black/80">
+    <div className="fixed top-8 left-1 right-1 bottom-1 z-40 flex items-center justify-center bg-black/80 rounded-b-md">
       <div
-        className="absolute inset-0 cursor-default"
+        className="absolute inset-0 cursor-default rounded-b-md"
         role="button"
         tabIndex={0}
         onClick={onClose}
@@ -162,7 +162,6 @@ export function MediaPreviewModal({ type, url, attachmentId, fileName, onClose }
                 size="icon"
                 className="h-8 w-8 text-white hover:bg-white/20 shrink-0"
                 onClick={onClose}
-                title="Close"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -199,7 +198,6 @@ export function MediaPreviewModal({ type, url, attachmentId, fileName, onClose }
                 size="icon"
                 className="h-8 w-8 text-white hover:bg-white/20 shrink-0"
                 onClick={onClose}
-                title="Close"
               >
                 <X className="h-4 w-4" />
               </Button>

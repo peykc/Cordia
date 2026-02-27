@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
-import { Plus, Minus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn, ClipboardPaste, EyeOff } from 'lucide-react'
+import { Plus, Minus, Users, Trash2, Star, CornerDownLeft, Copy, X, Check, LogIn, ClipboardPaste, EyeOff } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useWindowSize } from '../lib/useWindowSize'
@@ -27,6 +27,7 @@ import { useFriends } from '../contexts/FriendsContext'
 import { useToast } from '../contexts/ToastContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { clearDraft } from '../lib/messageDrafts'
+import { Tooltip } from '../components/Tooltip'
 
 /** Strip to raw 8-char code (no dash). Used so dash is never part of stored/copied value. */
 function normalizeFriendCode(code: string): string {
@@ -49,14 +50,6 @@ function ServerListPage() {
     isFriend,
     hasPendingOutgoing,
     sendFriendRequest,
-    pendingIncoming,
-    pendingOutgoing,
-    redemptions,
-    acceptFriendRequest,
-    declineFriendRequest,
-    acceptCodeRedemption,
-    cancelPendingTo,
-    declineCodeRedemption,
     createFriendCode,
     revokeFriendCode,
     redeemFriendCode,
@@ -77,6 +70,7 @@ function ServerListPage() {
   const [favoriteServerIds, setFavoriteServerIds] = useState<Set<string>>(new Set())
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
+  const profileCardAnchorRef = useRef<HTMLElement | null>(null)
   const [showFriendCodePopover, setShowFriendCodePopover] = useState(false)
   const [closeDrawerTrigger, setCloseDrawerTrigger] = useState(0)
   const [friendCodeInput, setFriendCodeInput] = useState('')
@@ -97,7 +91,7 @@ function ServerListPage() {
   const { width } = useWindowSize()
   const isDrawerMode = width < 605
   const drawerRowAlign = isDrawerMode ? 'items-start' : 'items-center'
-  const { openNotifications } = useNotificationsModal()
+  useNotificationsModal()
 
   const handleAddFriendClick = () => {
     const next = !showFriendCodePopover
@@ -370,6 +364,7 @@ function ServerListPage() {
                     onClick={(e) => {
                       e.stopPropagation()
                       setProfileCardUserId(m.user_id)
+                      profileCardAnchorRef.current = e.currentTarget as HTMLElement
                       setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
                     }}
                     aria-label={p.displayName}
@@ -474,38 +469,6 @@ function ServerListPage() {
     return a.name.localeCompare(b.name)
   })
 
-  // Merge incoming requests and code redemptions by user_id so the same user doesn't appear twice
-  const mergedIncoming = useMemo(() => {
-    const byId = new Map<
-      string,
-      { userId: string; displayName: string; fromRequest: boolean; fromRedemption: boolean }
-    >()
-    const namePlaceholder = remoteProfiles.hydrated ? 'Unknown' : ''
-    for (const r of pendingIncoming) {
-      byId.set(r.from_user_id, {
-        userId: r.from_user_id,
-        displayName:
-          remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? namePlaceholder,
-        fromRequest: true,
-        fromRedemption: false,
-      })
-    }
-    for (const r of redemptions) {
-      const existing = byId.get(r.redeemer_user_id)
-      byId.set(r.redeemer_user_id, {
-        userId: r.redeemer_user_id,
-        displayName:
-          existing?.displayName ??
-          remoteProfiles.getProfile(r.redeemer_user_id)?.display_name ??
-          r.redeemer_display_name ??
-          namePlaceholder,
-        fromRequest: existing?.fromRequest ?? false,
-        fromRedemption: true,
-      })
-    }
-    return Array.from(byId.values())
-  }, [pendingIncoming, redemptions, remoteProfiles])
-
   // Friends-only list for the main friends pane (pending outgoing only on notification pane)
   const sortedFriendsOnlyWithPresence = useMemo(() => {
     const result = friends
@@ -544,33 +507,6 @@ function ServerListPage() {
       })
     return result
   }, [friends, servers, getLevel, voicePresence, remoteProfiles])
-
-  // Presence for user ids on the notification pane (outgoing + incoming)
-  const pendingPresenceMap = useMemo(() => {
-    const userIds = [...new Set([...pendingOutgoing, ...mergedIncoming.map((e) => e.userId)])]
-    const map = new Map<string, { bestLevel: PresenceLevel; activeServer: Server | null }>()
-    for (const userId of userIds) {
-      let bestLevel: PresenceLevel = 'offline'
-      let activeServer: Server | null = null
-      for (const server of servers) {
-        const inVoice = voicePresence.isUserInVoice(server.signing_pubkey, userId)
-        const level = getLevel(server.signing_pubkey, userId, inVoice)
-        if (PRESENCE_ORDER[level] < PRESENCE_ORDER[bestLevel]) {
-          bestLevel = level
-          if (level === 'active' || level === 'in_call') activeServer = server
-        } else if ((level === 'active' || level === 'in_call') && !activeServer) {
-          activeServer = server
-        }
-      }
-      const friendsLevel = getLevel(FRIENDS_PRESENCE_KEY, userId, false)
-      if (PRESENCE_ORDER[friendsLevel] < PRESENCE_ORDER[bestLevel]) {
-        bestLevel = friendsLevel
-        activeServer = null
-      }
-      map.set(userId, { bestLevel, activeServer })
-    }
-    return map
-  }, [pendingOutgoing, mergedIncoming, servers, getLevel, voicePresence])
 
   const stripFriends = useMemo(
     () =>
@@ -720,6 +656,7 @@ function ServerListPage() {
               alignWithFriends
               onAvatarClick={(rect) => {
                 setProfileCardUserId(identity?.user_id ?? null)
+                profileCardAnchorRef.current = null
                 setProfileCardAnchor(rect)
               }}
             />
@@ -909,7 +846,6 @@ function ServerListPage() {
                             onClick={handleCreateServer}
                             disabled={isCreating || !serverName.trim()}
                             className="h-8 w-8 shrink-0 grid place-items-center border border-background/20 bg-background/10 hover:bg-background/20 disabled:opacity-50"
-                            title="Create"
                           >
                             <CornerDownLeft className="h-3.5 w-3.5 text-background" />
                           </button>
@@ -1003,27 +939,29 @@ function ServerListPage() {
                                     : 'opacity-0 pointer-events-none'
                               }`}
                             >
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  toggleFavorite(server.id)
-                                }}
-                                className={`h-9 w-9 grid place-items-center rounded-md transition-opacity hover:bg-amber-500/10 ${
-                                  isFav ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'
-                                }`}
-                                title={isFav ? 'Unfavorite' : 'Favorite'}
-                              >
-                                <Star className={`h-4 w-4 ${isFav ? 'fill-current' : ''}`} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => handleDeleteServer(e, server.id)}
-                                className="h-9 w-9 grid place-items-center rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
-                                title="Leave and delete server"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
+                              <Tooltip content={isFav ? 'Unfavorite' : 'Favorite'} side="left">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    toggleFavorite(server.id)
+                                  }}
+                                  className={`h-9 w-9 grid place-items-center rounded-md transition-opacity hover:bg-amber-500/10 ${
+                                    isFav ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'
+                                  }`}
+                                >
+                                  <Star className={`h-4 w-4 ${isFav ? 'fill-current' : ''}`} />
+                                </button>
+                              </Tooltip>
+                              <Tooltip content="Leave and delete server" side="left">
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleDeleteServer(e, server.id)}
+                                  className="h-9 w-9 grid place-items-center rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </Tooltip>
                             </div>
                           </div>
                         </div>
@@ -1047,16 +985,17 @@ function ServerListPage() {
                   </h3>
                   <div className="flex items-center gap-0.5">
                     <div className="relative">
-                      <Button
-                        ref={addFriendButtonRef}
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={handleAddFriendClick}
-                        title={showFriendCodePopover ? 'Close friend code' : 'Friend code'}
-                      >
-                        {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                      </Button>
+                      <Tooltip content={showFriendCodePopover ? 'Close friend code' : 'Friend code'} side="bottom">
+                        <Button
+                          ref={addFriendButtonRef}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={handleAddFriendClick}
+                        >
+                          {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                        </Button>
+                      </Tooltip>
                     {showFriendCodePopover && !isDrawerMode && (
                       <>
                         <div className="fixed inset-0 z-40" onMouseDown={() => setShowFriendCodePopover(false)} aria-hidden />
@@ -1197,36 +1136,38 @@ function ServerListPage() {
                                     </div>
                                   ) : null}
                                 </div>
-                                <Button
-                                  variant="outline"
-                                  size="icon"
-                                  className="h-8 w-8 shrink-0"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
-                                    setCopiedFriendCode(true)
-                                    setTimeout(() => setCopiedFriendCode(false), 2000)
-                                  }}
-                                  title="Copy"
-                                >
-                                  {copiedFriendCode ? (
-                                    <Check className="h-3.5 w-3.5 text-green-500" />
-                                  ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                  )}
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="icon"
-                                  className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                                  onClick={async (e) => {
-                                    e.stopPropagation()
-                                    await revokeFriendCode()
-                                  }}
-                                  title="Revoke"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </Button>
+                                <Tooltip content={copiedFriendCode ? 'Copied' : 'Copy'} side="bottom">
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-8 w-8 shrink-0"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
+                                      setCopiedFriendCode(true)
+                                      setTimeout(() => setCopiedFriendCode(false), 2000)
+                                    }}
+                                  >
+                                    {copiedFriendCode ? (
+                                      <Check className="h-3.5 w-3.5 text-green-500" />
+                                    ) : (
+                                      <Copy className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                </Tooltip>
+                                <Tooltip content="Revoke" side="bottom">
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
+                                      await revokeFriendCode()
+                                    }}
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                </Tooltip>
                               </div>
                             </button>
                           </>
@@ -1255,15 +1196,16 @@ function ServerListPage() {
                       </>
                     )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => setShowFriendsOverlay(true)}
-                      title="View all friends"
-                    >
-                      <Users className="h-4 w-4" />
-                    </Button>
+                    <Tooltip content="View all friends" side="bottom">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => setShowFriendsOverlay(true)}
+                      >
+                        <Users className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
                   </div>
                 </div>
                 <div className={`mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1 ${!isDrawerMode ? 'pt-1.5' : ''}`}>
@@ -1296,6 +1238,7 @@ function ServerListPage() {
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setProfileCardUserId(userId)
+                                  profileCardAnchorRef.current = e.currentTarget as HTMLElement
                                   setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
                                 }}
                                 aria-label={displayName}
@@ -1326,15 +1269,16 @@ function ServerListPage() {
                                 ) : null}
                               </div>
                               {canJoin && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="shrink-0 h-7 px-1.5 text-[11px] font-light"
-                                  onClick={() => navigate(`/home/${activeServer!.id}`, { state: { server: activeServer } })}
-                                  title={'Join ' + activeServer!.name}
-                                >
-                                  <LogIn className="h-3 w-3" />
-                                </Button>
+                                <Tooltip content={'Join ' + activeServer!.name} side="left">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="shrink-0 h-7 px-1.5 text-[11px] font-light"
+                                    onClick={() => navigate(`/home/${activeServer!.id}`, { state: { server: activeServer } })}
+                                  >
+                                    <LogIn className="h-3 w-3" />
+                                  </Button>
+                                </Tooltip>
                               )}
                             </div>
                           )
@@ -1379,6 +1323,7 @@ function ServerListPage() {
                       closeDrawerTrigger={closeDrawerTrigger}
                       onAvatarClick={(userId, rect) => {
                         setProfileCardUserId(userId)
+                        profileCardAnchorRef.current = null
                         setProfileCardAnchor(rect)
                       }}
                       onOpenFriendsOverlay={() => setShowFriendsOverlay(true)}
@@ -1398,6 +1343,7 @@ function ServerListPage() {
         onClose={() => setShowFriendsOverlay(false)}
         onOpenProfile={(userId, rect) => {
           setProfileCardUserId(userId)
+          profileCardAnchorRef.current = null
           setProfileCardAnchor(rect)
         }}
         getServerById={getServerById}
@@ -1545,32 +1491,34 @@ function ServerListPage() {
                         </div>
                       ) : null}
                     </div>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="h-8 w-8 shrink-0"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
-                        setCopiedFriendCode(true)
-                        setTimeout(() => setCopiedFriendCode(false), 2000)
-                      }}
-                      title="Copy"
-                    >
-                      {copiedFriendCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                      onClick={async (e) => {
-                        e.stopPropagation()
-                        await revokeFriendCode()
-                      }}
-                      title="Revoke"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
+                    <Tooltip content={copiedFriendCode ? 'Copied' : 'Copy'} side="bottom">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8 shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
+                          setCopiedFriendCode(true)
+                          setTimeout(() => setCopiedFriendCode(false), 2000)
+                        }}
+                      >
+                        {copiedFriendCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="Revoke" side="bottom">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          await revokeFriendCode()
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </Tooltip>
                   </div>
                 </button>
               </>
@@ -1673,8 +1621,10 @@ function ServerListPage() {
       <UserProfileCard
         open={Boolean(profileCardUserId)}
         anchorRect={profileCardAnchor}
+        anchorRef={profileCardAnchorRef}
         onClose={() => {
           setProfileCardUserId(null)
+          profileCardAnchorRef.current = null
           setProfileCardAnchor(null)
         }}
         avatarDataUrl={

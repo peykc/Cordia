@@ -93,6 +93,13 @@ struct AttachmentRecord {
     /// "preparing" | "ready" | "failed" — default "ready" for backward compat
     #[serde(default = "default_attachment_status")]
     status: String,
+    /// When false, attachment is not in the share list (uploader unshared) but record is kept for display / share-again
+    #[serde(default = "default_true")]
+    shared: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_attachment_status() -> String {
@@ -377,6 +384,7 @@ fn register_attachment_from_path(
         thumbnail_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         status: "preparing".to_string(),
+        shared: true,
     };
     index.records.insert(attachment_id.clone(), record);
     save_attachment_index(&base, &index)?;
@@ -615,6 +623,7 @@ fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
     let mut out: Vec<SharedAttachmentItem> = index
         .records
         .values()
+        .filter(|rec| rec.shared)
         .map(|rec| {
             let file_exists = if let Some(cache_name) = &rec.cached_file_name {
                 base.join("cache").join(cache_name).exists()
@@ -661,23 +670,60 @@ fn unshare_attachment(attachment_id: String) -> Result<bool, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
     let mut index = load_attachment_index(&base);
-    let removed = index.records.remove(&attachment_id);
-    let Some(rec) = removed else {
+    let Some(rec) = index.records.get_mut(&attachment_id) else {
         return Ok(false);
     };
+    rec.shared = false;
+    save_attachment_index(&base, &index)?;
+    Ok(true)
+}
 
-    if let Some(cache_name) = rec.cached_file_name.clone() {
-        let still_used = index
-            .records
-            .values()
-            .any(|r| r.cached_file_name.as_ref() == Some(&cache_name));
-        if !still_used {
-            let cache_path = base.join("cache").join(&cache_name);
-            let _ = std::fs::remove_file(cache_path);
-            index.sha_to_cached_file_name.remove(&rec.sha256);
+#[tauri::command]
+fn share_attachment_again(attachment_id: String, new_path: Option<String>) -> Result<bool, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let mut index = load_attachment_index(&base);
+    let Some(rec) = index.records.get_mut(&attachment_id) else {
+        return Ok(false);
+    };
+    if rec.shared {
+        return Ok(true);
+    }
+    let file_exists = if let Some(cache_name) = &rec.cached_file_name {
+        base.join("cache").join(cache_name).exists()
+    } else if let Some(src) = &rec.source_path {
+        PathBuf::from(src).exists()
+    } else {
+        false
+    };
+    if !file_exists {
+        if let Some(ref path) = new_path {
+            let source = PathBuf::from(path.trim());
+            if !source.exists() {
+                return Err("Selected file not found".to_string());
+            }
+            let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file: {}", e))?;
+            if !meta.is_file() {
+                return Err("Selected path is not a file".to_string());
+            }
+            if meta.len() != rec.size_bytes {
+                return Err("File size does not match original; must be the same file".to_string());
+            }
+            if !rec.sha256.is_empty() {
+                if let Ok(actual_sha) = sha256_file_streaming(&source) {
+                    if actual_sha != rec.sha256 {
+                        return Err("File content does not match original; must be the same file".to_string());
+                    }
+                }
+            }
+            rec.source_path = Some(source.to_string_lossy().to_string());
+            rec.cached_file_name = None;
+            rec.storage_mode = AttachmentStorageMode::CurrentPath;
+        } else {
+            return Err("File no longer exists at original path".to_string());
         }
     }
-
+    rec.shared = true;
     save_attachment_index(&base, &index)?;
     Ok(true)
 }
@@ -2444,6 +2490,7 @@ fn main() {
             read_attachment_chunk,
             list_shared_attachments,
             unshare_attachment,
+            share_attachment_again,
             save_downloaded_attachment,
             begin_download_stream,
             write_download_stream_chunk,

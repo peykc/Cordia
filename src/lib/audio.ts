@@ -20,19 +20,6 @@ export async function requestMicrophonePermission(): Promise<void> {
   }
 }
 
-// Helper function to clean device labels
-function cleanDeviceLabel(label: string): string {
-  // Remove Windows-specific prefixes like "Default -", "Communications -", "Multimedia -"
-  let clean = label.replace(/^(Default|Communications|Multimedia)\s*-\s*/i, '').trim()
-  
-  // Remove vendor IDs in parentheses (format: (XXXX:XXXX) hex patterns)
-  // But keep descriptive info like "(3- Razer Kraken V3 Pro)"
-  clean = clean.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*/gi, '')
-  clean = clean.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)$/i, '')
-  
-  return clean.trim()
-}
-
 export async function enumerateAudioDevices(): Promise<{
   inputDevices: AudioDevice[]
   outputDevices: AudioDevice[]
@@ -125,8 +112,6 @@ export class InputLevelMeter {
       if (this.useNativeCapture) {
         try {
           const { NativeAudioCapture } = await import('./nativeAudio')
-          const { invoke } = await import('@tauri-apps/api/tauri')
-          
           this.nativeCapture = new NativeAudioCapture()
           this.stream = await this.nativeCapture.start(deviceId, onLevelUpdate)
           

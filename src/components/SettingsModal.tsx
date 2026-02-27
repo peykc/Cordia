@@ -38,7 +38,6 @@ export function SettingsModal() {
             variant="ghost"
             size="icon"
             className="h-8 w-8 mr-2"
-            title="Close settings"
             onClick={closeSettings}
           >
             <X className="h-4 w-4" />

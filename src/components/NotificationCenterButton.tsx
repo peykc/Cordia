@@ -1,5 +1,6 @@
 import { Bell } from 'lucide-react'
 import { Button } from './ui/button'
+import { Tooltip } from './Tooltip'
 import { useNotificationsModal } from '../contexts/NotificationsModalContext'
 import { useFriends } from '../contexts/FriendsContext'
 import { useMemo } from 'react'
@@ -18,13 +19,13 @@ export function NotificationCenterButton() {
   const hasIncoming = mergedIncomingCount > 0
 
   return (
+    <Tooltip content="Notifications" side="bottom">
     <Button
       ref={anchorRef as React.Ref<HTMLButtonElement>}
       type="button"
       variant="ghost"
       size="icon"
       className="h-8 w-8 relative overflow-hidden rounded-none"
-      title="Notifications"
       onClick={(e) => {
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
         openNotifications(rect)
@@ -40,5 +41,6 @@ export function NotificationCenterButton() {
         </span>
       )}
     </Button>
+    </Tooltip>
   )
 }
