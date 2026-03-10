@@ -7,8 +7,12 @@ import {
 
 const EDGE_SIZE = 16
 const CORNER_SIZE = 24
+/** Title bar height - exclude from top/right overlap so window controls stay clickable */
+const TITLE_BAR_H = 32
 const MIN_WIDTH = 375
 const MIN_HEIGHT = 425
+/** Throttle IPC to ~20Hz — smooth resize without flooding the bridge */
+const RESIZE_IPC_INTERVAL_MS = 50
 
 type ResizeDirection =
   | 'n' | 's' | 'e' | 'w'
@@ -55,11 +59,12 @@ export function WindowResizeHandles() {
 
       let rafId: number | null = null
       let pendingMove: PointerEvent | null = null
+      let lastIpcCall = 0
 
       const onMove = (moveEvent: PointerEvent) => {
         pendingMove = moveEvent
         if (rafId === null) {
-          rafId = requestAnimationFrame(async () => {
+          rafId = requestAnimationFrame(() => {
             rafId = null
             const ev = pendingMove
             pendingMove = null
@@ -87,13 +92,16 @@ export function WindowResizeHandles() {
               y = s.startPosY + (s.startH - h)
             }
 
-            try {
-              // Set position first for left/top resize so the anchor corner moves before we resize
+            // Throttle IPC: ~20Hz is enough for smooth resize, avoids bridge flood
+            const now = performance.now()
+            if (now - lastIpcCall >= RESIZE_IPC_INTERVAL_MS) {
+              lastIpcCall = now
+              // Fire-and-forget: don't block RAF on async IPC; OS applies when ready
               if (dir.includes('w') || dir.includes('n')) {
-                await appWindow.setPosition(new LogicalPosition(x, y))
+                appWindow.setPosition(new LogicalPosition(x, y)).catch(() => {})
               }
-              await appWindow.setSize(new LogicalSize(w, h))
-            } catch (_) {}
+              appWindow.setSize(new LogicalSize(w, h)).catch(() => {})
+            }
           })
         }
       }
@@ -119,10 +127,10 @@ export function WindowResizeHandles() {
 
   return (
     <>
-      {/* Edges */}
+      {/* Edges - top starts below title bar so window controls stay clickable */}
       <div
-        className={`${base} top-0 left-0 right-0 cursor-n-resize`}
-        style={{ ...style, height: EDGE_SIZE }}
+        className={`${base} left-0 right-0 cursor-n-resize`}
+        style={{ ...style, top: TITLE_BAR_H, height: EDGE_SIZE }}
         onPointerDown={(e) => handlePointerDown(e, 'n')}
       />
       <div
@@ -131,8 +139,8 @@ export function WindowResizeHandles() {
         onPointerDown={(e) => handlePointerDown(e, 's')}
       />
       <div
-        className={`${base} top-0 right-0 bottom-0 cursor-e-resize`}
-        style={{ ...style, width: EDGE_SIZE }}
+        className={`${base} right-0 bottom-0 cursor-e-resize`}
+        style={{ ...style, top: TITLE_BAR_H, width: EDGE_SIZE }}
         onPointerDown={(e) => handlePointerDown(e, 'e')}
       />
       <div
@@ -140,15 +148,15 @@ export function WindowResizeHandles() {
         style={{ ...style, width: EDGE_SIZE }}
         onPointerDown={(e) => handlePointerDown(e, 'w')}
       />
-      {/* Corners */}
+      {/* Corners - top corners start below title bar */}
       <div
-        className={`${base} top-0 left-0 cursor-nwse-resize`}
-        style={{ ...style, width: CORNER_SIZE, height: CORNER_SIZE }}
+        className={`${base} left-0 cursor-nwse-resize`}
+        style={{ ...style, top: TITLE_BAR_H, width: CORNER_SIZE, height: CORNER_SIZE }}
         onPointerDown={(e) => handlePointerDown(e, 'nw')}
       />
       <div
-        className={`${base} top-0 right-0 cursor-nesw-resize`}
-        style={{ ...style, width: CORNER_SIZE, height: CORNER_SIZE }}
+        className={`${base} right-0 cursor-nesw-resize`}
+        style={{ ...style, top: TITLE_BAR_H, width: CORNER_SIZE, height: CORNER_SIZE }}
         onPointerDown={(e) => handlePointerDown(e, 'ne')}
       />
       <div

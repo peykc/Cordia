@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   beginDownloadStream,
   cancelDownloadStream,
@@ -200,6 +200,14 @@ interface EphemeralMessagesContextType {
   unshareFromServer: (serverSigningPubkey: string, sha256: string) => void
   /** Path for content we already have (e.g. from a previous download with same sha256). Used to avoid re-downloading. */
   getCachedPathForSha: (sha256: string | undefined) => string | null
+  /** Persist aspect ratio for an attachment in a message (so next load has correct size without re-measuring). */
+  updateAttachmentAspect: (
+    signingPubkey: string,
+    chatId: string,
+    messageId: string,
+    attachmentId: string,
+    aspect: { w: number; h: number }
+  ) => void
 }
 
 export interface AttachmentTransferState {
@@ -300,6 +308,45 @@ function persistBucketKeyForAccount(accountId: string | null, bucket: string): s
   return `${persistKeyForAccount(accountId)}:${bucket}`
 }
 
+const ASPECT_CACHE_KEY_PREFIX = 'cordia:aspect-cache'
+
+function aspectCacheKeyForAccount(accountId: string | null): string {
+  return accountId ? `${ASPECT_CACHE_KEY_PREFIX}:${accountId}` : ASPECT_CACHE_KEY_PREFIX
+}
+
+function loadAspectCache(accountId: string | null): Record<string, { w: number; h: number }> {
+  try {
+    const raw = window.localStorage.getItem(aspectCacheKeyForAccount(accountId))
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, { w: number; h: number }>
+    return typeof parsed === 'object' && parsed !== null ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function mergeAspectCacheIntoMessages(
+  accountId: string | null,
+  messages: EphemeralChatMessage[]
+): EphemeralChatMessage[] {
+  const cache = loadAspectCache(accountId)
+  if (Object.keys(cache).length === 0) return messages
+  return messages.map((msg) => {
+    const list = msg.attachments ?? (msg.attachment ? [msg.attachment] : [])
+    if (list.length === 0) return msg
+    const updateAtt = (att: EphemeralAttachmentMeta) => {
+      const cached = cache[`${msg.id}:${att.attachment_id}`]
+      if (!cached || (att.aspect_ratio_w != null && att.aspect_ratio_h != null)) return att
+      return { ...att, aspect_ratio_w: cached.w, aspect_ratio_h: cached.h }
+    }
+    return msg.attachments
+      ? { ...msg, attachments: msg.attachments.map(updateAtt) }
+      : msg.attachment
+        ? { ...msg, attachment: updateAtt(msg.attachment) }
+        : msg
+  })
+}
+
 function transferHistoryKeyForAccount(accountId: string | null): string {
   return accountId ? `${TRANSFER_HISTORY_KEY_PREFIX}:${accountId}` : TRANSFER_HISTORY_KEY_PREFIX
 }
@@ -390,6 +437,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const uploadSessionsRef = useRef<Map<string, UploadSession>>(new Map())
   const activeUploadSessionIdsRef = useRef<Set<string>>(new Set())
   const pendingUploadSessionIdsRef = useRef<string[]>([])
+  /** Wake run loop when send buffer drains (onbufferedamountlow) or receiver sends flow_resume; keyed by session attachmentId. */
+  const uploadSessionWakeRef = useRef<Map<string, () => void>>(new Map())
+  const uploadBufferedAmountLowLoggedRef = useRef(false)
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
   const downloadStreamStateRef = useRef<
@@ -477,7 +527,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       if (!raw) return
       const parsed = JSON.parse(raw) as EphemeralChatMessage[]
       if (!Array.isArray(parsed) || parsed.length === 0) return
-      const loaded = parsed
+      const loaded = mergeAspectCacheIntoMessages(currentAccountId, parsed)
       setMessagesByBucket((prev) => {
         if ((prev[bucket] ?? []).length > 0) return prev
       const merged = { ...prev, [bucket]: loaded }
@@ -913,6 +963,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
           for (const sub of runForSession.subscribers.values()) {
             if (sub.done || !sub.ready || sub.dc.readyState !== 'open') continue
+            // Check flowPaused first (receiver says don't send), then buffer; order matters if both change at once.
             while (!sub.flowPaused && sub.dc.readyState === 'open') {
               if (sub.dc.bufferedAmount > MAX_BUFFER) break
               const chunk = runForSession.cache.get(sub.nextOffset)
@@ -970,11 +1021,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
               runForSession.cacheBytes = 0
               return
             }
-            await sleep(4)
+            const wakePromise = new Promise<void>((resolve) => {
+              uploadSessionWakeRef.current.set(runForSession.attachmentId, () => {
+                uploadSessionWakeRef.current.delete(runForSession.attachmentId)
+                resolve()
+              })
+            })
+            await Promise.race([wakePromise, sleep(UPLOAD_SESSION_IDLE_TIMEOUT_MS)])
+            uploadSessionWakeRef.current.delete(runForSession.attachmentId)
           }
         }
       }
       run().finally(() => {
+        uploadSessionWakeRef.current.delete(runForSession.attachmentId)
         runForSession.running = false
         activeUploadSessionIdsRef.current.delete(runForSession.attachmentId)
         if (runForSession.subscribers.size === 0) {
@@ -1157,6 +1216,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     uploadSessionsRef.current.clear()
     activeUploadSessionIdsRef.current.clear()
     pendingUploadSessionIdsRef.current = []
+    uploadSessionWakeRef.current.clear()
     loadedBucketsRef.current.clear()
     setSettingsBySigningPubkey({})
     setDownloadSettingsState(getDownloadSettings(currentAccountId))
@@ -1738,6 +1798,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       dc.binaryType = 'arraybuffer'
       dc.bufferedAmountLowThreshold = UPLOAD_LOW_WATER
       const session = getOrCreateUploadSession(attachmentId, attachment)
+      dc.onbufferedamountlow = () => {
+        if (!uploadBufferedAmountLowLoggedRef.current) {
+          uploadBufferedAmountLowLoggedRef.current = true
+          console.log('[Cordia] onbufferedamountlow fired (send buffer drained below threshold); browser supports event.')
+        }
+        uploadSessionWakeRef.current.get(session.attachmentId)?.()
+      }
       const subscriber: UploadSubscriber = {
         requestId,
         toUserId: fromUserId,
@@ -1775,6 +1842,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             subscriber.flowPaused = true
           } else if (control.type === 'flow_resume') {
             subscriber.flowPaused = false
+            uploadSessionWakeRef.current.get(session.attachmentId)?.()
           }
         } catch {
           // ignore malformed control message
@@ -1788,6 +1856,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             error: prev?.status === 'completed' ? undefined : 'Receiver disconnected',
           }))
         }
+        uploadSessionWakeRef.current.get(session.attachmentId)?.()
         removeUploadSubscriber(session, requestId)
         cleanupTransferPeer(requestId)
       }
@@ -1799,6 +1868,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             error: 'Data channel error during upload',
           }))
         }
+        uploadSessionWakeRef.current.get(session.attachmentId)?.()
         removeUploadSubscriber(session, requestId)
         cleanupTransferPeer(requestId)
       }
@@ -1967,12 +2037,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       return Number.isFinite(t) ? t : 0
     }
     // Return sorted copy so late-delivered messages slot correctly.
-    return [...list].sort((a, b) => {
+    const result = [...list].sort((a, b) => {
       const ta = timeKey(a.sent_at)
       const tb = timeKey(b.sent_at)
       if (ta !== tb) return ta - tb
       return String(a.id).localeCompare(String(b.id))
     })
+    return result
   }
 
   const openServerChat: EphemeralMessagesContextType['openServerChat'] = (serverId, signingPubkey, chatId) => {
@@ -2128,6 +2199,58 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const updateBundlingProgress: EphemeralMessagesContextType['updateBundlingProgress'] = (messageId, percent) => {
     setMessagesByBucket((prev) => updateBundlingProgressById(prev, messageId, percent))
   }
+
+  const aspectCachePendingRef = useRef<Record<string, { w: number; h: number }>>({})
+  const aspectCacheFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const updateAttachmentAspect: EphemeralMessagesContextType['updateAttachmentAspect'] = useCallback(
+    (_signingPubkey, _chatId, messageId, attachmentId, aspect) => {
+      aspectCachePendingRef.current[`${messageId}:${attachmentId}`] = aspect
+      if (aspectCacheFlushRef.current) return
+      aspectCacheFlushRef.current = setTimeout(() => {
+        aspectCacheFlushRef.current = null
+        const pending = aspectCachePendingRef.current
+        aspectCachePendingRef.current = {}
+        if (Object.keys(pending).length === 0) return
+        const write = () => {
+          try {
+            const key = aspectCacheKeyForAccount(currentAccountId)
+            const cache = loadAspectCache(currentAccountId)
+            Object.assign(cache, pending)
+            window.localStorage.setItem(key, JSON.stringify(cache))
+          } catch {
+            // ignore
+          }
+        }
+        if (typeof requestIdleCallback !== 'undefined') {
+          requestIdleCallback(write, { timeout: 2000 })
+        } else {
+          write()
+        }
+      }, 2000)
+    },
+    [currentAccountId]
+  )
+
+  useEffect(
+    () => () => {
+      if (aspectCacheFlushRef.current) {
+        clearTimeout(aspectCacheFlushRef.current)
+        const pending = aspectCachePendingRef.current
+        if (Object.keys(pending).length > 0) {
+          try {
+            const key = aspectCacheKeyForAccount(currentAccountId)
+            const cache = loadAspectCache(currentAccountId)
+            Object.assign(cache, pending)
+            window.localStorage.setItem(key, JSON.stringify(cache))
+          } catch {
+            // ignore
+          }
+        }
+      }
+    },
+    [currentAccountId]
+  )
 
   const sendMixedMessage: EphemeralMessagesContextType['sendMixedMessage'] = async ({
     serverId,
@@ -2408,6 +2531,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       getServersForSha,
       unshareFromServer,
       getCachedPathForSha,
+      updateAttachmentAspect,
     }),
     [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments, serverSharedSha, contentCacheBySha]
   )

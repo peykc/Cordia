@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { forwardRef, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type MutableRefObject, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Ban, Eye, EyeOff, Trash2, Play, Plus, Minus, X, Volume2, VolumeX, ImageDown, ImageOff, CloudOff, Upload } from 'lucide-react'
 import { open, confirm } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
@@ -36,6 +37,7 @@ import { FileIcon, IconForCategory } from '../components/FileIcon'
 import { ImageDownPlay } from '../components/icons'
 import { CustomVideoPlayer } from '../components/CustomVideoPlayer'
 import { ChatMediaSlot, ChatFileRowSlot } from '../components/ChatMediaSlot'
+import { ChatSingleMediaAspect } from '../components/ChatSingleMediaAspect'
 import { MessageBubble } from '../components/MessageBubble'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
@@ -158,6 +160,7 @@ function ServerViewPage() {
     markSharedInServer,
     isSharedInServer,
     getCachedPathForSha,
+    updateAttachmentAspect,
   } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   const { toast } = useToast()
@@ -187,14 +190,15 @@ function ServerViewPage() {
   const voiceVolumeMenuRef = useRef<HTMLDivElement>(null)
   const [messageDraft, setMessageDraft] = useState('')
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
-  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const virtuosoScrollerRef = useRef<HTMLDivElement | null>(null)
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+  const lastInitialBottomScrollChatKeyRef = useRef<string | null>(null)
+  const pendingBottomStabilizeRef = useRef(0)
   const bundlingProgressRef = useRef<{
     messageId: string
     attachmentIds: string[]
     progressByAtt: Record<string, number>
   } | null>(null)
-  const chatScrollBottomAnchorRef = useRef<HTMLDivElement | null>(null)
-  const wasAtBottomRef = useRef(true)
   /** Refs to video container elements so we can scroll the active one into view when exiting fullscreen. */
   const videoScrollTargetsRef = useRef<Record<string, HTMLDivElement | null>>({})
   /** When set, this single-attachment video plays inline in chat (no overlay). */
@@ -222,8 +226,8 @@ function ServerViewPage() {
   const [revealedSpoilerIds, setRevealedSpoilerIds] = useState<Set<string>>(new Set())
   const [unsharedAttachmentRecords, setUnsharedAttachmentRecords] = useState<Record<string, Awaited<ReturnType<typeof getAttachmentRecord>>>>({})
   const fetchedUnsharedIdsRef = useRef<Set<string>>(new Set())
-  /** Aspect ratio per single-attachment (msg.id + attachment_id) so container/shimmer follow media ratio. */
-  const [singleAttachmentAspect, setSingleAttachmentAspect] = useState<Record<string, { w: number; h: number }>>({})
+  const unsharedPendingRef = useRef<Record<string, Awaited<ReturnType<typeof getAttachmentRecord>>>>({})
+  const unsharedFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Optimistically hide Share/Upload button on click to prevent double-clicks before async completes. */
   const [justSharedKeys, setJustSharedKeys] = useState<Set<string>>(new Set())
   const shareInProgressRef = useRef(false)
@@ -235,6 +239,16 @@ function ServerViewPage() {
   // Single group chat per server (v1: no chat selector)
   const groupChat = server?.chats?.[0] ?? null
   const chatMessages = groupChat ? getMessages(server?.signing_pubkey ?? '', groupChat.id) : []
+  const latestOwnReceiptKey = useMemo(() => {
+    if (!identity?.user_id || chatMessages.length === 0) return null
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const msg = chatMessages[i]
+      if (!msg || msg.from_user_id !== identity.user_id) continue
+      const deliveredByCount = (msg.delivered_by ?? []).filter((uid) => uid !== identity.user_id).length
+      return `${msg.id}:${msg.delivery_status ?? 'none'}:${deliveredByCount}`
+    }
+    return null
+  }, [chatMessages, identity?.user_id])
 
   // Load attachment records for own messages that are no longer in shared list (unshared) so we can still show the file
   useEffect(() => {
@@ -248,13 +262,28 @@ function ServerViewPage() {
         }
       }
     }
-    ids.forEach((id) => {
-      if (fetchedUnsharedIdsRef.current.has(id)) return
+    const toFetch = [...ids].filter((id) => !fetchedUnsharedIdsRef.current.has(id))
+    const UNSHARED_FLUSH_MS = 150
+    toFetch.forEach((id) => {
       fetchedUnsharedIdsRef.current.add(id)
       getAttachmentRecord(id).then((rec) => {
-        setUnsharedAttachmentRecords((prev) => ({ ...prev, [id]: rec }))
+        unsharedPendingRef.current[id] = rec
+        if (unsharedFlushRef.current) return
+        unsharedFlushRef.current = setTimeout(() => {
+          unsharedFlushRef.current = null
+          const pending = unsharedPendingRef.current
+          unsharedPendingRef.current = {}
+          if (Object.keys(pending).length === 0) return
+          setUnsharedAttachmentRecords((prev) => ({ ...prev, ...pending }))
+        }, UNSHARED_FLUSH_MS)
       })
     })
+    return () => {
+      if (unsharedFlushRef.current) {
+        clearTimeout(unsharedFlushRef.current)
+        unsharedFlushRef.current = null
+      }
+    }
   }, [chatMessages, sharedAttachments, identity?.user_id])
   const canSendMessages = Boolean(groupChat && server?.connection_mode === 'Signaling' && beaconStatus === 'connected')
 
@@ -516,20 +545,18 @@ function ServerViewPage() {
     if (!text && stagedAttachments.length === 0) return
 
     setMessageDraft('')
+    draftValueRef.current = ''
+    if (draftSaveTimeoutRef.current) {
+      clearTimeout(draftSaveTimeoutRef.current)
+      draftSaveTimeoutRef.current = null
+    }
     if (currentAccountId) clearDraft(currentAccountId, server.signing_pubkey)
     const toSend = [...stagedAttachments]
     setStagedAttachments([])
 
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:start',message:'send started',data:{toSendCount:toSend.length,hasText:!!text},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
-
     try {
       if (toSend.length > 0) {
         const allPrepared = toSend.every((a) => a.attachment_id && a.ready)
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:prepared',message:'allPrepared check',data:{allPrepared,toSendCount:toSend.length,timestamp:Date.now(),hypothesisId:'H6'}})}).catch(()=>{});
-        // #endregion
         if (!allPrepared) {
           throw new Error('Attachments are still preparing. Please wait.')
         }
@@ -550,16 +577,7 @@ function ServerViewPage() {
           })),
           text: text || undefined,
         })
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const el = chatScrollRef.current
-            if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-          })
-        })
         const records = await Promise.all(attachmentIds.map((id) => getAttachmentRecord(id)))
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:records',message:'getAttachmentRecord results',data:{recCount:records.length,allHaveSha:records.every(r=>!!r?.sha256),timestamp:Date.now(),hypothesisId:'H6'}})}).catch(()=>{});
-        // #endregion
         const isMediaFile = (fileName: string) =>
           isMediaType(getFileTypeFromExt(fileName) as Parameters<typeof isMediaType>[0])
         const dimensions = await Promise.all(
@@ -570,9 +588,6 @@ function ServerViewPage() {
             return getMediaDimensions(url, cat === 'video' ? 'video' : 'image')
           })
         )
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:afterDimensions',message:'getMediaDimensions done',data:{dimCount:dimensions.length},timestamp:Date.now(),hypothesisId:'H4b'})}).catch(()=>{});
-        // #endregion
         const allAttachments = records.map((rec, i) => {
           if (!rec?.sha256) throw new Error('Attachment not ready')
           const dim = dimensions[i]
@@ -587,9 +602,6 @@ function ServerViewPage() {
           }
         })
         bundlingProgressRef.current = null
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:beforeSend',message:'calling sendMixedMessage',data:{attCount:allAttachments.length},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-        // #endregion
         await sendMixedMessage({
           serverId: server.id,
           signingPubkey: server.signing_pubkey,
@@ -602,9 +614,6 @@ function ServerViewPage() {
         for (const att of allAttachments) {
           if (att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:success',message:'send completed',data:{attCount:allAttachments.length},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-        // #endregion
       } else {
         await sendMessage({
           serverId: server.id,
@@ -614,17 +623,12 @@ function ServerViewPage() {
           text,
         })
       }
-      // Snap chat to bottom when your message is sent
+      pendingBottomStabilizeRef.current = 12
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' })
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const el = chatScrollRef.current
-          if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-        })
+        virtuosoRef.current?.autoscrollToBottom()
       })
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'210e52'},body:JSON.stringify({sessionId:'210e52',location:'ServerViewPage:handleSendMessage:catch',message:'send failed, restoring staged',data:{error:String(error),toSendCount:toSend.length},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
-      // #endregion
       console.warn('Failed to send:', error)
       bundlingProgressRef.current = null
       setMessageDraft(text)
@@ -806,7 +810,9 @@ function ServerViewPage() {
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
       if (server?.signing_pubkey && currentAccountId) {
-        setDraft(currentAccountId, server.signing_pubkey, draftValueRef.current)
+        const value = draftValueRef.current
+        if (value.trim().length === 0) clearDraft(currentAccountId, server.signing_pubkey)
+        else setDraft(currentAccountId, server.signing_pubkey, value)
       }
     }
   }, [server?.signing_pubkey, currentAccountId])
@@ -830,41 +836,79 @@ function ServerViewPage() {
     return () => cancelAnimationFrame(raf)
   }, [messageDraft])
 
+  const VirtuosoScroller = useMemo(
+    () =>
+      forwardRef<HTMLDivElement, ComponentProps<'div'>>((props, ref) => (
+        <div
+          {...props}
+          onWheelCapture={props.onWheelCapture}
+          ref={(node) => {
+            virtuosoScrollerRef.current = node
+            if (typeof ref === 'function') ref(node)
+            else if (ref && typeof ref === 'object') {
+              ;(ref as MutableRefObject<HTMLDivElement | null>).current = node
+            }
+          }}
+          style={{ ...(props.style ?? {}), overflowX: 'hidden' }}
+        />
+      )),
+    []
+  )
+
   useEffect(() => {
-    wasAtBottomRef.current = true
-    if (chatMessages.length === 0 || !wasAtBottomRef.current) return
-    requestAnimationFrame(() => {
+    const el = virtuosoScrollerRef.current
+    if (!el) return
+    const stabilizeBottom = (reason: string) => {
+      if (pendingBottomStabilizeRef.current <= 0) return
+      const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
+      if (distanceFromBottom <= 4) return
+      pendingBottomStabilizeRef.current -= 1
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       requestAnimationFrame(() => {
-        if (!wasAtBottomRef.current) return
-        chatScrollBottomAnchorRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
+        virtuosoRef.current?.autoscrollToBottom()
+      })
+    }
+    const reportOverflow = () => {
+      stabilizeBottom('resize-or-scroll')
+    }
+    reportOverflow()
+    const ro = new ResizeObserver(reportOverflow)
+    ro.observe(el)
+    const mo = new MutationObserver(() => stabilizeBottom('mutation'))
+    mo.observe(el, { childList: true, subtree: true, characterData: true })
+    el.addEventListener('scroll', reportOverflow, { passive: true })
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+      el.removeEventListener('scroll', reportOverflow)
+    }
+  }, [chatMessages.length, groupChat?.id])
+
+  useEffect(() => {
+    if (!groupChat?.id) return
+    if (!chatMessages.length) return
+    const chatKey = `${serverId ?? 'no-server'}:${groupChat.id}`
+    const scrollRunKey = `${chatKey}:${location.key}`
+    if (lastInitialBottomScrollChatKeyRef.current === scrollRunKey) return
+    lastInitialBottomScrollChatKeyRef.current = scrollRunKey
+    pendingBottomStabilizeRef.current = 12
+    const raf = requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.autoscrollToBottom()
       })
     })
-  }, [serverId, groupChat?.id, chatMessages.length])
+    return () => cancelAnimationFrame(raf)
+  }, [serverId, groupChat?.id, chatMessages.length, location.key])
 
-  // Only scroll to bottom when the message list actually changed (e.g. new message), not on every re-render.
-  // chatMessages is a new array reference every render, so we must not depend on it or we'd fight the user's scroll (e.g. when video is playing and hover causes re-renders).
-  const lastMessageId = chatMessages.length > 0 ? chatMessages[chatMessages.length - 1].id : null
   useEffect(() => {
-    const el = chatScrollRef.current
-    const msgCount = chatMessages.length
-    const wasAtBottom = wasAtBottomRef.current
-    if (!groupChat || !el || msgCount === 0) return
-    if (!wasAtBottom) return
-    let rafCount = 0
-    const maxRaf = 8
-    const tick = () => {
-      if (!wasAtBottomRef.current || !chatScrollRef.current) return
-      const target = chatScrollRef.current
-      target.scrollTop = target.scrollHeight
-      rafCount += 1
-      if (rafCount < maxRaf) {
-        requestAnimationFrame(tick)
-      }
-    }
-    requestAnimationFrame(() => {
-      requestAnimationFrame(tick)
+    if (!groupChat?.id) return
+    if (!latestOwnReceiptKey) return
+    const raf = requestAnimationFrame(() => {
+      virtuosoRef.current?.autoscrollToBottom()
     })
-  }, [groupChat?.id, chatMessages.length, lastMessageId])
+    return () => cancelAnimationFrame(raf)
+  }, [groupChat?.id, latestOwnReceiptKey])
 
   if (!server) {
     return (
@@ -996,17 +1040,7 @@ function ServerViewPage() {
 
               {/* Text Chat Area */}
               <div className="flex-1 flex flex-col overflow-hidden">
-                <div
-                  ref={chatScrollRef}
-                  className="flex-1 overflow-y-auto p-4 pt-2"
-                  onScroll={() => {
-                    const el = chatScrollRef.current
-                    if (!el) return
-                    const threshold = 24
-                    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
-                  }}
-                >
-                  <div className="max-w-6xl mx-auto">
+                <div className="flex-1 overflow-hidden">
                     {chatMessages.length === 0 && (
                       <div className="flex justify-center py-12">
                         <p className="text-sm text-muted-foreground font-light">
@@ -1015,6 +1049,7 @@ function ServerViewPage() {
                       </div>
                     )}
                     {chatMessages.length > 0 && (() => {
+                      const perfStart = performance.now()
                       type ChatItem = { type: 'day'; dateStr: string } | { type: 'group'; userId: string; messages: typeof chatMessages }
                       const items: ChatItem[] = []
                       let lastDateStr: string | null = null
@@ -1030,6 +1065,7 @@ function ServerViewPage() {
                       const formatDay = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
 
                       const FIVE_MIN_MS = 5 * 60 * 1000
+                      const MAX_MESSAGES_PER_GROUP = 8
                       for (const msg of chatMessages) {
                         const msgDate = new Date(msg.sent_at)
                         const dateStr = formatDay(msgDate)
@@ -1042,6 +1078,7 @@ function ServerViewPage() {
                         const isContinuation = currentGroup
                           && currentGroup.userId === msg.from_user_id
                           && prevMsg
+                          && currentGroup.messages.length < MAX_MESSAGES_PER_GROUP
                           && (msgDate.getTime() - new Date(prevMsg.sent_at).getTime()) < FIVE_MIN_MS
                         if (!isContinuation) {
                           flushGroup()
@@ -1059,16 +1096,28 @@ function ServerViewPage() {
                         if (msg.delivery_status === 'delivered') lastDeliveredMessageId = msg.id
                         else lastPendingMessageId = msg.id
                       }
+                      const groupingMs = performance.now() - perfStart
+                      const attachmentMessageCount = chatMessages.reduce((acc, m) => {
+                        const c = m.attachments?.length ?? (m.attachment ? 1 : 0)
+                        return acc + (c > 0 ? 1 : 0)
+                      }, 0)
+                      const estimatedTransferScanOps = attachmentMessageCount * (attachmentTransfers.length + transferHistory.length)
 
                       return (
-                        <div className="flex flex-col-reverse">
-                          <div ref={chatScrollBottomAnchorRef} aria-hidden className="h-0 shrink-0" />
-                          <div className="flex flex-col-reverse space-y-2">
-                            {[...items].reverse().map((item, revIdx) => {
-                              const idx = items.length - 1 - revIdx
+                        <Virtuoso
+                          key={`${serverId ?? 'no-server'}:${groupChat?.id ?? 'no-chat'}:${location.key}`}
+                          ref={virtuosoRef}
+                          className="p-4 pt-2"
+                          style={{ height: '100%' }}
+                          components={{ Scroller: VirtuosoScroller }}
+                          data={items}
+                          alignToBottom
+                          followOutput="smooth"
+                          initialTopMostItemIndex={Math.max(items.length - 1, 0)}
+                          itemContent={(idx, item) => {
                               if (item.type === 'day') {
                                 return (
-                                  <div key={`day-${idx}`} className="flex items-center gap-3 py-2" aria-hidden>
+                                  <div key={`day-${idx}`} className="max-w-6xl mx-auto flex items-center gap-3 py-2" aria-hidden>
                                   <div className="h-px flex-1 bg-muted-foreground/50" />
                                   <span className="text-xs text-muted-foreground shrink-0">{item.dateStr}</span>
                                   <div className="h-px flex-1 bg-muted-foreground/50" />
@@ -1082,7 +1131,7 @@ function ServerViewPage() {
                             const memberLevel = getMemberLevel(server.signing_pubkey, userId, voicePresence.isUserInVoice(server.signing_pubkey, userId))
                             const levelColor = memberLevel === 'in_call' ? 'text-blue-500' : memberLevel === 'active' ? 'text-green-500' : memberLevel === 'online' ? 'text-amber-500' : 'text-muted-foreground'
                             return (
-                              <div key={`group-${idx}-${messages[0]?.id}`} className="flex gap-2">
+                              <div key={`group-${idx}-${messages[0]?.id}`} className="max-w-6xl mx-auto flex gap-2 py-1">
                                 <div className="shrink-0 w-8 flex flex-col items-center pt-0.5 self-start sticky top-0 z-10 bg-background pb-1">
                                   <div className="relative overflow-visible will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06]">
                                     <div className="absolute -left-1 top-1/2 -translate-y-1/2 z-10">
@@ -1215,20 +1264,6 @@ function ServerViewPage() {
                                                 {mediaAttachments.map((att) => {
                                                   const count = mediaAttachments.length
                                                   const isSingle = count === 1
-                                                  const mixedSingleKey = isSingle ? `${msg.id}-${att.attachment_id}` : ''
-                                                  const mixedSingleAspect = isSingle
-                                                    ? (singleAttachmentAspect[mixedSingleKey] ??
-                                                        (att.aspect_ratio_w != null && att.aspect_ratio_h != null
-                                                          ? { w: att.aspect_ratio_w, h: att.aspect_ratio_h }
-                                                          : { w: 1, h: 1 }))
-                                                    : { w: 16, h: 9 }
-                                                  const mixedSingleRatio = getSingleAttachmentAspectRatio(mixedSingleAspect)
-                                                  const { w: mixedSingleW, h: mixedSingleH } = isSingle
-                                                    ? getSingleAttachmentSize(mixedSingleAspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
-                                                    : { w: 320, h: 240 }
-                                                  // #region agent log
-                                                  if (isSingle) fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:mixed-media-single',message:'Rendering mixed message with single media',data:{msgKind: msg.kind, msgId: msg.id, attachmentId: att.attachment_id, w: mixedSingleAspect.w, h: mixedSingleAspect.h, mixedSingleW, mixedSingleH},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
-                                                  // #endregion
                                                   const isOwn = msg.from_user_id === identity?.user_id
                                                   const sharedItem = sharedAttachments.find((s) => s.attachment_id === att.attachment_id)
                                                   const unsharedRec = unsharedAttachmentRecords[att.attachment_id]
@@ -1259,7 +1294,34 @@ function ServerViewPage() {
                                                   const stateLabel = attachmentStateLabelFor(att)
                                                   const spoilerRevealed = revealedSpoilerIds.has(`${msg.id}:${att.attachment_id}`) || revealedSpoilerIds.has(msg.id)
                                                   if (att.spoiler && !spoilerRevealed) {
-                                                    return (
+                                                    return isSingle ? (
+                                                      <ChatSingleMediaAspect
+                                                        key={att.attachment_id}
+                                                        msgId={msg.id}
+                                                        attachmentId={att.attachment_id}
+                                                        att={att}
+                                                        isSingle
+                                                        signingPubkey={server?.signing_pubkey ?? ''}
+                                                        chatId={groupChat?.id ?? ''}
+                                                        updateAttachmentAspect={updateAttachmentAspect}
+                                                      >
+                                                        {({ aspect }) => (
+                                                          <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                              setRevealedSpoilerIds((prev) =>
+                                                                new Set(prev).add(`${msg.id}:${att.attachment_id}`)
+                                                              )
+                                                            }
+                                                            className="w-full py-4 px-2 bg-muted/80 hover:bg-muted rounded-lg text-center min-h-[12rem]"
+                                                            style={{ aspectRatio: getSingleAttachmentAspectRatio(aspect) }}
+                                                          >
+                                                            <EyeOff className="h-6 w-6 mx-auto mb-1 text-muted-foreground" />
+                                                            <span className="text-[10px] text-muted-foreground block">Spoiler</span>
+                                                          </button>
+                                                        )}
+                                                      </ChatSingleMediaAspect>
+                                                    ) : (
                                                       <button
                                                         key={att.attachment_id}
                                                         type="button"
@@ -1268,11 +1330,7 @@ function ServerViewPage() {
                                                             new Set(prev).add(`${msg.id}:${att.attachment_id}`)
                                                           )
                                                         }
-                                                        className={cn(
-                                                          'w-full py-4 px-2 bg-muted/80 hover:bg-muted rounded-lg text-center',
-                                                          isSingle ? 'min-h-[12rem]' : 'aspect-square'
-                                                        )}
-                                                        style={isSingle ? { aspectRatio: mixedSingleRatio } : undefined}
+                                                        className="w-full py-4 px-2 bg-muted/80 hover:bg-muted rounded-lg text-center aspect-square"
                                                       >
                                                         <EyeOff className="h-6 w-6 mx-auto mb-1 text-muted-foreground" />
                                                         <span className="text-[10px] text-muted-foreground block">Spoiler</span>
@@ -1281,17 +1339,31 @@ function ServerViewPage() {
                                                   }
                                                   const category = getFileTypeFromExt(att.file_name)
                                                   const isMedia = isMediaType(category as Parameters<typeof isMediaType>[0])
-                                                  return (
-                                                    <div
-                                                      key={att.attachment_id}
-                                                      className={cn(
-                                                        'group relative rounded-lg overflow-hidden border border-border/50',
-                                                        notDownloaded ? 'bg-muted' : 'bg-muted/30',
-                                                        isSingle && 'w-full min-w-0'
-                                                      )}
-                                                      style={isSingle ? { width: '100%', minWidth: CHAT_MEDIA_MIN_W, maxWidth: mixedSingleW, aspectRatio: mixedSingleRatio } : undefined}
-                                                    >
-                                                      {notDownloaded ? (
+                                                  if (isSingle) {
+                                                    return (
+                                                      <ChatSingleMediaAspect
+                                                        key={att.attachment_id}
+                                                        msgId={msg.id}
+                                                        attachmentId={att.attachment_id}
+                                                        att={att}
+                                                        isSingle
+                                                        signingPubkey={server?.signing_pubkey ?? ''}
+                                                        chatId={groupChat?.id ?? ''}
+                                                        updateAttachmentAspect={updateAttachmentAspect}
+                                                      >
+                                                        {({ aspect, onImageLoad, onVideoMetadata, onVideoAspect }) => {
+                                                          const mixedSingleRatio = getSingleAttachmentAspectRatio(aspect)
+                                                          const { w: mixedSingleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
+                                                          return (
+                                                            <div
+                                                              className={cn(
+                                                                'group relative rounded-lg overflow-hidden border border-border/50',
+                                                                notDownloaded ? 'bg-muted' : 'bg-muted/30',
+                                                                'w-full min-w-0'
+                                                              )}
+                                                              style={{ width: '100%', minWidth: CHAT_MEDIA_MIN_W, maxWidth: mixedSingleW, aspectRatio: mixedSingleRatio }}
+                                                            >
+                                                              {notDownloaded ? (
                                                         <NotDownloadedCardByWidth
                                                           threshold={NOT_DOWNLOADED_CARD_NARROW_PX}
                                                           className={cn(
@@ -1421,15 +1493,7 @@ function ServerViewPage() {
                                                                   alt=""
                                                                   loading="lazy"
                                                                   className="object-cover"
-                                                                  onLoad={isSingle ? (e) => {
-                                                                    const img = e.currentTarget
-                                                                    if (img.naturalWidth && img.naturalHeight) {
-                                                                      setSingleAttachmentAspect((prev) => ({
-                                                                        ...prev,
-                                                                        [mixedSingleKey]: { w: img.naturalWidth, h: img.naturalHeight },
-                                                                      }))
-                                                                    }
-                                                                  } : undefined}
+                                                                  onLoad={onImageLoad}
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
@@ -1491,12 +1555,7 @@ function ServerViewPage() {
                                                                   keepControlsWhenPaused
                                                                   autoPlay
                                                                   getScrollTarget={() => videoScrollTargetsRef.current[`${msg.id}-${att.attachment_id}`] ?? null}
-                                                                  onAspectRatio={isSingle ? (w, h) => {
-                                                                    setSingleAttachmentAspect((prev) => ({
-                                                                      ...prev,
-                                                                      [mixedSingleKey]: { w, h },
-                                                                    }))
-                                                                  } : undefined}
+                                                                  onAspectRatio={onVideoAspect}
                                                                   className={cn('w-full h-full rounded-lg', isSingle ? 'object-contain' : 'object-cover')}
                                                                 />
                                                               </div>
@@ -1534,15 +1593,7 @@ function ServerViewPage() {
                                                                       muted
                                                                       playsInline
                                                                       preload="auto"
-                                                                      onLoadedMetadata={isSingle ? (e) => {
-                                                                        const v = e.currentTarget
-                                                                        if (v.videoWidth && v.videoHeight) {
-                                                                          setSingleAttachmentAspect((prev) => ({
-                                                                            ...prev,
-                                                                            [mixedSingleKey]: { w: v.videoWidth, h: v.videoHeight },
-                                                                          }))
-                                                                        }
-                                                                      } : undefined}
+                                                                      onLoadedMetadata={onVideoMetadata}
                                                                     />
                                                                   )}
                                                                   {isSingle && category === 'video' && hasPath ? (
@@ -1552,15 +1603,7 @@ function ServerViewPage() {
                                                                       muted
                                                                       playsInline
                                                                       preload="metadata"
-                                                                      onLoadedMetadata={(e) => {
-                                                                        const v = e.currentTarget
-                                                                        if (v.videoWidth && v.videoHeight) {
-                                                                          setSingleAttachmentAspect((prev) => ({
-                                                                            ...prev,
-                                                                            [mixedSingleKey]: { w: v.videoWidth, h: v.videoHeight },
-                                                                          }))
-                                                                        }
-                                                                      }}
+                                                                      onLoadedMetadata={onVideoMetadata}
                                                                     />
                                                                   ) : null}
                                                                 </ChatMediaSlot>
@@ -1623,6 +1666,115 @@ function ServerViewPage() {
                                                           </div>
                                                         )
                                                       )}
+                                                            </div>
+                                                          )
+                                                        }}
+                                                      </ChatSingleMediaAspect>
+                                                    )
+                                                  }
+                                                  return (
+                                                    <div
+                                                      key={att.attachment_id}
+                                                      className={cn(
+                                                        'group relative rounded-lg overflow-hidden border border-border/50',
+                                                        notDownloaded ? 'bg-muted' : 'bg-muted/30',
+                                                        'aspect-square'
+                                                      )}
+                                                    >
+                                                      {notDownloaded ? (
+                                                        <NotDownloadedCardByWidth
+                                                          threshold={NOT_DOWNLOADED_CARD_NARROW_PX}
+                                                          className="relative w-full flex flex-col items-center justify-center gap-1.5 p-2 bg-muted rounded-lg border border-border/50 transition-[background-color,filter] hover:bg-muted/80 hover:brightness-110 aspect-square"
+                                                          narrowContent={
+                                                            <>
+                                                              {!liveDownload && (
+                                                                <Button type="button" variant="outline" size="icon" className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)} disabled={stateLabel !== 'Available'} aria-label="Download">
+                                                                  {stateLabel === 'Available' ? <Download className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" aria-hidden />}
+                                                                </Button>
+                                                              )}
+                                                              <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
+                                                              <span className="text-[9px] text-muted-foreground shrink-0">{formatBytes(att.size_bytes)}</span>
+                                                              {showDownloadProgress && (
+                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                  <div className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')} style={{ width: `${Math.max(2, downloadProgress)}%` }} />
+                                                                </div>
+                                                              )}
+                                                            </>
+                                                          }
+                                                          wideContent={
+                                                            <>
+                                                              {!liveDownload && (
+                                                                <Button type="button" variant="outline" size="icon" className="absolute top-1.5 right-1.5 h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)} disabled={stateLabel !== 'Available'} aria-label="Download">
+                                                                  {stateLabel === 'Available' ? <Download className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" aria-hidden />}
+                                                                </Button>
+                                                              )}
+                                                              {stateLabel === 'Unavailable' ? <ImageOff className="h-8 w-8 shrink-0 text-muted-foreground" aria-hidden /> : category === 'video' ? <ImageDownPlay className="h-8 w-8 shrink-0 text-muted-foreground" strokeWidth={1.5} /> : <ImageDown className="h-8 w-8 shrink-0 text-muted-foreground" strokeWidth={1.5} />}
+                                                              <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
+                                                              <span className="text-[9px] text-muted-foreground shrink-0">{formatBytes(att.size_bytes)}</span>
+                                                              {showDownloadProgress && (
+                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                  <div className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')} style={{ width: `${Math.max(2, downloadProgress)}%` }} />
+                                                                </div>
+                                                              )}
+                                                            </>
+                                                          }
+                                                        />
+                                                      ) : isMedia && hasPath ? (
+                                                        category === 'image' ? (
+                                                          <div className="relative w-full h-full min-h-0">
+                                                            <button type="button" className="block w-full h-full min-h-0 focus:outline-none" onClick={() => setMediaPreview({ type: 'image', url: convertFileSrc(hasPath), fileName: att.file_name })}>
+                                                              <ChatMediaSlot fillParent aspectClass="aspect-square">
+                                                                <img src={convertFileSrc(hasPath)} alt="" loading="lazy" className="object-cover" />
+                                                              </ChatMediaSlot>
+                                                            </button>
+                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              <span className="absolute top-1.5 right-1.5 z-20">
+                                                                <Tooltip content="Share again">
+                                                                  <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, true, hasPath) }}><Upload className="h-4 w-4" /></Button>
+                                                                </Tooltip>
+                                                              </span>
+                                                            )}
+                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              <span className="absolute top-1.5 right-1.5 z-20">
+                                                                <Tooltip content="Share in this chat">
+                                                                  <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, false, hasPath) }}><Upload className="h-4 w-4" /></Button>
+                                                                </Tooltip>
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                        ) : (
+                                                          <div className="relative w-full h-full min-h-0">
+                                                            <button type="button" className="relative block w-full h-full min-h-0 focus:outline-none group" onClick={() => setMediaPreview({ type: 'video', url: convertFileSrc(hasPath), fileName: att.file_name })}>
+                                                              <ChatMediaSlot fillParent aspectClass="aspect-square">
+                                                                {thumbPath ? (
+                                                                  <img src={convertFileSrc(thumbPath)} alt="" loading="lazy" className="object-cover" />
+                                                                ) : (
+                                                                  <video src={convertFileSrc(hasPath)} className="object-cover" muted playsInline preload="auto" />
+                                                                )}
+                                                              </ChatMediaSlot>
+                                                              <span className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 pointer-events-none rounded-lg">
+                                                                <span className="w-10 h-10 rounded-md bg-black/50 flex items-center justify-center">
+                                                                  <Play className="h-5 w-5 text-white fill-white" />
+                                                                </span>
+                                                              </span>
+                                                            </button>
+                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              <span className="absolute top-1.5 right-1.5 z-20">
+                                                                <Tooltip content="Share again">
+                                                                  <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, true, hasPath) }}><Upload className="h-4 w-4" /></Button>
+                                                                </Tooltip>
+                                                              </span>
+                                                            )}
+                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              <span className="absolute top-1.5 right-1.5 z-20">
+                                                                <Tooltip content="Share in this chat">
+                                                                  <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, false, hasPath) }}><Upload className="h-4 w-4" /></Button>
+                                                                </Tooltip>
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                        )
+                                                      ) : null}
                                                     </div>
                                                   )
                                                 })}
@@ -1850,31 +2002,31 @@ function ServerViewPage() {
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
                                                     : undefined
+                                                  const previewImagePath = thumbPath ?? hasPath
                                                   const category = getFileTypeFromExt(att.file_name)
                                                   const isMedia = isMediaType(category as Parameters<typeof isMediaType>[0])
                                                   const mediaPreviewPath = category === 'video'
                                                     ? (thumbPath || hasPath)
                                                     : (hasPath || thumbPath)
+                                                  const singleMediaKey = `${msg.id}:${att.attachment_id}`
                                                   const notDownloaded = !isOwn && !alreadyDownloadedAccessible && !hasPath
                                                   const p = liveDownload ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100))) : 0
                                                   const showProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
-                                                  const singleAspectKey = `${msg.id}-${att.attachment_id}`
-                                                  const singleAspect =
-                                                    singleAttachmentAspect[singleAspectKey] ??
-                                                    (att.aspect_ratio_w != null && att.aspect_ratio_h != null
-                                                      ? { w: att.aspect_ratio_w, h: att.aspect_ratio_h }
-                                                      : { w: 1, h: 1 })
-                                                  const singleAspectRatio = getSingleAttachmentAspectRatio(singleAspect)
-                                                  const { w: singleW, h: singleH } = getSingleAttachmentSize(
-                                                    singleAspect,
-                                                    CHAT_MEDIA_MAX_W,
-                                                    CHAT_MEDIA_MAX_H
-                                                  )
-                                                  // #region agent log
-                                                  fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:single-attachment-render',message:'Single attachment container values',data:{singleAspectKey, singleAspectW: singleAspect.w, singleAspectH: singleAspect.h, singleW, singleH, category, hasPath: !!hasPath, fromState: !!singleAttachmentAspect[singleAspectKey]},timestamp:Date.now(),hypothesisId:'A,B,C,E'})}).catch(()=>{});
-                                                  // #endregion
                                                   if (isMedia) {
                                                     return (
+                                                      <ChatSingleMediaAspect
+                                                        msgId={msg.id}
+                                                        attachmentId={att.attachment_id}
+                                                        att={att}
+                                                        isSingle
+                                                        signingPubkey={server?.signing_pubkey ?? ''}
+                                                        chatId={groupChat?.id ?? ''}
+                                                        updateAttachmentAspect={updateAttachmentAspect}
+                                                      >
+                                                        {({ aspect, onImageLoad, onVideoMetadata, onVideoAspect }) => {
+                                                          const singleAspectRatio = getSingleAttachmentAspectRatio(aspect)
+                                                          const { w: singleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
+                                                          return (
                                                       <div className="space-y-1 w-full min-w-0">
                                                         <div
                                                           className={cn(
@@ -2009,22 +2161,14 @@ function ServerViewPage() {
                                                               >
                                                                 <ChatMediaSlot fillParent>
                                                                   <img
-                                                                    src={convertFileSrc(hasPath)}
+                                                                    src={convertFileSrc(previewImagePath)}
                                                                     alt=""
                                                                     loading="lazy"
+                                                                    decoding="async"
                                                                     className="object-cover"
-                                                                    onLoad={(e) => {
-                                                                      const img = e.currentTarget
-                                                                      if (img.naturalWidth && img.naturalHeight) {
-                                                                        const key = `${msg.id}-${att.attachment_id}`
-                                                                        // #region agent log
-                                                                        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:image-onLoad',message:'Image dimensions reported',data:{key, w: img.naturalWidth, h: img.naturalHeight},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
-                                                                        // #endregion
-                                                                        setSingleAttachmentAspect((prev) => ({
-                                                                          ...prev,
-                                                                          [key]: { w: img.naturalWidth, h: img.naturalHeight },
-                                                                        }))
-                                                                      }
+                                                                    onLoad={onImageLoad}
+                                                                    onError={() => {
+                                                                      // no-op: image fallback is handled by parent media slot
                                                                     }}
                                                                   />
                                                                 </ChatMediaSlot>
@@ -2088,16 +2232,7 @@ function ServerViewPage() {
                                                                     keepControlsWhenPaused
                                                                     autoPlay
                                                                     getScrollTarget={() => videoScrollTargetsRef.current[`${msg.id}-${att.attachment_id}`] ?? null}
-                                                                    onAspectRatio={(w, h) => {
-                                                                      const key = `${msg.id}-${att.attachment_id}`
-                                                                      // #region agent log
-                                                                      fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:onAspectRatio',message:'CustomVideoPlayer aspect reported',data:{key, w, h},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-                                                                      // #endregion
-                                                                      setSingleAttachmentAspect((prev) => ({
-                                                                        ...prev,
-                                                                        [key]: { w, h },
-                                                                      }))
-                                                                    }}
+                                                                    onAspectRatio={onVideoAspect}
                                                                     className="w-full h-full object-contain rounded-lg"
                                                                   />
                                                                   <div className="absolute top-0 left-0 right-0 z-10 pointer-events-none pt-2 pb-10 px-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-b from-black/80 via-black/50 to-transparent" aria-hidden>
@@ -2112,21 +2247,27 @@ function ServerViewPage() {
                                                                 >
                                                                   <ChatMediaSlot fillParent>
                                                                     {thumbPath ? (
-                                                                      <img
-                                                                        src={convertFileSrc(thumbPath)}
-                                                                        alt=""
-                                                                        loading="lazy"
-                                                                        className="object-cover"
-                                                                        onLoad={(e) => {
-                                                                          const img = e.currentTarget
-                                                                          if (img.naturalWidth && img.naturalHeight) {
-                                                                            setSingleAttachmentAspect((prev) => ({
-                                                                              ...prev,
-                                                                              [singleAspectKey]: { w: img.naturalWidth, h: img.naturalHeight },
-                                                                            }))
-                                                                          }
-                                                                        }}
-                                                                      />
+                                                                      <>
+                                                                        <img
+                                                                          src={convertFileSrc(thumbPath)}
+                                                                          alt=""
+                                                                          loading="lazy"
+                                                                          className="object-cover"
+                                                                        />
+                                                                        {category === 'video' && hasPath ? (
+                                                                          <video
+                                                                            src={convertFileSrc(hasPath)}
+                                                                            className="!absolute !w-0 !h-0 !opacity-0 !pointer-events-none !min-w-0 !min-h-0"
+                                                                            muted
+                                                                            playsInline
+                                                                            preload="metadata"
+                                                                            onLoadedMetadata={onVideoMetadata}
+                                                                            onError={() => {
+                                                                              // no-op: metadata probe failures are tolerated
+                                                                            }}
+                                                                          />
+                                                                        ) : null}
+                                                                      </>
                                                                     ) : (
                                                                       <video
                                                                         src={convertFileSrc(hasPath)}
@@ -2134,18 +2275,9 @@ function ServerViewPage() {
                                                                         muted
                                                                         playsInline
                                                                         preload="metadata"
-                                                                        onLoadedMetadata={(e) => {
-                                                                          const v = e.currentTarget
-                                                                          if (v.videoWidth && v.videoHeight) {
-                                                                            const key = `${msg.id}-${att.attachment_id}`
-                                                                            // #region agent log
-                                                                            fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'badea1'},body:JSON.stringify({sessionId:'badea1',location:'ServerViewPage:video-onLoadedMetadata',message:'Video dimensions reported',data:{key, w: v.videoWidth, h: v.videoHeight},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
-                                                                            // #endregion
-                                                                            setSingleAttachmentAspect((prev) => ({
-                                                                              ...prev,
-                                                                              [key]: { w: v.videoWidth, h: v.videoHeight },
-                                                                            }))
-                                                                          }
+                                                                        onLoadedMetadata={onVideoMetadata}
+                                                                        onError={() => {
+                                                                          // no-op: render fallback handled elsewhere
                                                                         }}
                                                                       />
                                                                     )}
@@ -2229,6 +2361,9 @@ function ServerViewPage() {
                                                           </span>
                                                         )}
                                                       </div>
+                                                          )
+                                                        }}
+                                                      </ChatSingleMediaAspect>
                                                     )
                                                   }
                                                   const fileCategory = getFileTypeFromExt(att.file_name) as Parameters<typeof IconForCategory>[0]['cat']
@@ -2381,12 +2516,10 @@ function ServerViewPage() {
                                 </div>
                               </div>
                             )
-                          })}
-                          </div>
-                        </div>
+                          }}
+                        />
                       )
                     })()}
-                  </div>
                 </div>
 
                 <div className="border-t-2 border-border p-4 bg-card/50">

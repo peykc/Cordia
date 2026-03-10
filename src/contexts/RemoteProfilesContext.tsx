@@ -68,9 +68,6 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
 
   // Hydrate from persisted known_profiles on load / account switch so we never show "Unknown"
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:hydrate-effect',message:'hydrate effect run',data:{currentAccountId:currentAccountId ?? null},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     if (!currentAccountId) {
       setProfiles(new Map())
       setHydrated(false)
@@ -78,10 +75,6 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
     }
     setHydrated(false)
     setProfiles(new Map()) // clear first so we don't show previous account's names
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:after-clear',message:'cleared profiles before load',data:{currentAccountId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H2'})}).catch(()=>{});
-    fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:before-load',message:'calling loadKnownProfiles',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4'})}).catch(()=>{});
-    // #endregion
     let cancelled = false
     loadKnownProfiles()
       .then((map) => {
@@ -92,9 +85,6 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
             next.set(userId, knownToRemote(userId, k))
           }
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/b16fc0de-d4e0-4279-949b-a8e0e5fd58a5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'RemoteProfilesContext.tsx:load-resolved',message:'loadKnownProfiles resolved',data:{count:Object.keys(map).length,nextSize:next.size},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
-        // #endregion
         setProfiles(next)
         setHydrated(true)
       })

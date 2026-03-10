@@ -8,8 +8,6 @@ import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { fetchAndImportServerHintOpaque, listServers, listFriends } from '../lib/tauri'
 
-const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug ingest removed */ }
-
 /**
  * Pull latest server metadata (members/chats) from the beacon after login.
  *
@@ -238,12 +236,9 @@ export function ServerSyncBootstrap() {
         }
       }
 
-      const sendPresenceHello = async (fromLabel: string) => {
+      const sendPresenceHello = async (_fromLabel: string) => {
         if (!identity?.user_id) return
         if (ws.readyState !== WebSocket.OPEN) return
-        // #region agent log
-        DEBUG_LOG({ location: 'ServerSyncBootstrap.tsx:sendPresenceHello', message: 'sendPresenceHello invoked', data: { from: fromLabel, readyState: ws.readyState }, hypothesisId: 'H2a' })
-        // #endregion
         try {
           const [servers, friends] = await Promise.all([listServers(), listFriends()])
           const signingPubkeys = servers.map(s => s.signing_pubkey)
@@ -416,9 +411,6 @@ export function ServerSyncBootstrap() {
             const userId: string = msg.user_id
             const online: boolean = msg.online
             const active: string | null | undefined = msg.active_signing_pubkey
-            // #region agent log
-            DEBUG_LOG({ location: 'ServerSyncBootstrap.tsx:PresenceUpdate', message: 'PresenceUpdate received', data: { userId, online, spk: spk.slice(0, 8) }, hypothesisId: 'H2c' })
-            // #endregion
             presence.applyUpdate(spk, userId, online, active ?? null)
             return
           }

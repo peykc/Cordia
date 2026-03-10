@@ -10,21 +10,13 @@ interface ServersContextType {
 
 const ServersContext = createContext<ServersContextType | null>(null)
 
-const DEBUG_LOG = (_payload: Record<string, unknown>) => { /* no-op: debug ingest removed */ }
-
 export function ServersProvider({ children }: { children: ReactNode }) {
   const [servers, setServers] = useState<Server[]>([])
   const { currentAccountId } = useAccount()
 
   const refreshServers = useCallback(async () => {
-    // #region agent log
-    DEBUG_LOG({ location: 'ServersContext.tsx:refreshServers', message: 'refreshServers called', data: { currentAccountId }, hypothesisId: 'H1a' })
-    // #endregion
     try {
       const loadedServers = await listServers()
-      // #region agent log
-      DEBUG_LOG({ location: 'ServersContext.tsx:refreshServers', message: 'listServers result', data: { count: loadedServers.length, currentAccountId }, hypothesisId: 'H1b' })
-      // #endregion
       setServers(loadedServers)
     } catch (error) {
       console.error('Failed to load servers:', error)
@@ -33,16 +25,10 @@ export function ServersProvider({ children }: { children: ReactNode }) {
 
   // Load servers on mount
   useEffect(() => {
-    // #region agent log
-    DEBUG_LOG({ location: 'ServersContext.tsx:useEffect-mount', message: 'ServersContext effect run (mount)', data: { currentAccountId }, hypothesisId: 'H1a' })
-    // #endregion
     refreshServers()
 
     // Listen for server updates from other parts of the app
     const onServersUpdated = () => {
-      // #region agent log
-      DEBUG_LOG({ location: 'ServersContext.tsx:onServersUpdated', message: 'cordia:servers-updated fired', data: {}, hypothesisId: 'H1d' })
-      // #endregion
       refreshServers()
     }
     window.addEventListener('cordia:servers-updated', onServersUpdated)
@@ -66,9 +52,6 @@ export function ServersProvider({ children }: { children: ReactNode }) {
 
   // Refresh when account changes (live updates; local data already applied via servers-initial)
   useEffect(() => {
-    // #region agent log
-    DEBUG_LOG({ location: 'ServersContext.tsx:currentAccountId', message: 'currentAccountId changed', data: { currentAccountId }, hypothesisId: 'H1a' })
-    // #endregion
     if (currentAccountId) {
       refreshServers()
     }
