@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { memo, useState, useCallback, type ReactNode } from 'react'
 import type { EphemeralAttachmentMeta } from '../contexts/EphemeralMessagesContext'
 
 type Aspect = { w: number; h: number }
