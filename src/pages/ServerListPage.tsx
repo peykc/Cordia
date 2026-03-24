@@ -649,8 +649,8 @@ function ServerListPage() {
             <h1 className="text-sm font-light tracking-wider uppercase">Home</h1>
           </div>
           <div className="flex gap-3 items-center shrink-0 min-w-[14rem] max-w-[14.5rem] w-[14.5rem]">
-            <NotificationCenterButton />
             <TransferCenterButton />
+            <NotificationCenterButton />
             <UserCard
               variant="header"
               alignWithFriends

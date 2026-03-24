@@ -81,21 +81,24 @@ export function TransferCenterModal() {
 
   const popupEl = (
     <div className="fixed inset-0 z-[70] pointer-events-none">
+      {/*
+        Transparent scrim: closes on outside click without dimming/blurring the app (avoids color mismatch behind the popup).
+      */}
       <div
-        className="absolute inset-0 bg-black/20 pointer-events-auto"
+        className="absolute inset-0 bg-transparent pointer-events-auto"
         aria-hidden
         onMouseDown={closeTransferCenter}
       />
       <div
         className={cn(
           'fixed z-[71] flex flex-col overflow-hidden rounded-none border-2 border-border/70',
-          'bg-card/96 backdrop-blur-md shadow-2xl ring-1 ring-black/10 dark:ring-white/10',
+          'bg-[hsl(220deg_7%_20%_/_50%)] backdrop-blur-md shadow-2xl ring-1 ring-black/10 dark:ring-white/10',
           'pointer-events-auto'
         )}
         style={panelStyle}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <header className="shrink-0 border-b border-border/60 px-3 py-3 flex items-center gap-2.5 bg-gradient-to-b from-muted/40 to-muted/10 min-h-[52px]">
+        <header className="shrink-0 border-b border-border/60 px-3 py-3 flex items-center gap-2.5 bg-[hsl(220deg_7%_20%_/_85%)] min-h-[52px]">
           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={closeTransferCenter} aria-label="Close">
             <X className="h-4 w-4" />
           </Button>

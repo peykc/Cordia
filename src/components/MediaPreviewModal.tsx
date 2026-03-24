@@ -758,7 +758,7 @@ export function MediaPreviewModal({
                 imageImmersiveZoom ? 'p-0' : 'p-4'
               )}
             >
-            <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
+            <div className="pointer-events-none flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
         {loading ? (
           <div className="pointer-events-auto flex flex-col items-center gap-4 text-foreground">
             <Loader2 className="h-12 w-12 animate-spin" />
@@ -778,18 +778,19 @@ export function MediaPreviewModal({
             Vignette tracks contain rect when letterboxed. Layout zoom smoothness uses padding/carousel only.
           */
           <div className="flex h-full min-h-0 w-full min-w-0 items-center justify-center overflow-hidden pointer-events-none">
+            {/*
+              Outer shell is pointer-events-none so letterbox / padding passes clicks to the backdrop.
+              Only the hit overlay (bitmap bounds) uses pointer-events-auto for zoom + hover vignette.
+            */}
             <div
               className={cn(
-                'pointer-events-auto relative h-full w-full min-h-0 min-w-0 max-h-full max-w-full overflow-hidden rounded-none select-none [-webkit-user-drag:none]'
+                'pointer-events-none relative h-full w-full min-h-0 min-w-0 max-h-full max-w-full overflow-hidden rounded-none select-none [-webkit-user-drag:none]'
               )}
-              onMouseEnter={handleMediaMouseEnter}
-              onMouseMove={handleMediaMouseMove}
-              onMouseLeave={handleMediaMouseLeave}
             >
               <div
                 ref={imageStageRef}
                 role="presentation"
-                className="relative h-full w-full overflow-hidden select-none [-webkit-user-drag:none]"
+                className="pointer-events-none relative h-full w-full overflow-hidden select-none [-webkit-user-drag:none]"
               >
                 <div
                   className={cn(
@@ -860,7 +861,7 @@ export function MediaPreviewModal({
                 */}
                 <div
                   className={cn(
-                    'absolute z-[15] select-none [-webkit-user-drag:none]',
+                    'pointer-events-auto absolute z-[15] select-none [-webkit-user-drag:none]',
                     imageImmersiveZoom || imageVignetteRect == null ? 'inset-0' : null,
                     imageImmersiveZoom &&
                       (imageZoomPointerCaptured ? 'cursor-grabbing touch-none' : 'cursor-grab touch-none'),
@@ -876,6 +877,9 @@ export function MediaPreviewModal({
                         }
                       : undefined
                   }
+                  onMouseEnter={handleMediaMouseEnter}
+                  onMouseMove={handleMediaMouseMove}
+                  onMouseLeave={handleMediaMouseLeave}
                   onClick={handleImageZoomClick}
                   onPointerDown={onImageZoomPointerDown}
                   onPointerMove={onImageZoomPointerMove}

@@ -1002,8 +1002,8 @@ function ServerViewPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <BeaconStatus />
-            <NotificationCenterButton />
             <TransferCenterButton />
+            <NotificationCenterButton />
             <UserCard
               variant="header"
               onAvatarClick={(rect) => {

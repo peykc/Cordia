@@ -27,6 +27,8 @@ const HISTORY_ROW_H = 56
 const SEED_ROW_H = 58
 const ACTIVE_MAX_H_POPUP = 132
 const ACTIVE_MAX_H_FULL = 168
+/** Stats tiles + active strips + history + seeding section surfaces */
+const TRANSFER_SECTION_BAR_BG = 'bg-[hsl(220deg_7%_20%_/_85%)]'
 
 function formatRate(kbps?: number): string {
   const safe = Math.max(0, kbps ?? 0)
@@ -74,7 +76,8 @@ const StatTile = memo(function StatTile({
   return (
     <div
       className={cn(
-        'rounded-lg border border-border/50 bg-muted/40 px-2.5 py-2 min-w-0',
+        'rounded-lg border border-border/50 px-2.5 py-2 min-w-0',
+        TRANSFER_SECTION_BAR_BG,
         'shadow-sm',
         className
       )}
@@ -396,7 +399,12 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
         {/* Active strips */}
         <div className="grid shrink-0 grid-cols-1 gap-2 md:grid-cols-2 min-h-0">
           <div className="flex min-h-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className="shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between bg-muted/40">
+            <div
+              className={cn(
+                'shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between',
+                TRANSFER_SECTION_BAR_BG
+              )}
+            >
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Active downloads</span>
               {activeDownloadRows.length > 0 && (
                 <span className="text-[10px] tabular-nums text-muted-foreground">{activeDownloadRows.length}</span>
@@ -434,7 +442,12 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
             </div>
           </div>
           <div className="flex min-h-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className="shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between bg-muted/40">
+            <div
+              className={cn(
+                'shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between',
+                TRANSFER_SECTION_BAR_BG
+              )}
+            >
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Active uploads</span>
               {activeUploadRows.length > 0 && (
                 <span className="text-[10px] tabular-nums text-muted-foreground">{activeUploadRows.length}</span>
@@ -501,7 +514,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
         {/* Split history + library */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 md:grid-cols-2 overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className="shrink-0 space-y-1.5 border-b border-border/40 bg-muted/10 px-2 py-2">
+            <div className={cn('shrink-0 space-y-1.5 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Download history</span>
                 <span className="text-[10px] tabular-nums text-muted-foreground">{downloadHistoryForList.length}</span>
@@ -559,7 +572,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
           </div>
 
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className="shrink-0 space-y-1.5 border-b border-border/40 bg-muted/10 px-2 py-2">
+            <div className={cn('shrink-0 space-y-1.5 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Seeding library</span>
                 <span className="text-[10px] tabular-nums text-muted-foreground">{seedingLibraryFiltered.length}</span>
