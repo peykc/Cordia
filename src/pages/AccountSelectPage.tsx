@@ -265,7 +265,7 @@ function AccountSelectPage() {
                   This will permanently delete the account and all its data. This action cannot be undone.
                 </p>
 
-                <div className="bg-amber-500/10 border-l-2 border-amber-500/70 p-4 text-sm">
+                <div className="bg-warning/10 border-l-2 border-warning/70 p-4 text-sm">
                   <p className="text-foreground font-semibold mb-2">⚠️ Important: Download Your Keys First</p>
                   <p className="text-muted-foreground font-light">
                     Before deleting, download your account keys. You can use them to restore this account on another device or after reinstallation.

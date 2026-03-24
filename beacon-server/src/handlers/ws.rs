@@ -150,6 +150,10 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState, client_ip
         let presence_removed = presence.remove_presence_conn(&conn_id);
         drop(presence);
 
+        let mut swarm = state.swarm.write().await;
+        swarm.remove_conn(&conn_id);
+        drop(swarm);
+
         #[cfg(feature = "redis-backend")]
         let redis_client = {
             let backends = state.backends.read().await;

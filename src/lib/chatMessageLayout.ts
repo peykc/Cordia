@@ -9,6 +9,10 @@ export const CHAT_MEDIA_MAX_H = 240
 export const CHAT_MEDIA_MIN_W = 120
 export const CHAT_MEDIA_MIN_H = 90
 
+/** Max dimensions for single attachments to match the 3-col grid (32rem) */
+export const CHAT_MEDIA_GRID_MAX_W = 512
+export const CHAT_MEDIA_GRID_MAX_H = 288
+
 export type Aspect = { w: number; h: number }
 
 /**

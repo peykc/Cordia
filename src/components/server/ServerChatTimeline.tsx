@@ -3,6 +3,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { MessageBubble } from '../MessageBubble'
 import { ServerMessageContent } from './ServerMessageContent'
 import type { EphemeralChatMessage } from '../../contexts/EphemeralMessagesContext'
+import type { MediaPreviewState } from '../../contexts/MediaPreviewContext'
 import type { AttachmentTransferState, TransferHistoryEntry } from '../../contexts/EphemeralMessagesContext'
 import type { PresenceLevel } from '../../contexts/PresenceContext'
 import type { Server } from '../../lib/tauri'
@@ -11,10 +12,24 @@ type ChatItem =
   | { type: 'day'; id: string; dateStr: string }
   | { type: 'group'; id: string; userId: string; messages: EphemeralChatMessage[] }
 
+/** Avoid invalidating heavy row-model useMemo when transfer history changes but attachment-derived maps are unchanged. */
+function shallowAttachmentMapEqual(
+  a: Record<string, boolean | string | undefined>,
+  b: Record<string, boolean | string | undefined>
+): boolean {
+  const aKeys = Object.keys(a)
+  if (aKeys.length !== Object.keys(b).length) return false
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false
+  }
+  return true
+}
+
 /** Per-message primitives only; reused when unchanged so React.memo is effective. */
 export interface MessageRowModel {
   attachmentStateLabel: string | null
   hostOnlineForAttachment: boolean
+  swarmSourceCount: number
 }
 
 /** Callbacks and shared state passed via ref so row props stay stable. */
@@ -34,12 +49,15 @@ export interface MessageRowCallbacks {
   setRevealedSpoilerIds: (fn: (prev: Set<string>) => Set<string>) => void
   server: Server
   groupChat: { id: string }
+  profile: ServerChatTimelineProps['profile']
+  getProfile: ServerChatTimelineProps['getProfile']
+  fallbackNameForUser: ServerChatTimelineProps['fallbackNameForUser']
   updateAttachmentAspect: ServerChatTimelineProps['updateAttachmentAspect']
   requestAttachmentDownload: ServerChatTimelineProps['requestAttachmentDownload']
   isSharedInServer: (serverSigningPubkey: string, sha256: string) => boolean
   justSharedKeys: Set<string>
   handleShareAgainAttachment: ServerChatTimelineProps['handleShareAgainAttachment']
-  setMediaPreview: (opts: { type: 'image' | 'video'; url: string; fileName: string }) => void
+  setMediaPreview: (state: MediaPreviewState) => void
   inlinePlayingVideoId: string | null
   setInlinePlayingVideoId: (id: string | null) => void
   videoScrollTargetsRef: MutableRefObject<Record<string, HTMLDivElement | null>>
@@ -88,11 +106,11 @@ const ServerMessageRow = memo(function ServerMessageRow({
 function PresenceSquare({ level, size = 'default' }: { level: PresenceLevel; size?: 'default' | 'small' }) {
   const cls =
     level === 'in_call'
-      ? 'bg-blue-500'
+      ? 'bg-accent'
       : level === 'active'
-        ? 'bg-green-500'
+        ? 'bg-success'
         : level === 'online'
-          ? 'bg-amber-500'
+          ? 'bg-warning'
           : 'bg-muted-foreground'
   const sizeClass = size === 'small' ? 'h-1.5 w-1.5' : 'h-2 w-2'
   return <div className={`${sizeClass} ${cls} ring-2 ring-background`} />
@@ -117,7 +135,10 @@ export interface ServerChatTimelineProps {
   groupChat: { id: string }
   identity: { user_id: string; display_name?: string } | null
   profile: { avatar_data_url?: string | null }
-  getProfile: (userId: string) => { avatar_data_url?: string | null } | null | undefined
+  getProfile: (userId: string) =>
+    | { display_name?: string | null; avatar_data_url?: string | null }
+    | null
+    | undefined
   getMemberLevel: (signingPubkey: string, userId: string, isInVoiceForUser: boolean) => PresenceLevel
   isUserInVoice: (userId: string) => boolean
   fallbackNameForUser: (userId: string) => string
@@ -150,7 +171,7 @@ export interface ServerChatTimelineProps {
     isOwn: boolean,
     existingPath?: string | null
   ) => Promise<void>
-  setMediaPreview: (opts: { type: 'image' | 'video'; url: string; fileName: string }) => void
+  setMediaPreview: (state: MediaPreviewState) => void
   inlinePlayingVideoId: string | null
   setInlinePlayingVideoId: (id: string | null) => void
   videoScrollTargetsRef: MutableRefObject<Record<string, HTMLDivElement | null>>
@@ -227,6 +248,12 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     return byMsg
   }, [chatItems, attachmentTransfers])
 
+  const attachmentMapsCacheRef = useRef<{
+    rejected: Record<string, boolean>
+    activeUpload: Record<string, boolean>
+    completed: Record<string, string | undefined>
+  } | null>(null)
+
   /** Per-attachment summary maps so rows don't scan global arrays during render. */
   const { rejectedDownloadByAttachmentId, activeUploadByAttachmentId, completedDownloadPathByAttachmentId } = useMemo(() => {
     const rejected: Record<string, boolean> = {}
@@ -257,6 +284,24 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
       ) {
         completedDownloadPath[h.attachment_id] = h.saved_path
       }
+    }
+    const prev = attachmentMapsCacheRef.current
+    if (
+      prev &&
+      shallowAttachmentMapEqual(prev.rejected, rejected) &&
+      shallowAttachmentMapEqual(prev.activeUpload, activeUpload) &&
+      shallowAttachmentMapEqual(prev.completed, completedDownloadPath)
+    ) {
+      return {
+        rejectedDownloadByAttachmentId: prev.rejected,
+        activeUploadByAttachmentId: prev.activeUpload,
+        completedDownloadPathByAttachmentId: prev.completed,
+      }
+    }
+    attachmentMapsCacheRef.current = {
+      rejected,
+      activeUpload,
+      completed: completedDownloadPath,
     }
     return {
       rejectedDownloadByAttachmentId: rejected,
@@ -308,15 +353,32 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
                 : 'Available'
         const attachmentStateLabel =
           messageAttachments.length === 1 ? attachmentStateLabelFor(messageAttachments[0]) : null
+        const swarmSourceCount =
+          messageAttachments.length === 1
+            ? (() => {
+                const att = messageAttachments[0]
+                let count = hostOnlineForAttachment ? 1 : 0
+                if (
+                  att.sha256 &&
+                  isSharedInServer(server.signing_pubkey, att.sha256) &&
+                  msg.from_user_id !== identity?.user_id
+                ) {
+                  count += 1
+                }
+                return count
+              })()
+            : 0
         const rowModel: MessageRowModel = {
           attachmentStateLabel,
           hostOnlineForAttachment,
+          swarmSourceCount,
         }
         const prev = prevRowModelsRef.current[msg.id]
         const same =
           prev &&
           prev.attachmentStateLabel === rowModel.attachmentStateLabel &&
-          prev.hostOnlineForAttachment === rowModel.hostOnlineForAttachment
+          prev.hostOnlineForAttachment === rowModel.hostOnlineForAttachment &&
+          prev.swarmSourceCount === rowModel.swarmSourceCount
         if (same) reused += 1
         next[msg.id] = same ? prev : rowModel
       }
@@ -340,6 +402,7 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     isUserInVoice,
     server.signing_pubkey,
     identity?.user_id,
+    isSharedInServer,
   ])
 
   /** Precompute presence level and color per user so itemContent doesn't call getMemberLevel per group. */
@@ -381,6 +444,9 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     setRevealedSpoilerIds,
     server,
     groupChat,
+    profile,
+    getProfile,
+    fallbackNameForUser,
     updateAttachmentAspect,
     requestAttachmentDownload,
     isSharedInServer,

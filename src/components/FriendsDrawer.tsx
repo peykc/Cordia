@@ -157,9 +157,9 @@ export function FriendsDrawerPanel({
       closeDrawerTrigger={closeDrawerTrigger}
       stripHeader={
         <button
-          type="button"
-          className="relative h-8 w-8 grid place-items-center rounded-none hover:bg-accent/30"
-          onClick={handleFriendsClick}
+        type="button"
+        className="relative h-8 w-8 grid place-items-center rounded-none hover:bg-white/5"
+        onClick={handleFriendsClick}
         >
           <Users className="h-4 w-4" />
         </button>
@@ -189,11 +189,11 @@ export function FriendsDrawerPanel({
                 {bestLevel ? (
                   <div className="absolute -top-1 left-1/2 -translate-x-1/2">
                     {bestLevel === 'in_call' ? (
-                      <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+                      <div className="h-2 w-2 bg-accent ring-2 ring-background" />
                     ) : bestLevel === 'active' ? (
-                      <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+                      <div className="h-2 w-2 bg-success ring-2 ring-background" />
                     ) : bestLevel === 'online' ? (
-                      <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+                      <div className="h-2 w-2 bg-warning ring-2 ring-background" />
                     ) : (
                       <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
                     )}

@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize2, ChevronUp, ChevronDown, PictureInPicture, Loader2 } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react'
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize, Minimize2, ChevronUp, ChevronDown, PictureInPicture, Loader2 } from 'lucide-react'
 import { getCurrent } from '@tauri-apps/api/window'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
@@ -12,6 +12,15 @@ const PLAYBACK_SPEED_STEP = 0.25
 /** Breakpoints for dynamic control sizing */
 const WIDTH_COMPACT = 360
 const WIDTH_LARGE = 720
+
+/** Meta row wraps vertically → move hide above. */
+const HIDE_CHROME_META_OVERFLOW_ENTER_PX = 3
+/** Hide button closer than this to the end of the time text (or overlapping) → move hide to its own row above. */
+const HIDE_TIME_GAP_COLLISION_ENTER_PX = 6
+/** After colliding, only allow inline hide again once the player is this many px wider (avoids flip-flop; gutter metric breaks when center column is empty). */
+const HIDE_INLINE_WIDTH_EXIT_DELTA_PX = 36
+/** Ignore “exit above” until this long after entering above (stabilizes layout + ResizeObserver bursts). */
+const HIDE_PLACEMENT_SETTLE_MS = 160
 
 /** Truncation levels when compact layout overflows: 0=none, 1=time above, 2=+PiP above, 3=+speed above */
 type TruncationLevel = 0 | 1 | 2 | 3
@@ -52,15 +61,40 @@ type Props = {
   autoPlay?: boolean
   /** When going fullscreen, pass so we can scroll this element back into view on exit. */
   getScrollTarget?: () => HTMLElement | null
+  /** Notified when playback state changes (play / pause / ended). */
+  onPlayingChange?: (playing: boolean) => void
+  /** True after `ended` until replay or seek clears it (mirrors main play button replay vs play). */
+  onPlaybackEndedChange?: (ended: boolean) => void
+  /** When set (e.g. media preview), paused state can hide all chrome behind a chevron toggle. */
+  collapsibleChrome?: boolean
+  /** When true, main controls + progress are hidden; only the expand strip is shown. */
+  chromeCollapsed?: boolean
+  onChromeCollapsedChange?: (collapsed: boolean) => void
 }
 
-export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, showControls = false, keepControlsWhenPaused = false, autoPlay = false, getScrollTarget }: Props) {
+export function CustomVideoPlayer({
+  src,
+  className,
+  onCanPlay,
+  onAspectRatio,
+  showControls = false,
+  keepControlsWhenPaused = false,
+  autoPlay = false,
+  getScrollTarget,
+  onPlayingChange,
+  onPlaybackEndedChange,
+  collapsibleChrome = false,
+  chromeCollapsed = false,
+  onChromeCollapsedChange,
+}: Props) {
   const { setNativeVideoFullscreen } = useVideoFullscreen()
   const videoRef = useRef<HTMLVideoElement>(null)
   const hasAutoPlayedRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const progressBarRef = useRef<HTMLDivElement>(null)
   const [playing, setPlaying] = useState(false)
+  /** True after `ended` until user replays or seeks away (drives replay control vs play). */
+  const [playbackEnded, setPlaybackEnded] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(() => loadStoredVolume().volume)
@@ -77,9 +111,51 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   const speedMenuContainerRef = useRef<HTMLDivElement>(null)
   const [containerWidth, setContainerWidth] = useState(0)
   const belowBarRowRef = useRef<HTMLDivElement>(null)
+  /** Inner row: intrinsic width of “full” compact bottom bar (for un-truncate). */
   const measureRowRef = useRef<HTMLDivElement>(null)
+  /** Outer slot width (controls strip); inner must fit here to restore single-row layout. */
+  const measureCompactRowOuterRef = useRef<HTMLDivElement>(null)
+  const truncationRafRef = useRef(0)
   const [truncationLevel, setTruncationLevel] = useState<TruncationLevel>(0)
+  /** When true, hide-chrome sits above the compact meta row instead of between meta and scrubber. */
+  const [hideChromeAboveMeta, setHideChromeAboveMeta] = useState(false)
+  const hideChromePlacementRef = useRef(false)
+  const compactMetaRowRef = useRef<HTMLDivElement>(null)
+  const compactMetaTimeRef = useRef<HTMLSpanElement>(null)
+  const compactMetaHideButtonRef = useRef<HTMLButtonElement>(null)
+  const compactMetaRightClusterRef = useRef<HTMLDivElement>(null)
+  /** Container width when we last moved hide above (width-based exit hysteresis). */
+  const hideCollidedAtWidthRef = useRef<number | null>(null)
+  /** performance.now() when hide moved above; used so we don't exit above during layout settle. */
+  const hideEnteredAboveAtRef = useRef<number | null>(null)
+  const hidePlacementRafRef = useRef<number>(0)
   const [isBuffering, setIsBuffering] = useState(false)
+  /** Avoid notifying parent with stale `false` before the first play/pause/ended from the element. */
+  const hasEmittedPlayingRef = useRef(false)
+  const prevSrcForPlayingNotifyRef = useRef(src)
+
+  useEffect(() => {
+    if (prevSrcForPlayingNotifyRef.current !== src) {
+      prevSrcForPlayingNotifyRef.current = src
+      return
+    }
+    if (!playing && !hasEmittedPlayingRef.current) {
+      return
+    }
+    hasEmittedPlayingRef.current = true
+    onPlayingChange?.(playing)
+  }, [src, playing, onPlayingChange])
+
+  useEffect(() => {
+    onPlaybackEndedChange?.(playbackEnded)
+  }, [playbackEnded, onPlaybackEndedChange])
+
+  useEffect(() => {
+    setPlaying(false)
+    setPlaybackEnded(false)
+    hasAutoPlayedRef.current = false
+    hasEmittedPlayingRef.current = false
+  }, [src])
 
   const video = videoRef.current
   const isCompact = containerWidth > 0 && containerWidth < WIDTH_COMPACT
@@ -107,42 +183,160 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     return () => ro.disconnect()
   }, [])
 
-  // When compact: detect overflow and set truncation level. Truncation only when compact layout would collide.
-  // Hysteresis prevents flip-flop at boundary sizes (un-truncate only when we have buffer).
+  // When compact: detect overflow and set truncation level. Observe the whole player so widening always re-checks.
+  // Un-truncate uses inner intrinsic width vs outer slot (scrollWidth on overflow:hidden measure row was stuck === clientWidth).
   const truncationLevelRef = useRef(truncationLevel)
   truncationLevelRef.current = truncationLevel
   const OVERFLOW_HYSTERESIS_PX = 24
+
+  const timeLayoutFloor = Math.floor(currentTime)
+  const durationLayoutFloor = Number.isFinite(duration) ? Math.floor(duration) : 0
 
   useLayoutEffect(() => {
     if (!isCompact) {
       setTruncationLevel(0)
       return
     }
-    const rowToMeasure = truncationLevelRef.current > 0 ? measureRowRef.current : belowBarRowRef.current
-    if (!rowToMeasure) return
+    const container = containerRef.current
+    if (!container) return
 
-    const checkOverflow = () => {
-      const scrollW = rowToMeasure.scrollWidth
-      const clientW = rowToMeasure.clientWidth
+    const runTruncationCheck = () => {
       const current = truncationLevelRef.current
-      let next: TruncationLevel | null = null
       if (current > 0) {
-        if (scrollW + OVERFLOW_HYSTERESIS_PX <= clientW) next = 0
+        const outer = measureCompactRowOuterRef.current
+        const inner = measureRowRef.current
+        if (outer && inner) {
+          const fits = inner.offsetWidth + OVERFLOW_HYSTERESIS_PX <= outer.clientWidth
+          if (fits) {
+            setTruncationLevel((prev) => (prev > 0 ? 0 : prev))
+          }
+        }
       } else {
-        if (scrollW > clientW) next = 3
-      }
-      if (next !== null) {
-        requestAnimationFrame(() => {
-          setTruncationLevel((prev) => (next === 0 && prev > 0 ? 0 : next === 3 && prev < 3 ? 3 : prev))
-        })
+        const row = belowBarRowRef.current
+        if (row && row.scrollWidth > row.clientWidth + 1) {
+          setTruncationLevel((prev) => (prev === 0 ? 3 : prev))
+        }
       }
     }
 
-    checkOverflow()
-    const ro = new ResizeObserver(checkOverflow)
-    ro.observe(rowToMeasure)
-    return () => ro.disconnect()
+    const scheduleTruncationCheck = () => {
+      if (truncationRafRef.current) return
+      truncationRafRef.current = requestAnimationFrame(() => {
+        truncationRafRef.current = 0
+        runTruncationCheck()
+      })
+    }
+
+    scheduleTruncationCheck()
+    const ro = new ResizeObserver(scheduleTruncationCheck)
+    ro.observe(container)
+    return () => {
+      ro.disconnect()
+      if (truncationRafRef.current) {
+        cancelAnimationFrame(truncationRafRef.current)
+        truncationRafRef.current = 0
+      }
+    }
   }, [isCompact, truncationLevel])
+
+  // Re-measure when the time label width can change (without tying to every currentTime rAF tick).
+  useLayoutEffect(() => {
+    if (!isCompact || truncationLevel <= 0) return
+    const outer = measureCompactRowOuterRef.current
+    const inner = measureRowRef.current
+    if (!outer || !inner) return
+    if (inner.offsetWidth + OVERFLOW_HYSTERESIS_PX <= outer.clientWidth) {
+      setTruncationLevel((prev) => (prev > 0 ? 0 : prev))
+    }
+  }, [isCompact, truncationLevel, timeLayoutFloor, durationLayoutFloor, playbackRate])
+
+  // Inline hide between time and speed row; move hide to its own row above when it collides with the time text or the row wraps.
+  useLayoutEffect(() => {
+    const baseControlsVisible = showControls || (keepControlsWhenPaused && !playing)
+    const showHideChromeStrip =
+      collapsibleChrome && !playing && !chromeCollapsed && baseControlsVisible
+    if (!isCompact || !showAboveBar || !showHideChromeStrip) {
+      hideChromePlacementRef.current = false
+      hideCollidedAtWidthRef.current = null
+      hideEnteredAboveAtRef.current = null
+      setHideChromeAboveMeta(false)
+      return
+    }
+    const row = compactMetaRowRef.current
+    if (!row) return
+
+    const apply = () => {
+      const wasAbove = hideChromePlacementRef.current
+      const timeEl = compactMetaTimeRef.current
+      const hideBtn = compactMetaHideButtonRef.current
+
+      let next = wasAbove
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      const enteredAt = hideEnteredAboveAtRef.current
+      const settled =
+        enteredAt == null ? false : now - enteredAt >= HIDE_PLACEMENT_SETTLE_MS
+
+      if (wasAbove) {
+        const w0 = hideCollidedAtWidthRef.current
+        if (settled && w0 != null && containerWidth >= w0 + HIDE_INLINE_WIDTH_EXIT_DELTA_PX) {
+          next = false
+        }
+      } else {
+        if (timeEl && hideBtn) {
+          const tr = timeEl.getBoundingClientRect()
+          const hr = hideBtn.getBoundingClientRect()
+          const timeHideCollision = hr.left < tr.right + HIDE_TIME_GAP_COLLISION_ENTER_PX
+          if (timeHideCollision) next = true
+        }
+        const overflowY = row.scrollHeight - row.clientHeight
+        if (overflowY > HIDE_CHROME_META_OVERFLOW_ENTER_PX) next = true
+      }
+
+      if (!wasAbove && next) {
+        hideCollidedAtWidthRef.current = containerWidth
+        hideEnteredAboveAtRef.current = now
+      }
+      if (wasAbove && !next) {
+        hideCollidedAtWidthRef.current = null
+        hideEnteredAboveAtRef.current = null
+      }
+
+      hideChromePlacementRef.current = next
+      setHideChromeAboveMeta((prev) => (prev === next ? prev : next))
+    }
+
+    const scheduleApply = () => {
+      if (hidePlacementRafRef.current) return
+      hidePlacementRafRef.current = requestAnimationFrame(() => {
+        hidePlacementRafRef.current = 0
+        apply()
+      })
+    }
+
+    scheduleApply()
+    const ro = new ResizeObserver(() => {
+      scheduleApply()
+    })
+    ro.observe(row)
+    return () => {
+      ro.disconnect()
+      if (hidePlacementRafRef.current) {
+        cancelAnimationFrame(hidePlacementRafRef.current)
+        hidePlacementRafRef.current = 0
+      }
+    }
+  }, [
+    isCompact,
+    showAboveBar,
+    collapsibleChrome,
+    playing,
+    chromeCollapsed,
+    showControls,
+    keepControlsWhenPaused,
+    containerWidth,
+    currentTime,
+    duration,
+  ])
 
   // Sync state when user exits OS-level fullscreen (e.g. Escape key or window event)
   useEffect(() => {
@@ -229,7 +423,10 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
       }
     }
     const onDurationChange = () => setDuration(v.duration)
-    const onPlay = () => setPlaying(true)
+    const onPlay = () => {
+      setPlaying(true)
+      setPlaybackEnded(false)
+    }
     const onPause = () => {
       setPlaying(false)
       setCurrentTime(v.currentTime)
@@ -238,9 +435,13 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
     const onWaiting = () => setIsBuffering(true)
     const onCanPlay = () => setIsBuffering(false)
     const onPlaying = () => setIsBuffering(false)
-    const onSeeked = () => setIsBuffering(false)
+    const onSeeked = () => {
+      setIsBuffering(false)
+      if (!v.ended) setPlaybackEnded(false)
+    }
     const onEnded = () => {
       setPlaying(false)
+      setPlaybackEnded(true)
       setCurrentTime(v.currentTime)
       setIsBuffering(false)
     }
@@ -334,9 +535,17 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
   }
 
   const togglePlay = () => {
-    if (!video) return
-    if (video.paused) video.play()
-    else video.pause()
+    const v = videoRef.current
+    if (!v) return
+    if (playbackEnded || v.ended) {
+      v.currentTime = 0
+      setCurrentTime(0)
+      setPlaybackEnded(false)
+      void v.play()
+      return
+    }
+    if (v.paused) void v.play()
+    else v.pause()
   }
 
   const toggleMute = () => setMuted((m) => !m)
@@ -480,6 +689,36 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
 
   const fullscreenOverlay = isFullscreen && isNativeFullscreen
 
+  const baseControlsVisible = showControls || (keepControlsWhenPaused && !playing)
+  const showMainChrome = baseControlsVisible && !(collapsibleChrome && chromeCollapsed)
+  const showRevealChromeStrip = collapsibleChrome && chromeCollapsed
+  const showCollapseChromeControl =
+    collapsibleChrome && !playing && !chromeCollapsed && baseControlsVisible
+
+  const renderCollapseHideButton = (buttonRef?: Ref<HTMLButtonElement>) => (
+    <button
+      ref={buttonRef}
+      type="button"
+      className={cn(
+        'flex items-center justify-center rounded-md bg-[hsl(220_7%_38%_/_0.47)] hover:bg-[hsl(220_7%_44%_/_0.58)] text-white transition-colors shrink-0 border border-white/15 box-border',
+        isCompact ? 'h-[1.1rem] w-10 px-0 active:scale-100' : 'h-6 min-w-10 px-4 active:scale-100'
+      )}
+      onClick={(e) => {
+        e.stopPropagation()
+        onChromeCollapsedChange?.(true)
+      }}
+      aria-label="Hide player controls"
+    >
+      <span className="inline-flex min-w-4 max-w-4 w-4 shrink-0 items-center justify-center">
+        <ChevronDown className={cn(isCompact ? 'h-3 w-3' : 'h-4 w-4', 'opacity-95')} strokeWidth={2.25} />
+      </span>
+    </button>
+  )
+
+  const hideChromeRow = (wrapperMbClass: string) => (
+    <div className={cn('flex w-full justify-center', wrapperMbClass)}>{renderCollapseHideButton()}</div>
+  )
+
   const inner = (
     <>
       <div className={cn(
@@ -514,16 +753,31 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
           isCompact && 'pt-3 pb-1 px-1.5',
           !isCompact && !isLarge && 'pt-8 pb-2 px-3',
           isLarge && 'pt-10 pb-3 px-4',
-          (showControls || (keepControlsWhenPaused && !playing)) ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          showMainChrome ? 'opacity-100' : 'opacity-0 pointer-events-none'
         )}
       >
-        {/* Truncation: row above progress bar - timestamp (left), speed + PiP (right). Only when compact layout overflows. */}
+        {/* Truncation: compact meta row — time | hide (inline, same row) | speed+PiP. If that row wraps, hide moves to its own row above (measured via compactMetaRowRef). */}
+        {showCollapseChromeControl && hideChromeAboveMeta && showAboveBar && hideChromeRow(isCompact ? 'mb-0.5' : 'mb-2')}
         {showAboveBar && (
-          <div className="flex items-center justify-between gap-2 mb-0.5 text-white text-[10px] min-w-0">
-            <span className="shrink-0 tabular-nums">
+          <div
+            ref={compactMetaRowRef}
+            className="grid w-full min-w-0 grid-cols-[1fr_auto_1fr] items-center gap-x-1 mb-0.5 text-white text-[10px]"
+          >
+            <span
+              ref={compactMetaTimeRef}
+              className="min-w-0 justify-self-start truncate tabular-nums"
+            >
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
-            <div className="flex items-center gap-0.5 shrink-0">
+            <div className="flex justify-center justify-self-center px-0.5">
+              {showCollapseChromeControl && !hideChromeAboveMeta
+                ? renderCollapseHideButton(compactMetaHideButtonRef)
+                : null}
+            </div>
+            <div
+              ref={compactMetaRightClusterRef}
+              className="flex items-center justify-end justify-self-end gap-0.5 shrink-0"
+            >
               <div ref={speedMenuContainerRef} className="relative">
                 <Button
                   variant="ghost"
@@ -557,6 +811,9 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
           </div>
         )}
 
+        {/* Hide chrome above scrubber when meta row is on the bottom (non-compact-truncated layout) */}
+        {showCollapseChromeControl && !showAboveBar && hideChromeRow(isCompact ? 'mb-1' : 'mb-2')}
+
         {/* Progress bar - hard corners, thumb visible whenever controls are shown. py-px expands hit area 1px above/below without changing bar height. */}
         <div
           ref={progressBarRef}
@@ -585,25 +842,34 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
           />
         </div>
 
-        {/* Hidden row for overflow measurement when truncated - mirrors full compact row to detect when we can un-truncate */}
+        {/* Hidden probe: outer = available width; inner = intrinsic full compact bar (no overflow:hidden — fixes stuck scrollWidth). */}
         {showAboveBar && (
           <div
-            ref={measureRowRef}
-            className="absolute left-1.5 top-3 right-1.5 flex items-center gap-x-1 text-[10px] opacity-0 pointer-events-none overflow-hidden"
+            ref={measureCompactRowOuterRef}
+            className="absolute left-1.5 top-3 right-1.5 min-w-0 opacity-0 pointer-events-none"
             style={{ visibility: 'hidden' }}
             aria-hidden
           >
-            <div className="h-6 w-6 shrink-0" />
-            <span className="shrink-0 tabular-nums">0:00 / 34:52</span>
-            <div className="flex items-center gap-0.5 shrink-0">
+            <div
+              ref={measureRowRef}
+              className="inline-flex w-max items-center gap-x-1 whitespace-nowrap text-[10px] text-white"
+            >
               <div className="h-6 w-6 shrink-0" />
-              <div className="h-0.5 w-8 shrink-0" />
+              <span className="shrink-0 tabular-nums">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </span>
+              <div className="flex items-center gap-0.5 shrink-0">
+                <div className="h-6 w-6 shrink-0" />
+                <div className="h-0.5 w-8 shrink-0" />
+              </div>
+              <div className="h-6 px-1.5 shrink-0 min-w-0">
+                <span className="tabular-nums">
+                  {playbackRate % 1 === 0 ? `${playbackRate}x` : `${playbackRate.toFixed(2)}x`}
+                </span>
+              </div>
+              {typeof document !== 'undefined' && document.pictureInPictureEnabled && <div className="h-6 w-6 shrink-0" />}
+              <div className="h-6 w-6 shrink-0" />
             </div>
-            <div className="h-6 px-1.5 shrink-0 min-w-0">
-              <span>1x</span>
-            </div>
-            {typeof document !== 'undefined' && document.pictureInPictureEnabled && <div className="h-6 w-6 shrink-0" />}
-            <div className="h-6 w-6 shrink-0" />
           </div>
         )}
 
@@ -625,9 +891,12 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
               isLarge && 'h-10 w-10'
             )}
             onClick={togglePlay}
+            aria-label={playbackEnded ? 'Replay' : playing ? 'Pause' : 'Play'}
           >
             {playing ? (
               <Pause className={cn(isCompact ? 'h-3 w-3' : isLarge ? 'h-5 w-5' : 'h-4 w-4')} />
+            ) : playbackEnded ? (
+              <RotateCcw className={cn(isCompact ? 'h-3 w-3' : isLarge ? 'h-5 w-5' : 'h-4 w-4')} />
             ) : (
               <Play className={cn(isCompact ? 'h-3 w-3' : isLarge ? 'h-5 w-5' : 'h-4 w-4')} />
             )}
@@ -793,6 +1062,26 @@ export function CustomVideoPlayer({ src, className, onCanPlay, onAspectRatio, sh
       )}
     >
       {inner}
+      {showRevealChromeStrip && (
+        <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none flex justify-center pb-2">
+          <button
+            type="button"
+            className={cn(
+              'pointer-events-auto flex items-center justify-center rounded-md bg-[hsl(220_7%_38%_/_0.47)] hover:bg-[hsl(220_7%_44%_/_0.58)] text-white transition-colors shrink-0 border border-white/15 box-border',
+              isCompact ? 'h-[1.1rem] w-10 px-0 active:scale-100' : 'h-6 min-w-10 px-4 active:scale-100'
+            )}
+            onClick={(e) => {
+              e.stopPropagation()
+              onChromeCollapsedChange?.(false)
+            }}
+            aria-label="Show player controls"
+          >
+            <span className="inline-flex min-w-4 max-w-4 w-4 shrink-0 items-center justify-center">
+              <ChevronUp className={cn(isCompact ? 'h-3 w-3' : 'h-4 w-4', 'opacity-95')} strokeWidth={2.25} />
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   )
 

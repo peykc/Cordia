@@ -29,7 +29,7 @@ export function DownloadsSettings() {
       title: 'Choose downloads folder',
     })
     if (!picked || Array.isArray(picked)) return
-    apply({ preferred_dir: picked })
+    apply({ ...settings, preferred_dir: picked })
   }
 
   return (
@@ -58,10 +58,31 @@ export function DownloadsSettings() {
             type="button"
             size="sm"
             variant="ghost"
-            onClick={() => apply({ preferred_dir: null })}
+            onClick={() => apply({ ...settings, preferred_dir: null })}
           >
             Use system default
           </Button>
+        </div>
+        <div className="space-y-2 pt-1 border-t border-border/40">
+          <label className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-muted-foreground">Group downloads by server</span>
+            <input
+              type="checkbox"
+              checked={settings.group_by_server}
+              onChange={(e) => apply({ ...settings, group_by_server: e.target.checked })}
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-muted-foreground">Flat mode (legacy single folder)</span>
+            <input
+              type="checkbox"
+              checked={settings.flat_mode}
+              onChange={(e) => apply({ ...settings, flat_mode: e.target.checked })}
+            />
+          </label>
+          <p className="text-[11px] text-muted-foreground">
+            Grouped mode uses <code>Cordia/&lt;server&gt;/YYYY_MM</code> under your base folder.
+          </p>
         </div>
       </div>
     </div>

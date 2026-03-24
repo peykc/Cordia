@@ -37,7 +37,13 @@ export interface ServerComposerProps {
   onAddAttachment: () => void
   onRemoveStagedAttachment: (stagedId: string) => void
   onToggleStagedSpoiler: (stagedId: string) => void
-  onMediaPreview: (opts: { type: 'image' | 'video'; url: string; fileName: string }) => void
+  onMediaPreview: (opts: {
+    type: 'image' | 'video'
+    url: string
+    fileName: string
+    localPath: string
+    sizeBytes: number
+  }) => void
 }
 
 function ServerComposerImpl({
@@ -87,6 +93,8 @@ function ServerComposerImpl({
                             type: type as 'image' | 'video',
                             url: url ?? convertFileSrc(att.path),
                             fileName: fileName ?? att.file_name,
+                            localPath: att.path,
+                            sizeBytes: att.size_bytes,
                           })
                         }
                       }}

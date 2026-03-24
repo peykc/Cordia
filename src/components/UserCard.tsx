@@ -96,11 +96,11 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
       case 'offline':
         return 'text-muted-foreground'
       case 'home':
-        return 'text-orange-500'
+        return 'text-warning'
       case 'in_server':
-        return 'text-green-500'
+        return 'text-success'
       case 'in_call':
-        return 'text-blue-500'
+        return 'text-accent'
       default:
         return 'text-muted-foreground'
     }
@@ -160,7 +160,7 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
           </div>
         )}
         <div className={`absolute -bottom-0.5 -right-0.5 ${dotSize} border-2 border-background rounded-none bg-background`}>
-          <div className={`w-full h-full rounded-none ${selfPresence === 'offline' ? 'bg-gray-500' : selfPresence === 'home' ? 'bg-orange-500' : selfPresence === 'in_server' ? 'bg-green-500' : 'bg-blue-500'}`} />
+          <div className={`w-full h-full rounded-none ${selfPresence === 'offline' ? 'bg-muted-foreground' : selfPresence === 'home' ? 'bg-warning' : selfPresence === 'in_server' ? 'bg-success' : 'bg-accent'}`} />
         </div>
       </div>
     )
@@ -194,7 +194,7 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
         <div className="flex items-center gap-0.5 shrink-0">
           {isInVoice && (
             <Tooltip content="Leave voice call" side="top">
-              <Button variant="ghost" size="icon" onClick={leaveVoice} className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10">
+              <Button variant="ghost" size="icon" onClick={leaveVoice} className="h-8 w-8 text-destructive hover:text-destructive/90 hover:bg-destructive/10">
                 <PhoneOff className="h-4 w-4" />
               </Button>
             </Tooltip>
@@ -247,12 +247,12 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
             <div
               className={`w-full h-full rounded-none ${
                 selfPresence === 'offline'
-                  ? 'bg-gray-500'
+                  ? 'bg-muted-foreground'
                   : selfPresence === 'home'
-                    ? 'bg-orange-500'
+                    ? 'bg-warning'
                     : selfPresence === 'in_server'
-                      ? 'bg-green-500'
-                      : 'bg-blue-500'
+                      ? 'bg-success'
+                      : 'bg-accent'
               }`}
             />
           </div>
@@ -276,7 +276,7 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
                     variant="ghost"
                     size="icon"
                     onClick={leaveVoice}
-                    className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                    className="h-8 w-8 text-destructive hover:text-destructive/90 hover:bg-destructive/10"
                   >
                     <PhoneOff className="h-4 w-4" />
                   </Button>

@@ -859,6 +859,106 @@ pub async fn handle_message(
             Ok(())
         }
 
+        SignalingMessage::SwarmAnnounce { signing_pubkey, sha256, seeding, piece_count, upload_kbps, quality_score } => {
+            if signing_pubkey.trim().is_empty() {
+                return Err("SwarmAnnounce requires signing_pubkey".to_string());
+            }
+            if sha256.trim().is_empty() {
+                return Err("SwarmAnnounce requires sha256".to_string());
+            }
+            let user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("SwarmAnnounce requires PresenceHello first".to_string()),
+            };
+            {
+                let mut swarm = state.swarm.write().await;
+                swarm.announce(
+                    signing_pubkey,
+                    sha256,
+                    conn_id.clone(),
+                    user_id,
+                    seeding,
+                    piece_count,
+                    upload_kbps,
+                    quality_score,
+                );
+            }
+            Ok(())
+        }
+
+        SignalingMessage::SwarmUnannounce { signing_pubkey, sha256 } => {
+            if signing_pubkey.trim().is_empty() {
+                return Err("SwarmUnannounce requires signing_pubkey".to_string());
+            }
+            if sha256.trim().is_empty() {
+                return Err("SwarmUnannounce requires sha256".to_string());
+            }
+            {
+                let mut swarm = state.swarm.write().await;
+                swarm.unannounce(&signing_pubkey, &sha256, conn_id);
+            }
+            Ok(())
+        }
+
+        SignalingMessage::SwarmPeerListRequest { signing_pubkey, sha256, max_peers } => {
+            if signing_pubkey.trim().is_empty() {
+                return Err("SwarmPeerListRequest requires signing_pubkey".to_string());
+            }
+            if sha256.trim().is_empty() {
+                return Err("SwarmPeerListRequest requires sha256".to_string());
+            }
+            // Require authenticated connection identity.
+            if state.friends.read().await.get_user_id_for_conn(conn_id).is_none() {
+                return Err("SwarmPeerListRequest requires PresenceHello first".to_string());
+            }
+            const DEFAULT_MAX_SWARM_PEERS: usize = 24;
+            const ABSOLUTE_MAX_SWARM_PEERS: usize = 64;
+            let peer_cap = max_peers
+                .unwrap_or(DEFAULT_MAX_SWARM_PEERS)
+                .max(1)
+                .min(ABSOLUTE_MAX_SWARM_PEERS);
+            let peers = {
+                let swarm = state.swarm.read().await;
+                swarm.peers_for(&signing_pubkey, &sha256, conn_id, peer_cap)
+            };
+            let outgoing = SignalingMessage::SwarmPeerListResponse {
+                signing_pubkey,
+                sha256,
+                peers,
+            };
+            let json = serde_json::to_string(&outgoing)
+                .map_err(|e| format!("Failed to serialize SwarmPeerListResponse: {}", e))?;
+            sender
+                .send(tokio_tungstenite::tungstenite::Message::Text(json))
+                .map_err(|e| format!("Failed to send SwarmPeerListResponse: {}", e))?;
+            Ok(())
+        }
+
+        SignalingMessage::SwarmHealthUpdate { signing_pubkey, sha256, upload_kbps, quality_score, leechers } => {
+            if signing_pubkey.trim().is_empty() {
+                return Err("SwarmHealthUpdate requires signing_pubkey".to_string());
+            }
+            if sha256.trim().is_empty() {
+                return Err("SwarmHealthUpdate requires sha256".to_string());
+            }
+            // Require authenticated connection identity.
+            if state.friends.read().await.get_user_id_for_conn(conn_id).is_none() {
+                return Err("SwarmHealthUpdate requires PresenceHello first".to_string());
+            }
+            {
+                let mut swarm = state.swarm.write().await;
+                swarm.update_health(
+                    &signing_pubkey,
+                    &sha256,
+                    conn_id,
+                    upload_kbps,
+                    quality_score,
+                    leechers,
+                );
+            }
+            Ok(())
+        }
+
         SignalingMessage::ProfilePush { to_user_ids, display_name, real_name, show_real_name, rev, avatar_data_url, avatar_rev, account_created_at } => {
             const MAX_PROFILE_PUSH_RECIPIENTS: usize = 500;
             let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {

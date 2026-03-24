@@ -3,7 +3,7 @@ cd /d "%~dp0"
 echo Current directory: %CD%
 echo Setting up instance 4...
 
-set ROOMMATE_DATA_DIR=C:\Users\peyto\Documents\!My Games\testenv\instance4
+set CORDIA_DATA_DIR=C:\Users\peyto\Documents\!My Games\testenv\instance4
 set PORT=1423
 
 echo Updating tauri.conf.json for port %PORT%...

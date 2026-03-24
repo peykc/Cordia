@@ -95,9 +95,16 @@ impl AccountManager {
         Ok(Self { data_dir })
     }
 
-    /// Get the base data directory (respects ROOMMATE_DATA_DIR env var)
+    /// Get the base data directory (respects CORDIA_DATA_DIR env var, then ROOMMATE_DATA_DIR for backwards compat)
     fn get_data_dir() -> Result<PathBuf, AccountError> {
         // Check for custom data directory (for testing with multiple instances)
+        if let Ok(custom_dir) = std::env::var("CORDIA_DATA_DIR") {
+            let path = PathBuf::from(custom_dir);
+            if !path.exists() {
+                fs::create_dir_all(&path)?;
+            }
+            return Ok(path);
+        }
         if let Ok(custom_dir) = std::env::var("ROOMMATE_DATA_DIR") {
             let path = PathBuf::from(custom_dir);
             if !path.exists() {

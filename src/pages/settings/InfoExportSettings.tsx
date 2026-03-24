@@ -91,7 +91,7 @@ export function InfoExportSettings() {
             variant="outline"
             onClick={handleExport}
             disabled={isExporting}
-            className="w-full h-11 font-light border-border/50 hover:bg-accent"
+            className="w-full h-11 font-light border-border/50 hover:bg-white/5"
           >
             {isExporting ? (
               <>

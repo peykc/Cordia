@@ -1,9 +1,13 @@
 export interface DownloadSettings {
   preferred_dir: string | null
+  group_by_server: boolean
+  flat_mode: boolean
 }
 
 export const DEFAULT_DOWNLOAD_SETTINGS: DownloadSettings = {
   preferred_dir: null,
+  group_by_server: true,
+  flat_mode: false,
 }
 
 const KEY_PREFIX = 'cordia:download-settings'
@@ -17,8 +21,12 @@ export function normalizeDownloadSettings(
 ): DownloadSettings {
   if (!value) return { ...DEFAULT_DOWNLOAD_SETTINGS }
   const preferred = typeof value.preferred_dir === 'string' ? value.preferred_dir.trim() : null
+  const groupByServer = value.group_by_server !== false
+  const flatMode = value.flat_mode === true
   return {
     preferred_dir: preferred && preferred.length > 0 ? preferred : null,
+    group_by_server: groupByServer,
+    flat_mode: flatMode,
   }
 }
 

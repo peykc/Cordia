@@ -154,7 +154,7 @@ export function NotificationsModal() {
     <div className="fixed inset-0 z-[70]">
       <div className="absolute inset-0 cursor-default" onMouseDown={closeNotifications} />
       <div
-        className="absolute border-2 border-border bg-card/95 shadow-2xl flex flex-col overflow-hidden rounded-none"
+        className="absolute border border-border/70 bg-card/95 shadow-2xl flex flex-col overflow-hidden rounded-none"
         style={{ left, top, width: popupWidthPx, height: popupHeight }}
         onMouseDown={(e) => e.stopPropagation()}
       >

@@ -42,7 +42,7 @@ function TitleBar() {
         <button
           type="button"
           title="Minimize"
-          className="h-8 w-10 flex items-center justify-center hover:bg-accent/50 transition-colors group"
+          className="h-8 w-10 flex items-center justify-center hover:bg-white/10 transition-colors group"
           onClick={handleMinimize}
         >
           <Minus className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground" />
@@ -50,7 +50,7 @@ function TitleBar() {
         <button
           type="button"
           title="Maximize"
-          className="h-8 w-10 flex items-center justify-center hover:bg-accent/50 transition-colors group"
+          className="h-8 w-10 flex items-center justify-center hover:bg-white/10 transition-colors group"
           onClick={handleMaximize}
         >
           <Square className="h-3 w-3 text-muted-foreground group-hover:text-foreground" />

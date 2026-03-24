@@ -122,7 +122,7 @@ function AccountSetupPage() {
               <Button
                 onClick={handleCreate}
                 disabled={isCreating || !displayName.trim()}
-                className="w-full bg-foreground text-background hover:bg-foreground/90 h-11 font-light tracking-wide"
+                className="w-full bg-primary text-primary-foreground hover:bg-primary/90 h-11 font-light tracking-wide"
               >
                 {isCreating ? (
                   <>

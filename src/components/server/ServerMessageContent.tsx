@@ -12,11 +12,14 @@ import { CustomVideoPlayer } from '../CustomVideoPlayer'
 import { ChatMediaSlot, ChatFileRowSlot } from '../ChatMediaSlot'
 import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
+import { buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
+import { attachmentShareInChatVisible } from '../../lib/attachmentShareInChat'
 import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
+import type { ChatMediaGalleryItem } from '../../contexts/MediaPreviewContext'
 import {
-  CHAT_MEDIA_MAX_W,
-  CHAT_MEDIA_MAX_H,
   CHAT_MEDIA_MIN_W,
+  CHAT_MEDIA_GRID_MAX_W,
+  CHAT_MEDIA_GRID_MAX_H,
   getSingleAttachmentSize,
   getSingleAttachmentAspectRatio,
 } from '../../lib/chatMessageLayout'
@@ -100,10 +103,101 @@ export function ServerMessageContent({
     videoScrollTargetsRef,
     setInlineVideoShowControls,
     inlineVideoShowControls,
+    profile,
+    getProfile,
+    fallbackNameForUser,
   } = callbacks || {}
+
+  const shareInChatVisible = (att: EphemeralAttachmentMeta, isOwn: boolean, hasPathStr: string | undefined) =>
+    attachmentShareInChatVisible({
+      isOwn,
+      hasPath: !!hasPathStr,
+      deliveryStatus: msg.delivery_status,
+      serverSigningPubkey: server?.signing_pubkey ?? '',
+      sha256: att.sha256,
+      attachmentId: att.attachment_id,
+      isSharedInServer,
+      justSharedKeys,
+      hasActiveUpload: hasActiveUploadForAttachment(att),
+    })
+
+  const openAttachmentPreview = (
+    type: 'image' | 'video',
+    url: string | null,
+    att: EphemeralAttachmentMeta,
+    hasPath: string | undefined,
+    extra?: { attachmentId?: string; fileName?: string }
+  ) => {
+    if (!setMediaPreview) return
+
+    const attachmentsList = msg.attachments ?? (msg.attachment ? [msg.attachment] : [])
+    const mediaOnly = attachmentsList.filter((a: EphemeralAttachmentMeta) =>
+      isMediaType(getFileTypeFromExt(a.file_name) as Parameters<typeof isMediaType>[0])
+    )
+    let chatMediaGallery: { items: ChatMediaGalleryItem[]; startIndex: number } | undefined
+    if (mediaOnly.length >= 2) {
+      const startIndex = mediaOnly.findIndex((a: EphemeralAttachmentMeta) => a.attachment_id === att.attachment_id)
+      if (startIndex >= 0) {
+        chatMediaGallery = {
+          startIndex,
+          items: mediaOnly.map((a: EphemeralAttachmentMeta) => {
+            const pres = getAttachmentPresentation(a)
+            const cat = getFileTypeFromExt(a.file_name)
+            const mtype = cat === 'video' ? ('video' as const) : ('image' as const)
+            const pathUrl = pres.hasPath ? convertFileSrc(pres.hasPath) : null
+            const thumb = pres.thumbPath
+              ? convertFileSrc(pres.thumbPath)
+              : mtype === 'image' && pathUrl
+                ? pathUrl
+                : null
+            const isOwnAtt = msg.from_user_id === identity?.user_id
+            const sh = shareInChatVisible(a, isOwnAtt, pres.hasPath)
+            return {
+              type: mtype,
+              url: pathUrl,
+              attachmentId: a.attachment_id,
+              fileName: a.file_name,
+              localPath: pres.hasPath ?? null,
+              sizeBytes: a.size_bytes,
+              sha256: a.sha256,
+              aspectW: a.aspect_ratio_w,
+              aspectH: a.aspect_ratio_h,
+              thumbnailUrl: thumb,
+              showShareInChat: sh,
+              onShareInChat: sh ? () => handleShareAgainAttachment(a, isOwnAtt, pres.hasPath) : undefined,
+            }
+          }),
+        }
+      }
+    }
+
+    setMediaPreview({
+      ...buildChatMediaPreviewState({
+        type,
+        url,
+        attachmentId: extra?.attachmentId ?? att.attachment_id,
+        fileName: extra?.fileName ?? att.file_name,
+        msg,
+        att,
+        hasPath,
+        serverSigningPubkey: server?.signing_pubkey ?? '',
+        identityUserId: identity?.user_id,
+        profileAvatarDataUrl: profile?.avatar_data_url,
+        getProfile: getProfile ?? (() => undefined),
+        fallbackNameForUser: fallbackNameForUser ?? ((id: string) => `User ${id.slice(0, 8)}`),
+        ownDisplayName: identity?.display_name ?? 'You',
+        isSharedInServer,
+        justSharedKeys,
+        hasActiveUploadForAttachment,
+        handleShareAgainAttachment,
+      }),
+      chatMediaGallery,
+    })
+  }
 
   const attachmentStateLabel: string | null = rowModel?.attachmentStateLabel ?? null
   const hostOnlineForAttachment: boolean = rowModel?.hostOnlineForAttachment ?? false
+  const swarmSourceCount: number = Number(rowModel?.swarmSourceCount ?? 0)
 
   const attachmentTransferRows =
     attachmentTransfersByMessageId && msg ? attachmentTransfersByMessageId[msg.id] ?? [] : []
@@ -152,11 +246,14 @@ export function ServerMessageContent({
     return hasRejectedDownloadForAttachment(att) || !hostOnlineForAttachment ? 'Unavailable' : 'Available'
   }
 
-  const unavailableReasonFor = (a: { attachment_id: string }) => {
+  const unavailableReasonFor = (a: { attachment_id: string; sha256?: string }) => {
     const isOwn = msg.from_user_id === identity?.user_id
     if (isOwn) {
       const sharedItem = sharedByAttachmentId?.[a.attachment_id]
       return !sharedItem || !sharedItem.can_share_now ? 'No longer shared' : null
+    }
+    if (a.sha256 && swarmSourceCount > 0) {
+      return swarmSourceCount > 1 ? `Swarm: ${swarmSourceCount} sources` : 'Swarm: 1 source'
     }
     const removed = hasRejectedDownloadForAttachment(a)
     const offline = !hostOnlineForAttachment
@@ -183,8 +280,8 @@ export function ServerMessageContent({
                                               <div
                                                 className={cn(
                                                   'grid w-full max-w-full',
-                                                  mediaAttachments.length === 1 && 'max-w-[min(100%,28rem)]',
-                                                  mediaAttachments.length === 2 && 'grid-cols-2 gap-0.5 max-w-[min(100%,36rem)]',
+                                                  mediaAttachments.length === 1 && 'max-w-[min(100%,32rem)]',
+                                                  mediaAttachments.length === 2 && 'grid-cols-2 gap-0.5 max-w-[min(100%,32rem)]',
                                                   mediaAttachments.length >= 3 && 'grid-cols-3 gap-1.5 max-w-[min(100%,32rem)]'
                                                 )}
                                               >
@@ -263,7 +360,7 @@ export function ServerMessageContent({
                                                       >
                                                         {({ aspect, onImageLoad, onVideoMetadata, onVideoAspect }) => {
                                                           const mixedSingleRatio = getSingleAttachmentAspectRatio(aspect)
-                                                          const { w: mixedSingleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
+                                                          const { w: mixedSingleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_GRID_MAX_W, CHAT_MEDIA_GRID_MAX_H)
                                                           return (
                                                             <div
                                                               className={cn(
@@ -387,11 +484,7 @@ export function ServerMessageContent({
                                                               type="button"
                                                               className={cn('block w-full focus:outline-none', isSingle && 'h-full min-h-0')}
                                                               onClick={() =>
-                                                                setMediaPreview({
-                                                                  type: 'image',
-                                                                  url: convertFileSrc(hasPath),
-                                                                  fileName: att.file_name,
-                                                                })
+                                                                openAttachmentPreview('image', convertFileSrc(hasPath), att, hasPath)
                                                               }
                                                             >
                                                               <ChatMediaSlot
@@ -414,7 +507,7 @@ export function ServerMessageContent({
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
-                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -432,7 +525,7 @@ export function ServerMessageContent({
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button
@@ -484,11 +577,7 @@ export function ServerMessageContent({
                                                                   if (isSingle) {
                                                                     setInlinePlayingVideoId(att.attachment_id)
                                                                   } else {
-                                                                    setMediaPreview({
-                                                                      type: 'video',
-                                                                      url: convertFileSrc(hasPath),
-                                                                      fileName: att.file_name,
-                                                                    })
+                                                                    openAttachmentPreview('video', convertFileSrc(hasPath), att, hasPath)
                                                                   }
                                                                 }}
                                                               >
@@ -531,7 +620,7 @@ export function ServerMessageContent({
                                                                 </span>
                                                               </button>
                                                             )}
-                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -549,7 +638,7 @@ export function ServerMessageContent({
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button
@@ -639,7 +728,7 @@ export function ServerMessageContent({
                                                       ) : isMedia && hasPath ? (
                                                         category === 'image' ? (
                                                           <div className="relative w-full h-full min-h-0">
-                                                            <button type="button" className="block w-full h-full min-h-0 focus:outline-none" onClick={() => setMediaPreview({ type: 'image', url: convertFileSrc(hasPath), fileName: att.file_name })}>
+                                                            <button type="button" className="block w-full h-full min-h-0 focus:outline-none" onClick={() => openAttachmentPreview('image', convertFileSrc(hasPath), att, hasPath)}>
                                                               <ChatMediaSlot fillParent aspectClass="aspect-square">
                                                                 <img
                                                                   src={convertFileSrc(gridImagePath || hasPath)}
@@ -652,14 +741,14 @@ export function ServerMessageContent({
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
-                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, true, hasPath) }}><Upload className="h-4 w-4" /></Button>
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, false, hasPath) }}><Upload className="h-4 w-4" /></Button>
@@ -669,7 +758,7 @@ export function ServerMessageContent({
                                                           </div>
                                                         ) : (
                                                           <div className="relative w-full h-full min-h-0">
-                                                            <button type="button" className="relative block w-full h-full min-h-0 focus:outline-none group" onClick={() => setMediaPreview({ type: 'video', url: convertFileSrc(hasPath), fileName: att.file_name })}>
+                                                            <button type="button" className="relative block w-full h-full min-h-0 focus:outline-none group" onClick={() => openAttachmentPreview('video', convertFileSrc(hasPath), att, hasPath)}>
                                                               <ChatMediaSlot fillParent aspectClass="aspect-square">
                                                                 {thumbPath ? (
                                                                   <img src={convertFileSrc(thumbPath)} alt="" loading="lazy" className="object-cover" />
@@ -683,14 +772,14 @@ export function ServerMessageContent({
                                                                 </span>
                                                               </span>
                                                             </button>
-                                                            {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, true, hasPath) }}><Upload className="h-4 w-4" /></Button>
                                                                 </Tooltip>
                                                               </span>
                                                             )}
-                                                            {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                            {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share in this chat">
                                                                   <Button type="button" variant="outline" size="icon" className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={(e) => { e.stopPropagation(); handleShareAgainAttachment(att, false, hasPath) }}><Upload className="h-4 w-4" /></Button>
@@ -821,7 +910,7 @@ export function ServerMessageContent({
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -839,7 +928,7 @@ export function ServerMessageContent({
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -924,7 +1013,7 @@ export function ServerMessageContent({
                                                       >
                                                         {({ aspect, onImageLoad, onVideoMetadata, onVideoAspect }) => {
                                                           const singleAspectRatio = getSingleAttachmentAspectRatio(aspect)
-                                                          const { w: singleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_MAX_W, CHAT_MEDIA_MAX_H)
+                                                          const { w: singleW } = getSingleAttachmentSize(aspect, CHAT_MEDIA_GRID_MAX_W, CHAT_MEDIA_GRID_MAX_H)
                                                           return (
                                                       <div className="space-y-1 w-full min-w-0">
                                                         <div
@@ -1051,11 +1140,7 @@ export function ServerMessageContent({
                                                                 type="button"
                                                                 className="group relative block w-full h-full focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-lg overflow-hidden min-h-0"
                                                                 onClick={() =>
-                                                                  setMediaPreview({
-                                                                    type: 'image',
-                                                                    url: convertFileSrc(hasPath),
-                                                                    fileName: att.file_name,
-                                                                  })
+                                                                  openAttachmentPreview('image', convertFileSrc(hasPath), att, hasPath)
                                                                 }
                                                               >
                                                                 <ChatMediaSlot fillParent>
@@ -1077,7 +1162,7 @@ export function ServerMessageContent({
                                                                   </div>
                                                                 </div>
                                                               </button>
-                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1095,14 +1180,15 @@ export function ServerMessageContent({
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="absolute top-2 right-2 z-20">
-                                                                  <Tooltip content="Share in this chat">
+                                                                  <Tooltip content="Seed in this server">
                                                                     <Button
                                                                       type="button"
                                                                       variant="outline"
                                                                       size="icon"
                                                                       className="h-8 w-8 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                      aria-label="Seed in this server"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
                                                                         handleShareAgainAttachment(att, false, hasPath)
@@ -1191,7 +1277,7 @@ export function ServerMessageContent({
                                                                   </div>
                                                                 </button>
                                                               )}
-                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1209,7 +1295,7 @@ export function ServerMessageContent({
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share in this chat">
                                                                     <Button
@@ -1235,12 +1321,16 @@ export function ServerMessageContent({
                                                               savedPath={hasPath ?? undefined}
                                                               thumbnailPath={thumbPath ?? undefined}
                                                               onMediaClick={(url, type, attachmentId, fileName) => {
-                                                                setMediaPreview({
-                                                                  type: type as 'image' | 'video',
-                                                                  url: url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
-                                                                  attachmentId,
-                                                                  fileName: fileName ?? att.file_name,
-                                                                })
+                                                                openAttachmentPreview(
+                                                                  type as 'image' | 'video',
+                                                                  url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
+                                                                  att,
+                                                                  hasPath,
+                                                                  {
+                                                                    attachmentId: attachmentId ?? att.attachment_id,
+                                                                    fileName: fileName ?? att.file_name,
+                                                                  }
+                                                                )
                                                               }}
                                                               boxSize={120}
                                                             />
@@ -1362,7 +1452,7 @@ export function ServerMessageContent({
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1380,14 +1470,15 @@ export function ServerMessageContent({
                                                                   </Tooltip>
                                                                 </span>
                                                               )}
-                                                              {!isOwn && hasPath && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
+                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
                                                                 <span className="shrink-0">
-                                                                  <Tooltip content="Share in this chat">
+                                                                  <Tooltip content="Seed in this server">
                                                                     <Button
                                                                       type="button"
                                                                       variant="outline"
                                                                       size="icon"
                                                                       className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                      aria-label="Seed in this server"
                                                                       onClick={(e) => {
                                                                         e.stopPropagation()
                                                                         handleShareAgainAttachment(att, false, hasPath)

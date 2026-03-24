@@ -14,6 +14,8 @@ import {
   encryptEphemeralChatMessage,
   encryptEphemeralChatMessageBySigningPubkey,
 } from '../lib/tauri'
+import { isSwarmTransfersEnabled } from '../lib/featureFlags'
+import { SwarmCoordinator } from '../lib/swarm/swarmCoordinator'
 import { useAccount } from './AccountContext'
 import { useIdentity } from './IdentityContext'
 import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
@@ -136,6 +138,7 @@ type QueuedDownloadRequest = {
   to_user_id: string
   file_name: string
   size_bytes?: number
+  preferred_peer_user_id?: string
 }
 
 type UploadSubscriber = {
@@ -209,6 +212,8 @@ interface EphemeralMessagesContextType {
     attachmentId: string,
     aspect: { w: number; h: number }
   ) => void
+  /** Scan loaded chat buckets for a message id (e.g. transfer history → original sent_at). */
+  findMessageById: (messageId: string) => EphemeralChatMessage | undefined
 }
 
 export interface AttachmentTransferState {
@@ -223,6 +228,7 @@ export interface AttachmentTransferState {
   progress: number
   debug_kbps?: number
   debug_buffered_bytes?: number
+  debug_pending_bytes?: number
   debug_eta_seconds?: number
   saved_path?: string
   error?: string
@@ -467,6 +473,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const messagesByBucketRef = useRef<MessageBuckets>({})
   const sharedAttachmentsRef = useRef<SharedAttachmentItem[]>([])
   const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
+  transferHistoryRef.current = transferHistory
   const loadedBucketsRef = useRef<Set<string>>(new Set())
   const activeSigningPubkeyRef = useRef<string | null>(null)
   const receiptSentRef = useRef<Set<string>>(new Set())
@@ -477,8 +484,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const debugSpeedEmaRef = useRef<Map<string, number>>(new Map())
   const debugEtaEmaRef = useRef<Map<string, number>>(new Map())
   const debugTickRef = useRef<Map<string, number>>(new Map())
+  const debugLogTickRef = useRef<Map<string, number>>(new Map())
   const downloadWriterWakeRef = useRef<Map<string, () => void>>(new Map())
   const downloadQueueRef = useRef<QueuedDownloadRequest[]>([])
+  const downloadServerByRequestRef = useRef<Map<string, string>>(new Map())
+  const swarmEnabled = isSwarmTransfersEnabled()
+  const swarmCoordinatorRef = useRef<SwarmCoordinator | null>(null)
 
   const messageSettingsFor = (signingPubkey: string): MessageStorageSettings =>
     settingsBySigningPubkey[signingPubkey] ?? DEFAULT_MESSAGE_STORAGE_SETTINGS
@@ -589,7 +600,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const last = progressTickRef.current.get(requestId) ?? 0
     const clamped = Math.max(0, Math.min(1, progress))
     // Throttle progress writes to keep UI responsive during large transfers.
-    if (clamped < 1 && now - last < 120) return
+    if (clamped < 1 && now - last < 800) return
     progressTickRef.current.set(requestId, now)
     upsertTransfer(requestId, (prev) => ({
       ...(prev as AttachmentTransferState),
@@ -607,6 +618,20 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         },
       })
     )
+  }
+
+  const resolveDownloadTargetDir = (requestId: string): string | null => {
+    const baseDir = downloadSettings.preferred_dir?.trim() || ''
+    if (!baseDir) return null
+    if (downloadSettings.flat_mode) return baseDir
+    if (!downloadSettings.group_by_server) return baseDir
+    const signingPubkey = downloadServerByRequestRef.current.get(requestId)?.trim()
+    if (!signingPubkey) return baseDir
+    const safeServer = signingPubkey.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'server'
+    const date = new Date()
+    const ym = `${date.getUTCFullYear()}_${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+    const sep = baseDir.includes('\\') ? '\\' : '/'
+    return `${baseDir}${sep}Cordia${sep}${safeServer}${sep}${ym}`
   }
 
   const activeDownloadCount = (excludeRequestId?: string) =>
@@ -663,7 +688,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         created_at: prev?.created_at ?? now,
         updated_at: now,
       }))
-      dispatchDownloadRequest(next.from_user_id, next.request_id, next.attachment_id)
+      dispatchDownloadRequest(next.preferred_peer_user_id ?? next.from_user_id, next.request_id, next.attachment_id)
     }
     downloadQueueRef.current = q
   }
@@ -672,7 +697,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     requestId: string,
     totalBytes: number,
     bufferedBytes?: number,
-    totalExpectedBytes?: number
+    totalExpectedBytes?: number,
+    pendingBytes?: number
   ) => {
     const now = Date.now()
     const prev = debugStatsRef.current.get(requestId)
@@ -724,7 +750,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     }
 
-    if (now - lastTick < 150 && bufferedBytes === undefined) return
+    // Throttle UI updates for both downloads and uploads to avoid freezing the app
+    if (now - lastTick < 1000) return
     debugTickRef.current.set(requestId, now)
 
     const prevState = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
@@ -737,10 +764,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     }
 
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('CORDIA_DEBUG_TRANSFERS') === '1') {
+      const lastLog = debugLogTickRef.current.get(requestId) ?? 0
+      if (now - lastLog >= 1000) {
+        debugLogTickRef.current.set(requestId, now)
+        const dir = bufferedBytes !== undefined ? 'upload' : 'download'
+        console.debug(`[Transfer ${dir}] ${requestId.slice(0, 12)}… speed=${Math.round(speedEma ?? 0)} KB/s eta=${finalEta?.toFixed(1) ?? '?'}s buffered=${bufferedBytes ?? 0} pending=${pendingBytes ?? 0}`)
+      }
+    }
     upsertTransfer(requestId, (state) => ({
       ...(state as AttachmentTransferState),
       debug_kbps: speedEma ?? state?.debug_kbps,
       debug_buffered_bytes: bufferedBytes ?? state?.debug_buffered_bytes,
+      debug_pending_bytes: pendingBytes ?? state?.debug_pending_bytes,
       debug_eta_seconds: finalEta ?? state?.debug_eta_seconds,
     }))
   }
@@ -804,7 +840,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             requestId,
             afterWrite.expected > 0 ? Math.min(1, afterWrite.writtenBytes / afterWrite.expected) : 0
           )
-          updateTransferDebug(requestId, afterWrite.receivedBytes, undefined, afterWrite.expected)
+          updateTransferDebug(requestId, afterWrite.receivedBytes, undefined, afterWrite.expected, afterWrite.pendingBytes)
+          await Promise.resolve()
         } catch {
           // If transfer was cancelled/cleaned, avoid resurrecting failure state.
           if (!downloadStreamStateRef.current.has(requestId)) return
@@ -968,6 +1005,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
           for (const sub of runForSession.subscribers.values()) {
             if (sub.done || !sub.ready || sub.dc.readyState !== 'open') continue
+            let chunksThisBurst = 0
             // Check flowPaused first (receiver says don't send), then buffer; order matters if both change at once.
             while (!sub.flowPaused && sub.dc.readyState === 'open') {
               if (sub.dc.bufferedAmount > MAX_BUFFER) break
@@ -978,6 +1016,10 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
               sub.dc.send(sendChunk)
               sub.nextOffset += chunk.byteLength
               progressed = true
+              chunksThisBurst++
+              if (chunksThisBurst >= 12) break
+            }
+            if (progressed) {
               const p = runForSession.totalBytes > 0 ? Math.min(1, sub.nextOffset / runForSession.totalBytes) : 1
               updateTransferProgress(sub.requestId, p)
               updateTransferDebug(sub.requestId, sub.nextOffset, sub.dc.bufferedAmount, runForSession.totalBytes)
@@ -1017,6 +1059,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
           if (progressed) {
             lastProgressAt = Date.now()
+            await Promise.resolve()
           } else {
             if (Date.now() - lastProgressAt > UPLOAD_SESSION_IDLE_TIMEOUT_MS) {
               for (const sub of Array.from(runForSession.subscribers.values())) {
@@ -1073,7 +1116,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }
 
-  const hasAccessibleCompletedDownload = (attachmentId: string | null | undefined): boolean => {
+  const hasAccessibleCompletedDownload = useCallback((attachmentId: string | null | undefined): boolean => {
     if (!attachmentId) return false
     return transferHistoryRef.current.some(
       (h) =>
@@ -1083,34 +1126,35 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         Boolean(h.saved_path) &&
         h.is_inaccessible !== true
     )
-  }
+  }, [])
 
-  const refreshTransferHistoryAccessibility: EphemeralMessagesContextType['refreshTransferHistoryAccessibility'] = async () => {
-    const candidates = transferHistoryRef.current.filter(
-      (h) => h.direction === 'download' && h.status === 'completed' && Boolean(h.saved_path)
-    )
-    if (candidates.length === 0) return
+  const refreshTransferHistoryAccessibility: EphemeralMessagesContextType['refreshTransferHistoryAccessibility'] =
+    useCallback(async () => {
+      const candidates = transferHistoryRef.current.filter(
+        (h) => h.direction === 'download' && h.status === 'completed' && Boolean(h.saved_path)
+      )
+      if (candidates.length === 0) return
 
-    const checks = await Promise.all(
-      candidates.map(async (h) => {
-        try {
-          const exists = await pathExists(h.saved_path!)
-          return { requestId: h.request_id, inaccessible: !exists }
-        } catch {
-          return { requestId: h.request_id, inaccessible: true }
-        }
-      })
-    )
-    const nextMap = new Map(checks.map((c) => [c.requestId, c.inaccessible]))
-    setTransferHistory((prev) =>
-      prev.map((h) => {
-        const nextInaccessible = nextMap.get(h.request_id)
-        if (nextInaccessible === undefined) return h
-        if ((h.is_inaccessible ?? false) === nextInaccessible) return h
-        return { ...h, is_inaccessible: nextInaccessible }
-      })
-    )
-  }
+      const checks = await Promise.all(
+        candidates.map(async (h) => {
+          try {
+            const exists = await pathExists(h.saved_path!)
+            return { requestId: h.request_id, inaccessible: !exists }
+          } catch {
+            return { requestId: h.request_id, inaccessible: true }
+          }
+        })
+      )
+      const nextMap = new Map(checks.map((c) => [c.requestId, c.inaccessible]))
+      setTransferHistory((prev) =>
+        prev.map((h) => {
+          const nextInaccessible = nextMap.get(h.request_id)
+          if (nextInaccessible === undefined) return h
+          if ((h.is_inaccessible ?? false) === nextInaccessible) return h
+          return { ...h, is_inaccessible: nextInaccessible }
+        })
+      )
+    }, [setTransferHistory])
 
   const cleanupTransferPeer = (requestId: string) => {
     const pc = transferPeersRef.current.get(requestId)
@@ -1121,6 +1165,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     transferDataChannelsRef.current.delete(requestId)
     transferBuffersRef.current.delete(requestId)
     transferExpectedSizeRef.current.delete(requestId)
+    downloadServerByRequestRef.current.delete(requestId)
     const wake = downloadWriterWakeRef.current.get(requestId)
     if (wake) {
       downloadWriterWakeRef.current.delete(requestId)
@@ -1136,6 +1181,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     debugSpeedEmaRef.current.delete(requestId)
     debugEtaEmaRef.current.delete(requestId)
     debugTickRef.current.delete(requestId)
+    debugLogTickRef.current.delete(requestId)
     for (const session of uploadSessionsRef.current.values()) {
       if (!session.subscribers.has(requestId)) continue
       session.subscribers.delete(requestId)
@@ -1179,12 +1225,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [messagesByBucket])
 
   useEffect(() => {
-    transferHistoryRef.current = transferHistory
-  }, [transferHistory])
-
-  useEffect(() => {
     sharedAttachmentsRef.current = sharedAttachments
   }, [sharedAttachments])
+
+  useEffect(() => {
+    if (!swarmEnabled) return
+    const coordinator = new SwarmCoordinator()
+    coordinator.start()
+    swarmCoordinatorRef.current = coordinator
+    return () => {
+      coordinator.stop()
+      if (swarmCoordinatorRef.current === coordinator) {
+        swarmCoordinatorRef.current = null
+      }
+    }
+  }, [swarmEnabled])
 
   useEffect(() => {
     const now = new Date().toISOString()
@@ -1372,16 +1427,74 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }, [])
 
+  /** Drop serverSharedSha entries for servers we no longer belong to (left / deleted / kicked). */
+  const pruneServerSharedShaToMemberServers = useCallback(async () => {
+    try {
+      const servers = await listServers()
+      const validSigning = new Set(servers.map((s) => s.signing_pubkey).filter(Boolean))
+      const prev = useEphemeralMessagesStore.getState().serverSharedSha
+      const orphanKeys = Object.keys(prev).filter((k) => !validSigning.has(k))
+      if (orphanKeys.length === 0) return
+      if (isSwarmTransfersEnabled()) {
+        const coord = swarmCoordinatorRef.current
+        if (coord) {
+          for (const k of orphanKeys) {
+            const shas = prev[k]
+            if (!Array.isArray(shas)) continue
+            for (const sha256 of shas) {
+              if (sha256) coord.unannounce(k, sha256)
+            }
+          }
+        }
+      }
+      const next: Record<string, string[]> = {}
+      for (const k of Object.keys(prev)) {
+        if (validSigning.has(k)) next[k] = prev[k]!
+      }
+      setServerSharedSha(next)
+    } catch {
+      // ignore
+    }
+  }, [setServerSharedSha])
+
   useEffect(() => {
     refreshSigningToServerMap().catch(() => {})
     const onServersUpdated = () => {
       refreshSigningToServerMap().catch(() => {})
+      pruneServerSharedShaToMemberServers().catch(() => {})
+    }
+    const onServerRemoved = (ev: Event) => {
+      const signing = (ev as CustomEvent<{ signing_pubkey?: string }>).detail?.signing_pubkey?.trim()
+      if (!signing) return
+      const prev = useEphemeralMessagesStore.getState().serverSharedSha
+      const shas = prev[signing]
+      if (!shas) return
+      if (isSwarmTransfersEnabled()) {
+        const coord = swarmCoordinatorRef.current
+        if (coord) {
+          for (const sha256 of shas) {
+            if (sha256) coord.unannounce(signing, sha256)
+          }
+        }
+      }
+      setServerSharedSha((p) => {
+        if (!p[signing]) return p
+        const { [signing]: _, ...rest } = p
+        return rest
+      })
     }
     window.addEventListener('cordia:servers-updated', onServersUpdated)
+    window.addEventListener('cordia:server-removed', onServerRemoved as EventListener)
     return () => {
       window.removeEventListener('cordia:servers-updated', onServersUpdated)
+      window.removeEventListener('cordia:server-removed', onServerRemoved as EventListener)
     }
-  }, [])
+  }, [pruneServerSharedShaToMemberServers])
+
+  useEffect(() => {
+    if (!currentAccountId || !hydrated) return
+    pruneServerSharedShaToMemberServers().catch(() => {})
+  }, [currentAccountId, hydrated, pruneServerSharedShaToMemberServers])
 
   useEffect(() => {
     const onActiveServerChanged = (e: Event) => {
@@ -1927,7 +2040,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                   flowPauseSent: false,
                 })
                 const fileName = control.file_name || (attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.file_name ?? 'attachment.bin')
-                beginDownloadStream(requestId, fileName, control.sha256 ?? null, downloadSettings.preferred_dir)
+                beginDownloadStream(requestId, fileName, control.sha256 ?? null, resolveDownloadTargetDir(requestId))
                   .then(() => {
                     startDownloadWriter(requestId)
                   })
@@ -2032,7 +2145,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       window.removeEventListener('cordia:attachment-transfer-response-incoming', onIncomingResponse as EventListener)
       window.removeEventListener('cordia:attachment-transfer-signal-incoming', onIncomingSignal as EventListener)
     }
-  }, [identity?.user_id, downloadSettings.preferred_dir])
+  }, [identity?.user_id, downloadSettings.preferred_dir, downloadSettings.group_by_server, downloadSettings.flat_mode])
 
   const getMessages = (signingPubkey: string, chatId: string): EphemeralChatMessage[] => {
     if (!signingPubkey || !chatId) return []
@@ -2350,9 +2463,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         t.status !== 'rejected'
     )
     if (duplicateActive) return
-    const peerUserId = msg.from_user_id
+    let peerUserId = msg.from_user_id
+    if (swarmEnabled && att.sha256) {
+      try {
+        const peers = await swarmCoordinatorRef.current?.requestPeers(msg.signing_pubkey, att.sha256, 24, 3500)
+        const preferred = (peers ?? []).find((p) => p?.user_id && p.user_id !== identity.user_id)
+        if (preferred?.user_id) {
+          peerUserId = preferred.user_id
+        }
+      } catch {
+        // Fall back to the original uploader path.
+      }
+    }
     const queueInstead = activeDownloadCount() >= MAX_PARALLEL_DOWNLOADS
     const request_id = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    downloadServerByRequestRef.current.set(request_id, msg.signing_pubkey)
     upsertTransfer(request_id, () => ({
       request_id,
       message_id: msg.id,
@@ -2389,39 +2514,53 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         to_user_id: identity.user_id,
         file_name: att.file_name,
         size_bytes: att.size_bytes,
+        preferred_peer_user_id: peerUserId,
       })
       return
     }
     dispatchDownloadRequest(peerUserId, request_id, attachmentId)
   }
 
-  const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = async (
-    attachmentIdJustShared?: string
-  ) => {
-    try {
-      const list = await listSharedAttachments()
-      const finalList =
-        attachmentIdJustShared != null
-          ? list.map((s) =>
-              s.attachment_id === attachmentIdJustShared ? { ...s, can_share_now: true } : s
-            )
-          : list
-      setSharedAttachments(finalList)
-      // Persist paths by sha256 so they survive unshare (same content can be reshared or matched in chat)
-      setContentCacheBySha((prev) => {
-        let next = prev
-        for (const s of finalList) {
-          if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
-            if (next === prev) next = { ...prev }
-            next[s.sha256] = s.file_path!
+  const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = useCallback(
+    async (attachmentIdJustShared?: string) => {
+      try {
+        const list = await listSharedAttachments()
+        const finalList =
+          attachmentIdJustShared != null
+            ? list.map((s) =>
+                s.attachment_id === attachmentIdJustShared ? { ...s, can_share_now: true } : s
+              )
+            : list
+        setSharedAttachments(finalList)
+        // Persist paths by sha256 so they survive unshare (same content can be reshared or matched in chat)
+        setContentCacheBySha((prev) => {
+          let next = prev
+          for (const s of finalList) {
+            if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
+              if (next === prev) next = { ...prev }
+              next[s.sha256] = s.file_path!
+            }
+          }
+          return next
+        })
+        if (swarmEnabled) {
+          for (const [serverSigningPubkey, shaList] of Object.entries(serverSharedSha)) {
+            for (const sha256 of shaList) {
+              const shared = finalList.find((s) => s.sha256 === sha256 && s.can_share_now)
+              if (!shared) continue
+              swarmCoordinatorRef.current?.announce(serverSigningPubkey, sha256, {
+                seeding: true,
+                pieceCount: Math.max(1, Number(shared.piece_count ?? 1)),
+              })
+            }
           }
         }
-        return next
-      })
-    } catch {
-      setSharedAttachments([])
-    }
-  }
+      } catch {
+        setSharedAttachments([])
+      }
+    },
+    [swarmEnabled, serverSharedSha, setSharedAttachments, setContentCacheBySha]
+  )
 
   const unshareAttachmentById: EphemeralMessagesContextType['unshareAttachmentById'] = async (attachmentId) => {
     if (!attachmentId) return
@@ -2430,6 +2569,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       await unshareAttachment(attachmentId)
       await refreshSharedAttachments()
       if (shaToRemove) {
+        if (swarmEnabled) {
+          for (const serverKey of Object.keys(serverSharedSha)) {
+            if (Array.isArray(serverSharedSha[serverKey]) && serverSharedSha[serverKey].includes(shaToRemove)) {
+              swarmCoordinatorRef.current?.unannounce(serverKey, shaToRemove)
+            }
+          }
+        }
         setServerSharedSha((prev) => {
           const next = { ...prev }
           for (const serverKey of Object.keys(next)) {
@@ -2452,32 +2598,42 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       if (list.includes(sha256)) return prev
       return { ...prev, [serverSigningPubkey]: [...list, sha256] }
     })
+    if (swarmEnabled) {
+      const shared = sharedAttachmentsRef.current.find((s) => s.sha256 === sha256)
+      swarmCoordinatorRef.current?.announce(serverSigningPubkey, sha256, {
+        seeding: true,
+        pieceCount: Math.max(1, Number(shared?.piece_count ?? 1)),
+      })
+    }
   }
 
-  const isSharedInServer: EphemeralMessagesContextType['isSharedInServer'] = (serverSigningPubkey, sha256) => {
+  const isSharedInServer: EphemeralMessagesContextType['isSharedInServer'] = useCallback((serverSigningPubkey, sha256) => {
     if (!serverSigningPubkey || !sha256) return false
     const list = serverSharedSha[serverSigningPubkey]
     return Array.isArray(list) && list.includes(sha256)
-  }
+  }, [serverSharedSha])
 
-  const getServersForSha: EphemeralMessagesContextType['getServersForSha'] = (sha256) => {
+  const getServersForSha: EphemeralMessagesContextType['getServersForSha'] = useCallback((sha256) => {
     if (!sha256) return []
     return Object.keys(serverSharedSha).filter((serverKey) =>
       Array.isArray(serverSharedSha[serverKey]) && serverSharedSha[serverKey].includes(sha256)
     )
-  }
+  }, [serverSharedSha])
 
-  const getCachedPathForSha: EphemeralMessagesContextType['getCachedPathForSha'] = (sha256) => {
+  const getCachedPathForSha: EphemeralMessagesContextType['getCachedPathForSha'] = useCallback((sha256) => {
     if (!sha256) return null
     const fromDownloadCache = contentCacheBySha[sha256]
     if (fromDownloadCache) return fromDownloadCache
     // Same content may exist from our own upload (e.g. we sent in Server 1, someone else sent same file in Server 2)
     const fromShared = sharedAttachments.find((s) => s.sha256 === sha256 && (s.file_path ?? '').length > 0)
     return fromShared?.file_path ?? null
-  }
+  }, [contentCacheBySha, sharedAttachments])
 
   const unshareFromServer: EphemeralMessagesContextType['unshareFromServer'] = (serverSigningPubkey, sha256) => {
     if (!serverSigningPubkey || !sha256) return
+    if (swarmEnabled) {
+      swarmCoordinatorRef.current?.unannounce(serverSigningPubkey, sha256)
+    }
     setServerSharedSha((prev) => {
       const list = prev[serverSigningPubkey]
       if (!list) return prev
@@ -2510,6 +2666,20 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     )
   }
 
+  const findMessageById: EphemeralMessagesContextType['findMessageById'] = useCallback(
+    (messageId: string) => {
+      const id = messageId?.trim()
+      if (!id) return undefined
+      for (const list of Object.values(messagesByBucket)) {
+        if (!Array.isArray(list)) continue
+        const found = list.find((m) => m.id === id)
+        if (found) return found
+      }
+      return undefined
+    },
+    [messagesByBucket]
+  )
+
   const value = useMemo(
     () => ({
       getMessages,
@@ -2537,8 +2707,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       unshareFromServer,
       getCachedPathForSha,
       updateAttachmentAspect,
+      findMessageById,
     }),
-    [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments, serverSharedSha, contentCacheBySha]
+    [
+      messagesByBucket,
+      unreadState,
+      identity?.user_id,
+      attachmentTransfers,
+      transferHistory,
+      sharedAttachments,
+      serverSharedSha,
+      contentCacheBySha,
+      refreshSharedAttachments,
+      refreshTransferHistoryAccessibility,
+      findMessageById,
+    ]
   )
 
   return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>

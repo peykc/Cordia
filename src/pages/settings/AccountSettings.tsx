@@ -205,7 +205,7 @@ export function AccountSettings() {
           <Button
             variant="default"
             size="sm"
-            className="h-9 font-light bg-foreground text-background hover:bg-foreground/90"
+            className="h-9 font-light bg-primary text-primary-foreground hover:bg-primary/90"
             onClick={handleSaveProfile}
             disabled={!isDirty}
           >

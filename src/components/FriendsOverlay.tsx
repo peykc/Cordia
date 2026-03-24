@@ -138,8 +138,8 @@ export function FriendsOverlay({ isOpen, onClose, onOpenProfile, getServerById }
     const canJoin = activeServer && getServerById(activeServer.id)
     return (
       <div
-        key={userId}
-        className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent/40 min-w-0"
+      key={userId}
+      className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 min-w-0"
       >
         <button
           type="button"
@@ -158,11 +158,11 @@ export function FriendsOverlay({ isOpen, onClose, onOpenProfile, getServerById }
           )}
           <div className="absolute -top-0.5 right-0">
             {bestLevel === 'in_call' ? (
-              <div className="h-2.5 w-2.5 bg-blue-500 ring-2 ring-background rounded-full" />
+              <div className="h-2.5 w-2.5 bg-accent ring-2 ring-background rounded-full" />
             ) : bestLevel === 'active' ? (
-              <div className="h-2.5 w-2.5 bg-green-500 ring-2 ring-background rounded-full" />
+              <div className="h-2.5 w-2.5 bg-success ring-2 ring-background rounded-full" />
             ) : bestLevel === 'online' ? (
-              <div className="h-2.5 w-2.5 bg-amber-500 ring-2 ring-background rounded-full" />
+              <div className="h-2.5 w-2.5 bg-warning ring-2 ring-background rounded-full" />
             ) : (
               <div className="h-2.5 w-2.5 bg-muted-foreground ring-2 ring-background rounded-full" />
             )}
@@ -219,7 +219,7 @@ export function FriendsOverlay({ isOpen, onClose, onOpenProfile, getServerById }
       <div className="absolute inset-0 bg-background/75 backdrop-blur-sm" onMouseDown={onClose} />
 
       <div
-        className={`absolute border-2 border-border bg-card/95 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden ${
+        className={`absolute border border-border/70 bg-card/95 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden ${
           isFullscreen
             ? 'inset-0 rounded-none'
             : 'left-1/2 top-1/2 w-[min(520px,calc(100vw-3rem))] h-[min(560px,calc(100vh-8rem))] max-h-[calc(100%-1rem)] -translate-x-1/2 -translate-y-1/2 rounded-none'

@@ -97,6 +97,12 @@ struct AttachmentRecord {
     /// When false, attachment is not in the share list (uploader unshared) but record is kept for display / share-again
     #[serde(default = "default_true")]
     shared: bool,
+    #[serde(default)]
+    piece_size: Option<u32>,
+    #[serde(default)]
+    piece_count: Option<u32>,
+    #[serde(default)]
+    piece_hashes: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -143,6 +149,12 @@ struct AttachmentRegistrationResult {
     file_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    piece_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    piece_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    piece_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +172,19 @@ struct SharedAttachmentItem {
     thumbnail_path: Option<String>,
     created_at: String,
     can_share_now: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    piece_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    piece_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AttachmentPieceMetadataResult {
+    attachment_id: String,
+    sha256: String,
+    piece_size: u32,
+    piece_count: u32,
+    piece_hashes: Vec<String>,
 }
 
 fn account_attachment_dir(account_id: &str) -> Result<PathBuf, String> {
@@ -270,11 +295,60 @@ where
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn default_piece_size_for_bytes(size_bytes: u64) -> u32 {
+    if size_bytes >= 2 * 1024 * 1024 * 1024 {
+        1024 * 1024
+    } else if size_bytes >= 256 * 1024 * 1024 {
+        512 * 1024
+    } else {
+        256 * 1024
+    }
+}
+
+fn compute_piece_hashes(path: &PathBuf, piece_size: u32) -> Result<(u32, Vec<String>), String> {
+    let mut f = std::fs::File::open(path).map_err(|e| format!("Failed to open file for piece hashing: {}", e))?;
+    let mut buf = vec![0u8; piece_size as usize];
+    let mut out: Vec<String> = Vec::new();
+    loop {
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| format!("Failed to read file for piece hashing: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(&buf[..n]);
+        out.push(hex::encode(hasher.finalize()));
+    }
+    Ok((out.len() as u32, out))
+}
+
 #[derive(Debug)]
 struct DownloadStreamState {
     temp_path: PathBuf,
     target_path: PathBuf,
     file: std::fs::File,
+    resume_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DownloadStreamInfo {
+    request_id: String,
+    temp_path: String,
+    target_path: String,
+    bytes_written: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DownloadResumeState {
+    swarm_key: String,
+    sha256: Option<String>,
+    piece_size: u32,
+    piece_count: u32,
+    #[serde(default)]
+    bitfield: Vec<bool>,
+    target_path: String,
+    updated_at: String,
 }
 
 static DOWNLOAD_STREAMS: OnceLock<Mutex<HashMap<String, DownloadStreamState>>> = OnceLock::new();
@@ -329,6 +403,14 @@ fn resolve_download_target(downloads_dir: &PathBuf, file_name: &str) -> PathBuf 
         }
         i += 1;
     }
+}
+
+fn resolve_resume_state_path(temp_path: &PathBuf) -> PathBuf {
+    let file_name = temp_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download.part");
+    temp_path.with_file_name(format!("{}.resume.json", file_name))
 }
 
 fn is_video_ext(ext: &str) -> bool {
@@ -488,6 +570,9 @@ fn register_attachment_from_path(
             created_at: chrono::Utc::now().to_rfc3339(),
             status: "preparing".to_string(),
             shared: true,
+            piece_size: None,
+            piece_count: None,
+            piece_hashes: Vec::new(),
         };
         index.records.insert(attachment_id.clone(), record);
         save_attachment_index(&base, &index)?;
@@ -550,6 +635,9 @@ fn register_attachment_from_path(
         },
         file_path: None,
         status: Some("preparing".to_string()),
+        piece_size: None,
+        piece_count: None,
+        piece_hashes: Vec::new(),
     })
 }
 
@@ -624,6 +712,8 @@ fn prepare_attachment_background(
             sha
         }
     };
+    let piece_size = default_piece_size_for_bytes(size_bytes);
+    let (piece_count, piece_hashes) = compute_piece_hashes(&source, piece_size)?;
     let cached_file_name = with_attachment_index_lock(|| -> Result<Option<String>, String> {
         let mut index = load_attachment_index(&base);
         let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
@@ -655,6 +745,9 @@ fn prepare_attachment_background(
                 None
             };
             rec.status = "ready".to_string();
+            rec.piece_size = Some(piece_size);
+            rec.piece_count = Some(piece_count);
+            rec.piece_hashes = piece_hashes.clone();
         }
         save_attachment_index(&base, &index)?;
         Ok(cached_file_name)
@@ -739,6 +832,28 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
         source_path: rec.source_path.clone(),
         file_path,
         status: Some(rec.status.clone()),
+        piece_size: rec.piece_size,
+        piece_count: rec.piece_count,
+        piece_hashes: rec.piece_hashes.clone(),
+    }))
+}
+
+#[tauri::command]
+fn get_attachment_piece_metadata(attachment_id: String) -> Result<Option<AttachmentPieceMetadataResult>, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let index = with_attachment_index_lock(|| load_attachment_index(&base));
+    let Some(rec) = index.records.get(&attachment_id) else {
+        return Ok(None);
+    };
+    let piece_size = rec.piece_size.unwrap_or_else(|| default_piece_size_for_bytes(rec.size_bytes));
+    let piece_count = rec.piece_count.unwrap_or(0);
+    Ok(Some(AttachmentPieceMetadataResult {
+        attachment_id: rec.attachment_id.clone(),
+        sha256: rec.sha256.clone(),
+        piece_size,
+        piece_count,
+        piece_hashes: rec.piece_hashes.clone(),
     }))
 }
 
@@ -842,6 +957,8 @@ fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
                     thumbnail_path: rec.thumbnail_path.clone().filter(|p| PathBuf::from(p).exists()),
                     created_at: rec.created_at.clone(),
                     can_share_now,
+                    piece_size: rec.piece_size,
+                    piece_count: rec.piece_count,
                 }
             }
         })
@@ -941,6 +1058,7 @@ fn begin_download_stream(
     file_name: String,
     _sha256: Option<String>,
     target_dir: Option<String>,
+    resume: Option<bool>,
 ) -> Result<String, String> {
     let rid = request_id.trim().to_string();
     if rid.is_empty() {
@@ -958,12 +1076,23 @@ fn begin_download_stream(
     );
     let temp_path = target_path.with_file_name(temp_name);
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&temp_path)
-        .map_err(|e| format!("Failed to create temp download file: {}", e))?;
+    let should_resume = resume.unwrap_or(false);
+    let file = if should_resume {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|e| format!("Failed to open temp download file for resume: {}", e))?
+    } else {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temp_path)
+            .map_err(|e| format!("Failed to create temp download file: {}", e))?
+    };
+    let resume_path = resolve_resume_state_path(&temp_path);
 
     let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
     // If an old one exists (e.g. retry), overwrite it.
@@ -973,6 +1102,7 @@ fn begin_download_stream(
             temp_path,
             target_path,
             file,
+            resume_path,
         },
     );
 
@@ -996,6 +1126,99 @@ fn write_download_stream_chunk(request_id: String, bytes: Vec<u8>) -> Result<(),
 }
 
 #[tauri::command]
+fn write_download_stream_chunk_at(request_id: String, offset: u64, bytes: Vec<u8>) -> Result<(), String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let st = map
+        .get_mut(&rid)
+        .ok_or_else(|| "Download stream not found (begin_download_stream missing?)".to_string())?;
+    st.file
+        .seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("Failed to seek download stream: {}", e))?;
+    st.file
+        .write_all(&bytes)
+        .map_err(|e| format!("Failed to write random-access download chunk: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_download_stream_info(request_id: String) -> Result<Option<DownloadStreamInfo>, String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Ok(None);
+    }
+    let map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let Some(st) = map.get(&rid) else {
+        return Ok(None);
+    };
+    let bytes_written = st
+        .file
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or_else(|_| std::fs::metadata(&st.temp_path).map(|m| m.len()).unwrap_or(0));
+    Ok(Some(DownloadStreamInfo {
+        request_id: rid,
+        temp_path: st.temp_path.to_string_lossy().to_string(),
+        target_path: st.target_path.to_string_lossy().to_string(),
+        bytes_written,
+    }))
+}
+
+#[tauri::command]
+fn save_download_resume_state(request_id: String, state: DownloadResumeState) -> Result<(), String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    let map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let st = map
+        .get(&rid)
+        .ok_or_else(|| "Download stream not found (begin_download_stream missing?)".to_string())?;
+    let json = serde_json::to_string_pretty(&state)
+        .map_err(|e| format!("Failed to serialize resume state: {}", e))?;
+    std::fs::write(&st.resume_path, json).map_err(|e| format!("Failed to write resume state: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_download_resume_state(request_id: String) -> Result<Option<DownloadResumeState>, String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Ok(None);
+    }
+    let map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let Some(st) = map.get(&rid) else {
+        return Ok(None);
+    };
+    if !st.resume_path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&st.resume_path)
+        .map_err(|e| format!("Failed to read resume state: {}", e))?;
+    let parsed: DownloadResumeState = serde_json::from_str(&raw)
+        .map_err(|e| format!("Failed to parse resume state: {}", e))?;
+    Ok(Some(parsed))
+}
+
+#[tauri::command]
+fn clear_download_resume_state(request_id: String) -> Result<(), String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Ok(());
+    }
+    let map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    if let Some(st) = map.get(&rid) {
+        if st.resume_path.exists() {
+            let _ = std::fs::remove_file(&st.resume_path);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn finish_download_stream(request_id: String) -> Result<String, String> {
     let rid = request_id.trim().to_string();
     if rid.is_empty() {
@@ -1009,6 +1232,9 @@ fn finish_download_stream(request_id: String) -> Result<String, String> {
     let _ = st.file.sync_all();
     std::fs::rename(&st.temp_path, &st.target_path)
         .map_err(|e| format!("Failed to finalize download file: {}", e))?;
+    if st.resume_path.exists() {
+        let _ = std::fs::remove_file(&st.resume_path);
+    }
     Ok(st.target_path.to_string_lossy().to_string())
 }
 
@@ -1021,6 +1247,7 @@ fn cancel_download_stream(request_id: String) -> Result<(), String> {
     let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
     if let Some(st) = map.remove(&rid) {
         let _ = std::fs::remove_file(&st.temp_path);
+        let _ = std::fs::remove_file(&st.resume_path);
     }
     Ok(())
 }
@@ -2676,6 +2903,7 @@ fn main() {
             compute_file_sha256,
             register_attachment_from_path,
             get_attachment_record,
+            get_attachment_piece_metadata,
             read_attachment_bytes,
             read_attachment_chunk,
             list_shared_attachments,
@@ -2684,6 +2912,11 @@ fn main() {
             save_downloaded_attachment,
             begin_download_stream,
             write_download_stream_chunk,
+            write_download_stream_chunk_at,
+            get_download_stream_info,
+            save_download_resume_state,
+            load_download_resume_state,
+            clear_download_resume_state,
             finish_download_stream,
             cancel_download_stream,
             delete_server,

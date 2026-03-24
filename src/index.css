@@ -4,25 +4,40 @@
 
 @layer base {
   :root {
-    --background: 240 10% 4%;
-    --foreground: 240 5% 96%;
-    --card: 240 8% 6%;
-    --card-foreground: 240 5% 96%;
-    --popover: 240 8% 6%;
-    --popover-foreground: 240 5% 96%;
-    --primary: 240 5% 96%;
-    --primary-foreground: 240 10% 4%;
-    --secondary: 240 6% 10%;
-    --secondary-foreground: 240 5% 96%;
-    --muted: 240 6% 10%;
-    --muted-foreground: 240 4% 46%;
-    --accent: 240 6% 12%;
-    --accent-foreground: 240 5% 96%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 240 5% 96%;
-    --border: 240 6% 10%;
-    --input: 240 6% 10%;
-    --ring: 240 5% 84%;
+    /* Cordia theme variables (overridable at runtime) – Discord defaults */
+    --cordia-bg: 220 7% 13%;
+    --cordia-card: 220 7% 20%;
+    --cordia-sidebar: 220 7% 20%;
+    --cordia-friends-bg: 220 7% 20%;
+    --cordia-draft-bg: 223 8% 27%;
+    --cordia-border: 220 7% 17%;
+    --cordia-accent: 235 86% 65%;
+
+    /* Discord text colors */
+    --foreground: 0 0% 100%;
+    --muted-foreground: 220 7% 87%;
+    --subtle-foreground: 220 7% 33%;
+
+    /* Shadcn/tailwind tokens */
+    --background: var(--cordia-bg);
+    --card: var(--cordia-card);
+    --card-foreground: 0 0% 100%;
+    --popover: 220 8% 23%;
+    --popover-foreground: 0 0% 100%;
+    --primary: var(--cordia-accent);
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 7% 20%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 220 7% 20%;
+    --accent: var(--cordia-accent);
+    --accent-foreground: 0 0% 100%;
+    --destructive: 358 78% 59%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 51% 44%;
+    --warning: 48 99% 68%;
+    --border: var(--cordia-border);
+    --input: 220 8% 23%;
+    --ring: 235 86% 65%;
     --radius: 0px;
   }
 }
@@ -60,7 +75,7 @@
     box-sizing: border-box;
     inset: calc(-1 * var(--corner-pad));
     padding: var(--corner-pad);
-    border: 2px solid hsl(var(--foreground) / 0.3);
+    border: 1px solid hsl(var(--border) / 0.8);
     background: transparent content-box;
     mask:
       conic-gradient(#000 0 0) content-box,

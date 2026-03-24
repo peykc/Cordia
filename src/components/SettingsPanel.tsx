@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { User, Volume2, Info, Wifi, Database, FolderDown } from 'lucide-react'
+import { User, Volume2, Info, Wifi, Database, FolderDown, Palette } from 'lucide-react'
 import { AccountSettings } from '../pages/settings/AccountSettings'
 import { AudioSettingsPage } from '../pages/settings/AudioSettings'
 import { InfoExportSettings } from '../pages/settings/InfoExportSettings'
 import { ConnectionSettings } from '../pages/settings/ConnectionSettings'
 import { MessagesSettings } from '../pages/settings/MessagesSettings'
 import { DownloadsSettings } from '../pages/settings/DownloadsSettings'
+import { CustomizeSettings } from '../pages/settings/CustomizeSettings'
 import type { SettingsTab } from '../contexts/SettingsModalContext'
 
 type Props = {
@@ -25,6 +26,7 @@ export function SettingsPanel({ initialTab = 'account' }: Props) {
     { id: 'connections', label: 'Connections', icon: Wifi },
     { id: 'messages', label: 'Messages', icon: Database },
     { id: 'downloads', label: 'Downloads', icon: FolderDown },
+    { id: 'customize', label: 'Customize', icon: Palette },
     { id: 'info', label: 'Info & Export', icon: Info },
   ]
 
@@ -69,6 +71,7 @@ export function SettingsPanel({ initialTab = 'account' }: Props) {
               {activeTab === 'connections' && <ConnectionSettings />}
               {activeTab === 'messages' && <MessagesSettings />}
               {activeTab === 'downloads' && <DownloadsSettings />}
+              {activeTab === 'customize' && <CustomizeSettings />}
               {activeTab === 'info' && <InfoExportSettings />}
             </div>
           </div>

@@ -141,6 +141,9 @@ export interface AttachmentRegistrationResult {
   source_path?: string | null
   file_path?: string | null
   status?: string | null
+  piece_size?: number | null
+  piece_count?: number | null
+  piece_hashes?: string[]
 }
 
 export interface SharedAttachmentItem {
@@ -155,6 +158,16 @@ export interface SharedAttachmentItem {
   thumbnail_path?: string | null
   created_at: string
   can_share_now: boolean
+  piece_size?: number | null
+  piece_count?: number | null
+}
+
+export interface AttachmentPieceMetadataResult {
+  attachment_id: string
+  sha256: string
+  piece_size: number
+  piece_count: number
+  piece_hashes: string[]
 }
 
 export async function getFileMetadata(path: string): Promise<{ file_name: string; extension: string; size_bytes: number }> {
@@ -175,6 +188,12 @@ export async function registerAttachmentFromPath(
 
 export async function getAttachmentRecord(attachmentId: string): Promise<AttachmentRegistrationResult | null> {
   return await invoke('get_attachment_record', { attachmentId })
+}
+
+export async function getAttachmentPieceMetadata(
+  attachmentId: string
+): Promise<AttachmentPieceMetadataResult | null> {
+  return await invoke('get_attachment_piece_metadata', { attachmentId })
 }
 
 export async function listSharedAttachments(): Promise<SharedAttachmentItem[]> {
@@ -227,13 +246,15 @@ export async function beginDownloadStream(
   requestId: string,
   fileName: string,
   sha256?: string | null,
-  targetDir?: string | null
+  targetDir?: string | null,
+  resume?: boolean
 ): Promise<string> {
   return await invoke('begin_download_stream', {
     requestId,
     fileName,
     sha256: sha256 ?? null,
     targetDir: targetDir ?? null,
+    resume: resume ?? false,
   })
 }
 
@@ -242,6 +263,51 @@ export async function writeDownloadStreamChunk(requestId: string, bytes: Uint8Ar
     requestId,
     bytes: Array.from(bytes),
   })
+}
+
+export async function writeDownloadStreamChunkAt(
+  requestId: string,
+  offset: number,
+  bytes: Uint8Array
+): Promise<void> {
+  return await invoke('write_download_stream_chunk_at', {
+    requestId,
+    offset,
+    bytes: Array.from(bytes),
+  })
+}
+
+export interface DownloadStreamInfo {
+  request_id: string
+  temp_path: string
+  target_path: string
+  bytes_written: number
+}
+
+export interface DownloadResumeState {
+  swarm_key: string
+  sha256?: string | null
+  piece_size: number
+  piece_count: number
+  bitfield: boolean[]
+  target_path: string
+  updated_at: string
+}
+
+export async function getDownloadStreamInfo(requestId: string): Promise<DownloadStreamInfo | null> {
+  return await invoke('get_download_stream_info', { requestId })
+}
+
+export async function saveDownloadResumeState(requestId: string, state: DownloadResumeState): Promise<void> {
+  return await invoke('save_download_resume_state', { requestId, state })
+}
+
+export async function loadDownloadResumeState(requestId: string): Promise<DownloadResumeState | null> {
+  return await invoke('load_download_resume_state', { requestId })
+}
+
+export async function clearDownloadResumeState(requestId: string): Promise<void> {
+  return await invoke('clear_download_resume_state', { requestId })
 }
 
 export async function finishDownloadStream(requestId: string): Promise<string> {

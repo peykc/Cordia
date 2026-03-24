@@ -5,6 +5,7 @@ pub mod profiles;
 pub mod events;
 pub mod backends;
 pub mod friends;
+pub mod swarm;
 
 pub use signaling::SignalingState;
 pub use voice::VoiceState;
@@ -13,6 +14,7 @@ pub use profiles::ProfileState;
 pub use events::EventState;
 pub use backends::BackendState;
 pub use friends::FriendState;
+pub use swarm::SwarmState;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,6 +34,7 @@ pub struct AppState {
     pub events: Arc<RwLock<EventState>>,
     pub backends: Arc<RwLock<BackendState>>,
     pub friends: Arc<RwLock<FriendState>>,
+    pub swarm: Arc<RwLock<SwarmState>>,
     /// When the beacon process started (for uptime / status page).
     pub started_at: Instant,
     /// ISO8601 timestamp when the beacon started (for status).
@@ -63,6 +66,7 @@ impl AppState {
             events: Arc::new(RwLock::new(EventState::new())),
             backends: Arc::new(RwLock::new(BackendState::new())),
             friends: Arc::new(RwLock::new(FriendState::new())),
+            swarm: Arc::new(RwLock::new(SwarmState::new())),
             started_at: Instant::now(),
             started_at_utc: now_utc.to_rfc3339(),
             downtime_secs,

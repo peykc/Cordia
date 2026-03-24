@@ -209,6 +209,55 @@ pub enum SignalingMessage {
     },
 
     // ============================
+    // Swarm Transfers (tracker-like signaling)
+    // ============================
+
+    /// Announce swarm availability for (signing_pubkey, sha256) on this connection.
+    SwarmAnnounce {
+        signing_pubkey: SigningPubkey,
+        sha256: String,
+        seeding: bool,
+        piece_count: u32,
+        #[serde(default)]
+        upload_kbps: Option<u32>,
+        #[serde(default)]
+        quality_score: Option<u8>,
+    },
+
+    /// Remove this connection from the swarm for (signing_pubkey, sha256).
+    SwarmUnannounce {
+        signing_pubkey: SigningPubkey,
+        sha256: String,
+    },
+
+    /// Request peers for (signing_pubkey, sha256).
+    SwarmPeerListRequest {
+        signing_pubkey: SigningPubkey,
+        sha256: String,
+        #[serde(default)]
+        max_peers: Option<usize>,
+    },
+
+    /// Server response with ranked peers for a swarm.
+    SwarmPeerListResponse {
+        signing_pubkey: SigningPubkey,
+        sha256: String,
+        peers: Vec<SwarmPeerInfo>,
+    },
+
+    /// Update dynamic health stats for this connection in a swarm.
+    SwarmHealthUpdate {
+        signing_pubkey: SigningPubkey,
+        sha256: String,
+        #[serde(default)]
+        upload_kbps: Option<u32>,
+        #[serde(default)]
+        quality_score: Option<u8>,
+        #[serde(default)]
+        leechers: Option<u32>,
+    },
+
+    // ============================
     // Presence (online/offline + active server)
     // ============================
 
@@ -529,6 +578,20 @@ pub struct ProfileSnapshotRecord {
     #[serde(default)]
     show_real_name: bool,
     rev: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmPeerInfo {
+    pub user_id: String,
+    pub seeding: bool,
+    pub piece_count: u32,
+    #[serde(default)]
+    pub upload_kbps: Option<u32>,
+    #[serde(default)]
+    pub quality_score: Option<u8>,
+    #[serde(default)]
+    pub leechers: Option<u32>,
+    pub updated_at_unix_ms: i64,
 }
 
 // PresenceUserStatus and VoicePeerInfo are now defined in state modules

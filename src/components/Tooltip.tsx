@@ -15,6 +15,8 @@ export interface TooltipProps {
   children: ReactNode
   /** Optional class for the trigger wrapper (e.g. to preserve flex layout). */
   className?: string
+  /** Optional class for the floating tooltip panel (e.g. multiline / min-width). */
+  contentClassName?: string
   /** Keep native title as fallback for very slow hover / a11y. */
   title?: string
 }
@@ -24,6 +26,7 @@ export function Tooltip({
   side = 'top',
   children,
   className,
+  contentClassName,
   title,
 }: TooltipProps) {
   const [open, setOpen] = useState(false)
@@ -62,7 +65,7 @@ export function Tooltip({
     left = Math.max(margin, Math.min(left, window.innerWidth - tooltipWidth - margin))
     top = Math.max(margin, Math.min(top, window.innerHeight - tooltipHeight - margin))
     setPosition({ left, top })
-  }, [side])
+  }, [side, contentClassName])
 
   const show = useCallback(() => {
     if (hideTimeoutRef.current) {
@@ -109,11 +112,14 @@ export function Tooltip({
 
   const tooltipEl = open && position && (
     <div
-      className="fixed z-[100] px-3 py-1.5 text-sm font-light text-popover-foreground bg-popover border border-border rounded-md shadow-lg whitespace-nowrap pointer-events-none"
+      className={cn(
+        'fixed z-[100] px-3 py-1.5 text-sm font-light text-popover-foreground bg-popover border border-border rounded-md shadow-lg pointer-events-none',
+        contentClassName ?? 'whitespace-nowrap'
+      )}
       style={{
         left: position.left,
         top: position.top,
-        maxWidth: 240,
+        maxWidth: contentClassName ? 320 : 240,
       }}
       role="tooltip"
       onMouseEnter={() => {

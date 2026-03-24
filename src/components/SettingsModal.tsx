@@ -26,14 +26,14 @@ export function SettingsModal() {
       <div className="absolute inset-0 bg-background/75 backdrop-blur-sm" onMouseDown={closeSettings} />
 
       <div
-        className={`absolute border-2 border-border bg-card/95 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden ${
+        className={`absolute border border-border/70 bg-card/95 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden ${
           isFullscreen
             ? 'inset-0 rounded-none'
             : 'left-1/2 top-1/2 w-[min(880px,calc(100vw-3rem))] h-[min(640px,calc(100vh-8rem))] max-h-[calc(100%-1rem)] -translate-x-1/2 -translate-y-1/2 rounded-none'
         }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <header className="h-14 shrink-0 border-b-2 border-border px-4 flex items-center">
+        <header className="h-14 shrink-0 border-b border-border/70 px-4 flex items-center">
           <Button
             variant="ghost"
             size="icon"

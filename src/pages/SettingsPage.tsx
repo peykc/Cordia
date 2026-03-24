@@ -14,7 +14,8 @@ function SettingsPage() {
       tabParam === 'connections' ||
       tabParam === 'messages' ||
       tabParam === 'downloads' ||
-      tabParam === 'info'
+      tabParam === 'info' ||
+      tabParam === 'customize'
         ? tabParam
         : 'account'
 

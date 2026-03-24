@@ -34,7 +34,7 @@ export function NotificationCenterButton() {
       <Bell className="h-4 w-4" />
       {hasIncoming && (
         <span
-          className="absolute -top-0.5 -right-0.5 min-w-[12px] h-3 px-0.5 border border-border bg-green-500 text-white text-[8px] leading-3 text-center pointer-events-none rounded-sm"
+          className="absolute -top-0.5 -right-0.5 min-w-[12px] h-3 px-0.5 border border-border bg-warning text-background text-[8px] leading-3 text-center pointer-events-none rounded-sm"
           title={`${mergedIncomingCount} incoming`}
         >
           {mergedIncomingCount > 99 ? '99+' : mergedIncomingCount}

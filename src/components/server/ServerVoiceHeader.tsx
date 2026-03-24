@@ -8,11 +8,11 @@ import type { Server } from '../../lib/tauri'
 function PresenceSquare({ level, size = 'default' }: { level: PresenceLevel; size?: 'default' | 'small' }) {
   const cls =
     level === 'in_call'
-      ? 'bg-blue-500'
+      ? 'bg-accent'
       : level === 'active'
-        ? 'bg-green-500'
+        ? 'bg-success'
         : level === 'online'
-          ? 'bg-amber-500'
+          ? 'bg-warning'
           : 'bg-muted-foreground'
   const sizeClass = size === 'small' ? 'h-1.5 w-1.5' : 'h-2 w-2'
   return <div className={`${sizeClass} ${cls} ring-2 ring-background`} />

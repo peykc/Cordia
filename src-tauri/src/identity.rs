@@ -114,6 +114,14 @@ impl IdentityManager {
 
     fn get_legacy_data_dir() -> Result<PathBuf, IdentityError> {
         // Check for custom data directory (for testing with multiple instances)
+        if let Ok(custom_dir) = std::env::var("CORDIA_DATA_DIR") {
+            let path = PathBuf::from(custom_dir);
+            if !path.exists() {
+                fs::create_dir_all(&path)
+                    .map_err(|e| IdentityError::Io(e))?;
+            }
+            return Ok(path);
+        }
         if let Ok(custom_dir) = std::env::var("ROOMMATE_DATA_DIR") {
             let path = PathBuf::from(custom_dir);
             if !path.exists() {

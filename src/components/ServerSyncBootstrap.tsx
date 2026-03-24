@@ -659,6 +659,18 @@ export function ServerSyncBootstrap() {
             )
             return
           }
+          if (msg.type === 'SwarmPeerListResponse') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:swarm-peer-list-response-incoming', {
+                detail: {
+                  signing_pubkey: String(msg.signing_pubkey),
+                  sha256: String(msg.sha256),
+                  peers: Array.isArray(msg.peers) ? msg.peers : [],
+                },
+              })
+            )
+            return
+          }
         } catch (e) {
           // Ignore malformed/unrelated messages
         }
@@ -831,6 +843,76 @@ export function ServerSyncBootstrap() {
         })
       }
 
+      const onSwarmAnnounce = (ev: Event) => {
+        const detail = (ev as CustomEvent<{
+          signing_pubkey?: string
+          sha256?: string
+          seeding?: boolean
+          piece_count?: number
+          upload_kbps?: number
+          quality_score?: number
+        }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const sha256 = detail?.sha256?.trim()
+        const piece_count = Number(detail?.piece_count ?? 0)
+        if (!signing_pubkey || !sha256 || !Number.isFinite(piece_count) || piece_count <= 0) return
+        sendOrQueue({
+          type: 'SwarmAnnounce',
+          signing_pubkey,
+          sha256,
+          seeding: Boolean(detail?.seeding),
+          piece_count,
+          upload_kbps: Number.isFinite(Number(detail?.upload_kbps)) ? Number(detail?.upload_kbps) : undefined,
+          quality_score: Number.isFinite(Number(detail?.quality_score)) ? Number(detail?.quality_score) : undefined,
+        })
+      }
+
+      const onSwarmUnannounce = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ signing_pubkey?: string; sha256?: string }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const sha256 = detail?.sha256?.trim()
+        if (!signing_pubkey || !sha256) return
+        sendOrQueue({
+          type: 'SwarmUnannounce',
+          signing_pubkey,
+          sha256,
+        })
+      }
+
+      const onSwarmPeerListRequest = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ signing_pubkey?: string; sha256?: string; max_peers?: number }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const sha256 = detail?.sha256?.trim()
+        if (!signing_pubkey || !sha256) return
+        sendOrQueue({
+          type: 'SwarmPeerListRequest',
+          signing_pubkey,
+          sha256,
+          max_peers: Number.isFinite(Number(detail?.max_peers)) ? Number(detail?.max_peers) : undefined,
+        })
+      }
+
+      const onSwarmHealthUpdate = (ev: Event) => {
+        const detail = (ev as CustomEvent<{
+          signing_pubkey?: string
+          sha256?: string
+          upload_kbps?: number
+          quality_score?: number
+          leechers?: number
+        }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const sha256 = detail?.sha256?.trim()
+        if (!signing_pubkey || !sha256) return
+        sendOrQueue({
+          type: 'SwarmHealthUpdate',
+          signing_pubkey,
+          sha256,
+          upload_kbps: Number.isFinite(Number(detail?.upload_kbps)) ? Number(detail?.upload_kbps) : undefined,
+          quality_score: Number.isFinite(Number(detail?.quality_score)) ? Number(detail?.quality_score) : undefined,
+          leechers: Number.isFinite(Number(detail?.leechers)) ? Number(detail?.leechers) : undefined,
+        })
+      }
+
       window.addEventListener('cordia:server-removed', onServerRemoved)
       window.addEventListener('cordia:servers-updated', onServersUpdated)
       const onFriendsUpdated = () => {
@@ -873,6 +955,10 @@ export function ServerSyncBootstrap() {
       window.addEventListener('cordia:send-attachment-transfer-request', onSendAttachmentTransferRequest as EventListener)
       window.addEventListener('cordia:send-attachment-transfer-response', onSendAttachmentTransferResponse as EventListener)
       window.addEventListener('cordia:send-attachment-transfer-signal', onSendAttachmentTransferSignal as EventListener)
+      window.addEventListener('cordia:send-swarm-announce', onSwarmAnnounce as EventListener)
+      window.addEventListener('cordia:send-swarm-unannounce', onSwarmUnannounce as EventListener)
+      window.addEventListener('cordia:send-swarm-peer-list-request', onSwarmPeerListRequest as EventListener)
+      window.addEventListener('cordia:send-swarm-health-update', onSwarmHealthUpdate as EventListener)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
@@ -888,6 +974,10 @@ export function ServerSyncBootstrap() {
         window.removeEventListener('cordia:send-attachment-transfer-request', onSendAttachmentTransferRequest as EventListener)
         window.removeEventListener('cordia:send-attachment-transfer-response', onSendAttachmentTransferResponse as EventListener)
         window.removeEventListener('cordia:send-attachment-transfer-signal', onSendAttachmentTransferSignal as EventListener)
+        window.removeEventListener('cordia:send-swarm-announce', onSwarmAnnounce as EventListener)
+        window.removeEventListener('cordia:send-swarm-unannounce', onSwarmUnannounce as EventListener)
+        window.removeEventListener('cordia:send-swarm-peer-list-request', onSwarmPeerListRequest as EventListener)
+        window.removeEventListener('cordia:send-swarm-health-update', onSwarmHealthUpdate as EventListener)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })

@@ -1,31 +1,32 @@
-import { useMemo, useState, useRef, useEffect } from 'react'
-import { flushSync } from 'react-dom'
-import { createPortal } from 'react-dom'
-import { FolderOpen, Trash2, X, MoreHorizontal, ChevronDown } from 'lucide-react'
+import { memo, useMemo, useRef, useState, type CSSProperties, type ComponentType } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { Download, HardDriveDownload, HardDriveUpload, Upload } from 'lucide-react'
 import { FileIcon } from './FileIcon'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
-import { Button } from './ui/button'
 import { FilenameEllipsis } from './FilenameEllipsis'
 import { formatBytes } from '../lib/bytes'
-import { openPathInFileExplorer } from '../lib/tauri'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
+import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useIdentity } from '../contexts/IdentityContext'
+import { useProfile } from '../contexts/ProfileContext'
 import { useServers } from '../contexts/ServersContext'
+import { listImageTierThumbnailPath } from '../lib/transferListMedia'
+import {
+  TRANSFER_FILTER_OPTIONS,
+  type TransferFileFilter,
+  fileMatchesTransferFilter,
+} from '../lib/transferCenterFilters'
+import type { AttachmentTransferState } from '../contexts/EphemeralMessagesContext'
+import type { SharedAttachmentItem } from '../lib/tauri'
+import { cn } from '../lib/utils'
+import { TransferCenterDownloadRow } from './TransferCenterDownloadRow'
+import { TransferCenterSeedingRow, type LiveUpload } from './TransferCenterSeedingRow'
 
-function directoryForPath(path: string): string {
-  const normalized = path.replace(/\//g, '\\')
-  const idx = normalized.lastIndexOf('\\')
-  return idx > 0 ? normalized.slice(0, idx) : normalized
-}
-
-function formatEta(seconds?: number): string {
-  if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '--:--'
-  const total = Math.max(0, Math.round(seconds))
-  const mins = Math.floor(total / 60)
-  const secs = total % 60
-  return `${mins}:${secs.toString().padStart(2, '0')}`
-}
+const HISTORY_ROW_H = 56
+const SEED_ROW_H = 58
+const ACTIVE_MAX_H_POPUP = 132
+const ACTIVE_MAX_H_FULL = 168
 
 function formatRate(kbps?: number): string {
   const safe = Math.max(0, kbps ?? 0)
@@ -33,25 +34,132 @@ function formatRate(kbps?: number): string {
   return `${Math.round(safe)} KB/s`
 }
 
-export function TransferCenterPanel() {
+export type TransferCenterVariant = 'popup' | 'full'
+
+/** Merge duplicate `sharedAttachments` rows (same attachment_id) and prefer populated SHA / paths. */
+function mergeSharedAttachment(prev: SharedAttachmentItem, next: SharedAttachmentItem): SharedAttachmentItem {
+  const shaP = prev.sha256?.trim() ?? ''
+  const shaN = next.sha256?.trim() ?? ''
+  return {
+    ...prev,
+    ...next,
+    sha256: shaN || shaP || prev.sha256 || next.sha256,
+    file_path: prev.file_path || next.file_path,
+    thumbnail_path: prev.thumbnail_path || next.thumbnail_path,
+    can_share_now: prev.can_share_now || next.can_share_now,
+  }
+}
+
+function pickSeedingRepresentative(items: SharedAttachmentItem[]): SharedAttachmentItem {
+  return (
+    items.find((i) => i.file_path) ??
+    items.find((i) => (i.sha256?.trim()?.length ?? 0) > 0) ??
+    items[0]!
+  )
+}
+
+const StatTile = memo(function StatTile({
+  label,
+  value,
+  sub,
+  icon: Icon,
+  className,
+}: {
+  label: string
+  value: string
+  sub?: string
+  icon: ComponentType<{ className?: string }>
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-lg border border-border/50 bg-muted/40 px-2.5 py-2 min-w-0',
+        'shadow-sm',
+        className
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/40 bg-background/60">
+          <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground truncate">{label}</p>
+          <p className="text-sm font-semibold tabular-nums text-foreground truncate leading-tight mt-0.5">{value}</p>
+          {sub ? <p className="text-[10px] text-muted-foreground truncate mt-0.5">{sub}</p> : null}
+        </div>
+      </div>
+    </div>
+  )
+})
+
+const FilterPills = memo(function FilterPills({
+  value,
+  onChange,
+  compact,
+}: {
+  value: TransferFileFilter
+  onChange: (f: TransferFileFilter) => void
+  compact?: boolean
+}) {
+  return (
+    <div className={cn('flex flex-wrap gap-1', compact ? 'gap-0.5' : 'gap-1')}>
+      {TRANSFER_FILTER_OPTIONS.map((opt) => (
+        <button
+          key={opt.id}
+          type="button"
+          onClick={() => onChange(opt.id)}
+          className={cn(
+            'rounded-md border text-[10px] font-medium transition-colors',
+            compact ? 'px-1.5 py-0.5' : 'px-2 py-1',
+            value === opt.id
+              ? 'border-accent/60 bg-accent/15 text-foreground'
+              : 'border-border/50 bg-background/40 text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+})
+
+export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCenterVariant }) {
   const { identity } = useIdentity()
+  const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
+  const attachmentTransfers = useEphemeralMessagesStore((s) => s.attachmentTransfers)
+  const transferHistory = useEphemeralMessagesStore((s) => s.transferHistory)
+  const sharedAttachments = useEphemeralMessagesStore((s) => s.sharedAttachments)
+  const serverSharedSha = useEphemeralMessagesStore((s) => s.serverSharedSha)
+
+  /** Inverted index: O(1) lookup per row instead of scanning every server × SHA list. */
+  const serversBySha = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const [serverKey, shas] of Object.entries(serverSharedSha)) {
+      if (!Array.isArray(shas)) continue
+      for (const sha of shas) {
+        const norm = typeof sha === 'string' ? sha.trim() : ''
+        if (!norm) continue
+        const list = map.get(norm)
+        if (list) list.push(serverKey)
+        else map.set(norm, [serverKey])
+      }
+    }
+    return map
+  }, [serverSharedSha])
+  const { setMediaPreview } = useMediaPreview()
+  const { servers } = useServers()
   const {
-    transferHistory,
-    attachmentTransfers,
-    sharedAttachments,
-    getServersForSha,
     unshareFromServer,
     removeTransferHistoryEntry,
     cancelTransferRequest,
     unshareAttachmentById,
+    findMessageById,
   } = useEphemeralMessages()
-  const { setMediaPreview } = useMediaPreview()
-  const { servers } = useServers()
-  const [openUploadMenuSha, setOpenUploadMenuSha] = useState<string | null>(null)
-  const [uploadMenuAnchorRect, setUploadMenuAnchorRect] = useState<DOMRect | null>(null)
-  const uploadMenuRef = useRef<HTMLDivElement>(null)
-  const uploadMenuButtonRef = useRef<HTMLElement | null>(null)
+
+  const [seedingFilter, setSeedingFilter] = useState<TransferFileFilter>('all')
+  const [historyFilter, setHistoryFilter] = useState<TransferFileFilter>('all')
 
   const serverNameBySigningPubkey = useMemo(() => {
     const map = new Map<string, string>()
@@ -59,45 +167,14 @@ export function TransferCenterPanel() {
     return map
   }, [servers])
 
-  const closeUploadMenu = useMemo(
-    () => () => {
-      setOpenUploadMenuSha(null)
-      setUploadMenuAnchorRect(null)
-      uploadMenuButtonRef.current = null
-    },
-    []
-  )
-
-  useEffect(() => {
-    if (openUploadMenuSha === null) return
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (uploadMenuRef.current?.contains(target)) return
-      if (uploadMenuButtonRef.current?.contains(target)) return
-      closeUploadMenu()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [openUploadMenuSha, closeUploadMenu])
-
-  const downloadRows = useMemo(
-    () =>
-      transferHistory
-        .filter(
-          (h) =>
-            h.direction === 'download' &&
-            h.status !== 'rejected' &&
-            h.status !== 'failed'
-        )
-        .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
-    [transferHistory]
-  )
+  const liveTransferByRequest = useMemo(() => {
+    const map = new Map<string, AttachmentTransferState>()
+    for (const t of attachmentTransfers) map.set(t.request_id, t)
+    return map
+  }, [attachmentTransfers])
 
   const latestUploadByAttachment = useMemo(() => {
-    const map = new Map<
-      string,
-      { status: string; progress: number; debugKbps?: number; etaSeconds?: number }
-    >()
+    const map = new Map<string, LiveUpload>()
     for (const t of attachmentTransfers) {
       if (t.direction !== 'upload') continue
       map.set(t.attachment_id, {
@@ -105,302 +182,433 @@ export function TransferCenterPanel() {
         progress: t.progress,
         debugKbps: t.debug_kbps,
         etaSeconds: t.debug_eta_seconds,
+        bufferedBytes: t.debug_buffered_bytes,
       })
     }
     return map
   }, [attachmentTransfers])
 
-  const liveTransferByRequest = useMemo(() => {
-    const map = new Map<string, typeof attachmentTransfers[number]>()
-    for (const t of attachmentTransfers) map.set(t.request_id, t)
-    return map
+  const downloadRows = useMemo(
+    () =>
+      transferHistory
+        .filter((h) => h.direction === 'download')
+        .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+    [transferHistory]
+  )
+
+  const downloadingRows = useMemo(
+    () =>
+      downloadRows.filter((row) => {
+        const s = liveTransferByRequest.get(row.request_id)?.status ?? row.status
+        return s === 'requesting' || s === 'connecting' || s === 'transferring'
+      }),
+    [downloadRows, liveTransferByRequest]
+  )
+
+  const queuedRows = useMemo(
+    () =>
+      downloadRows.filter((row) => {
+        const s = liveTransferByRequest.get(row.request_id)?.status ?? row.status
+        return s === 'queued'
+      }),
+    [downloadRows, liveTransferByRequest]
+  )
+
+  const activeDownloadRows = useMemo(() => [...queuedRows, ...downloadingRows], [queuedRows, downloadingRows])
+
+  const activeUploadRows = useMemo(() => {
+    const out: { attachmentId: string; transfer: AttachmentTransferState }[] = []
+    const seen = new Set<string>()
+    for (const t of attachmentTransfers) {
+      if (t.direction !== 'upload') continue
+      if (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected') continue
+      if (seen.has(t.attachment_id)) continue
+      seen.add(t.attachment_id)
+      out.push({ attachmentId: t.attachment_id, transfer: t })
+    }
+    return out
   }, [attachmentTransfers])
 
-  const MAX_LIST_ENTRIES = 6
-  const downloadDisplayCount = Math.min(downloadRows.length, downloadRows.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES)
-  const downloadMoreCount = downloadRows.length > MAX_LIST_ENTRIES ? downloadRows.length - (MAX_LIST_ENTRIES - 1) : 0
-
-  /** One row per content (sha256); representative item is first in group for file info. */
-  const uploadsGroupedBySha = useMemo(() => {
-    const bySha = new Map<string, typeof sharedAttachments>()
-    for (const item of sharedAttachments) {
-      const sha = item.sha256 || item.attachment_id
-      const list = bySha.get(sha) ?? []
-      list.push(item)
-      bySha.set(sha, list)
+  /** Sum of per-transfer rates (KB/s) for active downloads / uploads — shown on dashboard tiles. */
+  const aggregateDownloadKbps = useMemo(() => {
+    let sum = 0
+    for (const row of activeDownloadRows) {
+      const kbps = liveTransferByRequest.get(row.request_id)?.debug_kbps
+      if (kbps != null && Number.isFinite(kbps)) sum += Math.max(0, kbps)
     }
-    return Array.from(bySha.entries()).map(([sha, items]) => ({ sha, items, representative: items[0]! }))
+    return sum
+  }, [activeDownloadRows, liveTransferByRequest])
+
+  const aggregateUploadKbps = useMemo(() => {
+    let sum = 0
+    for (const { transfer } of activeUploadRows) {
+      const kbps = transfer.debug_kbps
+      if (kbps != null && Number.isFinite(kbps)) sum += Math.max(0, kbps)
+    }
+    return sum
+  }, [activeUploadRows])
+
+  const activeDownloadsTileSub = useMemo(() => {
+    if (activeDownloadRows.length === 0) return undefined
+    const parts: string[] = [formatRate(aggregateDownloadKbps)]
+    if (queuedRows.length > 0) parts.push(`${queuedRows.length} queued`)
+    return parts.join(' · ')
+  }, [activeDownloadRows.length, aggregateDownloadKbps, queuedRows.length])
+
+  const activeUploadsTileSub = useMemo(() => {
+    if (activeUploadRows.length === 0) return undefined
+    return `${formatRate(aggregateUploadKbps)} · ${activeUploadRows.length} active`
+  }, [activeUploadRows.length, aggregateUploadKbps])
+
+  /** O(1) lookup for active uploads strip + single source for SHA grouping dedupe. */
+  const sharedByAttachmentId = useMemo(() => {
+    const map = new Map<string, SharedAttachmentItem>()
+    for (const item of sharedAttachments) {
+      const prev = map.get(item.attachment_id)
+      if (!prev) map.set(item.attachment_id, item)
+      else map.set(item.attachment_id, mergeSharedAttachment(prev, item))
+    }
+    return map
   }, [sharedAttachments])
 
-  // Only show uploads that are currently shared in at least one server
+  /**
+   * Collapse by content SHA when known; otherwise one row per attachment_id (`__att:…`).
+   */
+  const uploadsGroupedBySha = useMemo(() => {
+    const unique = [...sharedByAttachmentId.values()]
+
+    const byGroupKey = new Map<string, SharedAttachmentItem[]>()
+    for (const item of unique) {
+      const shaTrim = item.sha256?.trim() ?? ''
+      const key = shaTrim.length > 0 ? shaTrim : `__att:${item.attachment_id}`
+      const list = byGroupKey.get(key) ?? []
+      if (!list.some((x) => x.attachment_id === item.attachment_id)) {
+        list.push(item)
+      }
+      byGroupKey.set(key, list)
+    }
+    return Array.from(byGroupKey.entries()).map(([sha, items]) => ({
+      sha,
+      items,
+      representative: pickSeedingRepresentative(items),
+    }))
+  }, [sharedByAttachmentId])
+
   const uploadsVisibleBySha = useMemo(
-    () => uploadsGroupedBySha.filter(({ representative }) => getServersForSha(representative.sha256).length > 0),
-    [uploadsGroupedBySha, getServersForSha]
+    () =>
+      uploadsGroupedBySha.filter(({ representative }) => {
+        const sha = representative.sha256?.trim() ?? ''
+        if (!sha) return false
+        return (serversBySha.get(sha)?.length ?? 0) > 0
+      }),
+    [uploadsGroupedBySha, serversBySha]
   )
 
-  const uploadDisplayCount = Math.min(
-    uploadsVisibleBySha.length,
-    uploadsVisibleBySha.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES
-  )
-  const uploadMoreCount =
-    uploadsVisibleBySha.length > MAX_LIST_ENTRIES ? uploadsVisibleBySha.length - (MAX_LIST_ENTRIES - 1) : 0
+  const dashboardStats = useMemo(() => {
+    let completedCount = 0
+    let completedBytes = 0
+    for (const h of downloadRows) {
+      const s = liveTransferByRequest.get(h.request_id)?.status ?? h.status
+      if (s === 'completed' && h.is_inaccessible !== true) {
+        completedCount += 1
+        completedBytes += Number(h.size_bytes ?? 0)
+      }
+    }
+
+    let seedingBytes = 0
+    for (const { representative: r } of uploadsVisibleBySha) {
+      seedingBytes += Number(r.size_bytes ?? 0)
+    }
+
+    const activeDown = activeDownloadRows.length
+    const activeUp = activeUploadRows.length
+
+    return {
+      completedCount,
+      completedBytes,
+      seedingCount: uploadsVisibleBySha.length,
+      seedingBytes,
+      activeDownloadCount: activeDown,
+      activeUploadCount: activeUp,
+    }
+  }, [downloadRows, liveTransferByRequest, uploadsVisibleBySha, activeDownloadRows.length, activeUploadRows.length])
+
+  const downloadHistoryForList = useMemo(() => {
+    return downloadRows.filter((row) => fileMatchesTransferFilter(row.file_name, historyFilter))
+  }, [downloadRows, historyFilter])
+
+  const seedingLibraryFiltered = useMemo(() => {
+    return uploadsVisibleBySha.filter(({ representative: r }) => fileMatchesTransferFilter(r.file_name, seedingFilter))
+  }, [uploadsVisibleBySha, seedingFilter])
+
+  const historyParentRef = useRef<HTMLDivElement>(null)
+  const seedParentRef = useRef<HTMLDivElement>(null)
+
+  const historyVirtualizer = useVirtualizer({
+    count: downloadHistoryForList.length,
+    getScrollElement: () => historyParentRef.current,
+    estimateSize: () => HISTORY_ROW_H,
+    overscan: 12,
+  })
+
+  const seedVirtualizer = useVirtualizer({
+    count: seedingLibraryFiltered.length,
+    getScrollElement: () => seedParentRef.current,
+    estimateSize: () => SEED_ROW_H,
+    overscan: 10,
+  })
+
+  const activeMaxH = variant === 'full' ? ACTIVE_MAX_H_FULL : ACTIVE_MAX_H_POPUP
+
+  const rootClass = variant === 'full' ? 'h-full min-h-0' : 'h-full min-h-0 max-h-full'
 
   return (
     <>
-    <div className="flex min-h-0">
-        <section className="flex-1 min-w-0 flex flex-col pr-2 shrink-0">
-          <div className="px-1 pb-1">
-            <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Downloads</h2>
+      <div className={cn('flex min-h-0 flex-1 flex-col gap-2 overflow-hidden', rootClass)}>
+        {/* Stats dashboard */}
+        <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatTile
+            label="Downloaded"
+            value={String(dashboardStats.completedCount)}
+            sub={formatBytes(dashboardStats.completedBytes)}
+            icon={HardDriveDownload}
+          />
+          <StatTile
+            label="Active Downloads"
+            value={String(dashboardStats.activeDownloadCount)}
+            sub={activeDownloadsTileSub}
+            icon={Download}
+          />
+          <StatTile
+            label="Seeding"
+            value={String(dashboardStats.seedingCount)}
+            sub={formatBytes(dashboardStats.seedingBytes)}
+            icon={HardDriveUpload}
+          />
+          <StatTile
+            label="Active Uploads"
+            value={String(dashboardStats.activeUploadCount)}
+            sub={activeUploadsTileSub}
+            icon={Upload}
+          />
+        </div>
+
+        {/* Active strips */}
+        <div className="grid shrink-0 grid-cols-1 gap-2 md:grid-cols-2 min-h-0">
+          <div className="flex min-h-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
+            <div className="shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between bg-muted/40">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Active downloads</span>
+              {activeDownloadRows.length > 0 && (
+                <span className="text-[10px] tabular-nums text-muted-foreground">{activeDownloadRows.length}</span>
+              )}
+            </div>
+            <div className="min-h-0 overflow-y-auto overscroll-contain" style={{ maxHeight: activeMaxH }}>
+              {activeDownloadRows.length === 0 ? (
+                <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">None</p>
+              ) : (
+                activeDownloadRows.map((row) => {
+                  const live = liveTransferByRequest.get(row.request_id)
+                  const fromLabel =
+                    row.from_user_id === identity?.user_id
+                      ? 'You'
+                      : remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim() ||
+                        `User ${row.from_user_id.slice(0, 8)}`
+                  return (
+                    <TransferCenterDownloadRow
+                      key={row.request_id}
+                      row={row}
+                      compact
+                      status={live?.status ?? row.status}
+                      progress={live?.progress ?? row.progress}
+                      debugKbps={live?.debug_kbps}
+                      debugEtaSeconds={live?.debug_eta_seconds}
+                      debugPendingBytes={live?.debug_pending_bytes}
+                      fromLabel={fromLabel}
+                      setMediaPreview={setMediaPreview}
+                      cancelTransferRequest={cancelTransferRequest}
+                      removeTransferHistoryEntry={removeTransferHistoryEntry}
+                    />
+                  )
+                })
+              )}
+            </div>
           </div>
-          <div className={`space-y-1.5 overflow-y-auto pr-1 ${downloadRows.length > 6 ? 'max-h-[342px]' : ''}`}>
-            {downloadRows.length === 0 && (
-              <p className="text-[11px] text-muted-foreground px-1">No downloads yet.</p>
-            )}
-            {downloadRows.slice(0, downloadDisplayCount).map((row) => {
-              const live = liveTransferByRequest.get(row.request_id)
-              const status = live?.status ?? row.status
-              const progress = live?.progress ?? row.progress
-              const inaccessible = row.is_inaccessible === true
-              const canCancel =
-                status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring'
-              const canRemove = inaccessible || status === 'rejected'
-              const pct = status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round(progress * 100)))
-              const showBar = !inaccessible && (status === 'transferring' || status === 'completed')
-              const speed = formatRate(live?.debug_kbps)
-              const eta = formatEta(live?.debug_eta_seconds)
-              return (
-                <div
-                  key={row.request_id}
-                  className={`group border border-border/50 px-2 py-1.5 flex gap-2 items-start ${
-                    inaccessible ? 'bg-card/30 opacity-65' : 'bg-card/60'
-                  }`}
-                >
-                  <FileIcon
-                    fileName={row.file_name}
-                    savedPath={inaccessible ? undefined : row.saved_path}
-                    onMediaClick={(url, type, attachmentId, fileName) => setMediaPreview({ type, url, attachmentId, fileName })}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <FilenameEllipsis name={row.file_name} className="block text-[11px] truncate leading-4" />
-                    <div className="text-[10px] text-muted-foreground truncate">
-                      {row.from_user_id === identity?.user_id
-                        ? 'You'
-                        : (remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim()
-                            ? remoteProfiles.getProfile(row.from_user_id)!.display_name
-                            : `User ${row.from_user_id.slice(0, 8)}`)} • {formatBytes(row.size_bytes)}
-                    </div>
-                    {showBar && (
-                      <div className="mt-0.5 h-1 bg-foreground/15 overflow-hidden rounded-none">
-                        <div className={`h-full ${status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85'}`} style={{ width: `${Math.max(2, pct)}%` }} />
-                      </div>
-                    )}
-                    {!inaccessible && (status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring') && (
-                      <div className="text-[9px] text-muted-foreground truncate mt-0.5">
-                        {`${speed} • ETA ${eta}`}
-                      </div>
-                    )}
-                    {inaccessible && <div className="text-[9px] text-muted-foreground mt-0.5">Not accessible</div>}
-                  </div>
-                  <div className="shrink-0 w-14 flex justify-end">
-                    <span className="text-[10px] text-muted-foreground group-hover:hidden">{pct}%</span>
-                    <div className="hidden group-hover:flex items-center gap-1">
-                      {!inaccessible && row.saved_path && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
-                          title={row.saved_path}
-                        >
-                          <FolderOpen className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                      {canCancel && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 text-amber-300 hover:text-amber-200"
-                          onClick={() => cancelTransferRequest(row.request_id)}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                      {canRemove && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 text-red-300 hover:text-red-200"
-                          onClick={() => removeTransferHistoryEntry(row.request_id)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-            {downloadMoreCount > 0 && (
-              <div className="border border-border/50 bg-card/40 px-2 py-1.5 flex gap-2 items-center text-muted-foreground">
-                <div className="w-10 h-10 shrink-0 grid place-items-center rounded border border-border/50 bg-muted/30">
-                  <MoreHorizontal className="h-5 w-5" />
-                </div>
-                <div className="min-w-0 flex-1 text-[11px]">
-                  {downloadMoreCount} more download{downloadMoreCount !== 1 ? 's' : ''}
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-        <div className="w-px bg-foreground/15 mx-2" />
-        <section className="flex-1 min-w-0 flex flex-col pl-2 shrink-0">
-          <div className="px-1 pb-1">
-            <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Uploads</h2>
-          </div>
-          <div className={`space-y-1.5 overflow-y-auto pr-1 ${uploadsVisibleBySha.length > 6 ? 'max-h-[342px]' : ''}`}>
-            {uploadsVisibleBySha.length === 0 && (
-              <p className="text-[11px] text-muted-foreground px-1">No shared files.</p>
-            )}
-            {uploadsVisibleBySha.slice(0, uploadDisplayCount).map(({ sha, representative: item }) => {
-              const live = latestUploadByAttachment.get(item.attachment_id)
-              const serverCount = getServersForSha(item.sha256).length
-              const status = live?.status ?? (item.can_share_now ? 'available' : 'unavailable')
-              const p = live?.status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round((live?.progress ?? 0) * 100)))
-              const showBar = !!live && (live.status === 'transferring' || live.status === 'completed')
-              return (
-                <div key={sha} className="group border border-border/50 bg-card/60 px-2 py-1.5 flex gap-2 items-start">
-                  <FileIcon
-                    fileName={item.file_name}
-                    attachmentId={item.can_share_now && !item.file_path ? item.attachment_id : null}
-                    savedPath={item.file_path ?? undefined}
-                    thumbnailPath={item.thumbnail_path ?? undefined}
-                    onMediaClick={(url, type, attachmentId, fileName) => setMediaPreview({ type, url, attachmentId, fileName })}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <FilenameEllipsis name={item.file_name} className="block text-[11px] truncate leading-4" />
-                    <div className="text-[10px] text-muted-foreground truncate">
-                      {formatBytes(item.size_bytes)} • {item.storage_mode === 'program_copy' ? 'Cordia copy' : 'path'}
-                      {serverCount > 0 && ` • Shared in ${serverCount} server${serverCount !== 1 ? 's' : ''}`}
-                    </div>
-                    {showBar && (
-                      <div className="mt-0.5 h-1 bg-foreground/15 overflow-hidden rounded-none">
-                        <div className={`h-full ${live?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85'}`} style={{ width: `${Math.max(2, p)}%` }} />
-                      </div>
-                    )}
-                    {!!live && (live.status === 'requesting' || live.status === 'connecting' || live.status === 'transferring') && (
-                      <div className="text-[9px] text-muted-foreground truncate mt-0.5">
-                        {`${formatRate(live.debugKbps)} • ETA ${formatEta(live.etaSeconds)}`}
-                      </div>
-                    )}
-                  </div>
-                  <div className="shrink-0 w-14 flex justify-end items-center gap-0.5">
-                    <span className="text-[10px] text-muted-foreground group-hover:hidden">{showBar ? `${p}%` : status}</span>
-                    <div className="hidden group-hover:flex items-center gap-0.5">
-                      {!!item.file_path && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => openPathInFileExplorer(directoryForPath(item.file_path!))}
-                          title={item.file_path!}
-                        >
-                          <FolderOpen className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                        title="Remove from server(s)"
-                        onClick={(e) => {
-                          const el = e.currentTarget
-                          const rect = el.getBoundingClientRect()
-                          if (openUploadMenuSha === sha) {
-                            closeUploadMenu()
-                            return
-                          }
-                          setUploadMenuAnchorRect(rect)
-                          setOpenUploadMenuSha(sha)
-                          uploadMenuButtonRef.current = el
+          <div className="flex min-h-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
+            <div className="shrink-0 border-b border-border/40 px-2 py-1 flex items-center justify-between bg-muted/40">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Active uploads</span>
+              {activeUploadRows.length > 0 && (
+                <span className="text-[10px] tabular-nums text-muted-foreground">{activeUploadRows.length}</span>
+              )}
+            </div>
+            <div className="min-h-0 overflow-y-auto overscroll-contain" style={{ maxHeight: activeMaxH }}>
+              {activeUploadRows.length === 0 ? (
+                <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">None</p>
+              ) : (
+                activeUploadRows.map(({ attachmentId, transfer }) => {
+                  const shared = sharedByAttachmentId.get(attachmentId)
+                  const fileName = shared?.file_name ?? transfer.file_name
+                  const p = Math.max(0, Math.min(100, Math.round((transfer.progress ?? 0) * 100)))
+                  return (
+                    <div
+                      key={attachmentId}
+                      className="flex items-center gap-2 border-b border-border px-2 py-1 transition-colors duration-150 hover:bg-muted/50"
+                    >
+                      <FileIcon
+                        fileName={fileName}
+                        attachmentId={shared?.can_share_now && !shared.file_path ? shared.attachment_id : null}
+                        savedPath={shared?.file_path ?? undefined}
+                        thumbnailPath={listImageTierThumbnailPath(shared?.thumbnail_path ?? undefined, shared?.file_path ?? undefined)}
+                        boxSize={28}
+                        squareThumb
+                        onMediaClick={(url, type, aid, fn) => {
+                          const uid = transfer.from_user_id
+                          const isYou = uid === identity?.user_id
+                          const rp = remoteProfiles.getProfile(uid)
+                          const sentAt = findMessageById(transfer.message_id)?.sent_at ?? new Date().toISOString()
+                          setMediaPreview({
+                            type,
+                            url,
+                            attachmentId: aid,
+                            fileName: fn ?? fileName,
+                            source: 'transfers',
+                            originUserId: uid,
+                            originSentAtIso: sentAt,
+                            originDisplayName: isYou
+                              ? identity?.display_name ?? 'You'
+                              : rp?.display_name?.trim() || `User ${uid.slice(0, 8)}`,
+                            originAvatarDataUrl: isYou ? profile.avatar_data_url ?? null : rp?.avatar_data_url ?? null,
+                            localPath: shared?.file_path ?? null,
+                            sizeBytes: shared?.size_bytes,
+                            sha256: shared?.sha256 ?? transfer.sha256,
+                          })
                         }}
-                      >
-                        <ChevronDown className="h-3.5 w-3.5" />
-                      </Button>
+                      />
+                      <div className="min-w-0 flex-1">
+                        <FilenameEllipsis name={fileName} className="text-[11px] font-medium" />
+                        <div className="h-0.5 mt-1 max-w-[160px] rounded-full bg-foreground/10 overflow-hidden">
+                          <div className="h-full bg-violet-500/70 rounded-full" style={{ width: `${Math.max(3, p)}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-[10px] tabular-nums text-muted-foreground w-8">{p}%</span>
                     </div>
-                  </div>
-                </div>
-              )
-            })}
-            {uploadMoreCount > 0 && (
-              <div className="border border-border/50 bg-card/40 px-2 py-1.5 flex gap-2 items-center text-muted-foreground">
-                <div className="w-10 h-10 shrink-0 grid place-items-center rounded border border-border/50 bg-muted/30">
-                  <MoreHorizontal className="h-5 w-5" />
-                </div>
-                <div className="min-w-0 flex-1 text-[11px]">
-                  {uploadMoreCount} more upload{uploadMoreCount !== 1 ? 's' : ''}
-                </div>
-              </div>
-            )}
+                  )
+                })
+              )}
+            </div>
           </div>
-        </section>
-      </div>
-      {openUploadMenuSha && uploadMenuAnchorRect && (() => {
-        const group = uploadsVisibleBySha.find((g) => g.sha === openUploadMenuSha)
-        const item = group?.representative
-        if (!item) return null
-        const rect = uploadMenuAnchorRect
-        return createPortal(
-          <div
-            ref={uploadMenuRef}
-            className="min-w-[160px] py-1 rounded-md border border-border bg-popover text-popover-foreground shadow-md z-[9999]"
-            style={{
-              position: 'fixed',
-              right: window.innerWidth - rect.right,
-              top: rect.bottom + 2,
-            }}
-          >
-            {getServersForSha(item.sha256).map((serverKey) => {
-              const isLastServer = getServersForSha(item.sha256).length === 1
-              return (
-                <button
-                  key={serverKey}
-                  type="button"
-                  className="w-full px-2 py-1.5 text-left text-[11px] hover:bg-accent hover:text-accent-foreground truncate"
-                  onClick={() => {
-                    if (isLastServer) {
-                      unshareAttachmentById(item.attachment_id)
-                    } else {
-                      flushSync(() => {
-                        unshareFromServer(serverKey, item.sha256)
-                      })
-                    }
-                    closeUploadMenu()
-                  }}
+        </div>
+
+        {/* Split history + library */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 md:grid-cols-2 overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
+            <div className="shrink-0 space-y-1.5 border-b border-border/40 bg-muted/10 px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Download history</span>
+                <span className="text-[10px] tabular-nums text-muted-foreground">{downloadHistoryForList.length}</span>
+              </div>
+              <FilterPills value={historyFilter} onChange={setHistoryFilter} compact />
+            </div>
+            <div ref={historyParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {downloadHistoryForList.length === 0 ? (
+                <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">No entries</p>
+              ) : (
+                <div
+                  className="relative w-full"
+                  style={{ height: `${historyVirtualizer.getTotalSize()}px` }}
                 >
-                  Remove from server ({serverNameBySigningPubkey.get(serverKey) ?? `${serverKey.slice(0, 8)}…`})
-                </button>
-              )
-            })}
-            <button
-              type="button"
-              className="w-full px-2 py-1.5 text-left text-[11px] text-red-600 hover:bg-red-500/10 flex items-center gap-1.5"
-              onClick={() => {
-                unshareAttachmentById(item.attachment_id)
-                closeUploadMenu()
-              }}
-            >
-              <Trash2 className="h-3 w-3 shrink-0" />
-              Remove from all (unshare)
-            </button>
-          </div>,
-          document.body
-        )
-      })()}
+                  {historyVirtualizer.getVirtualItems().map((vi) => {
+                    const row = downloadHistoryForList[vi.index]
+                    if (!row) return null
+                    const live = liveTransferByRequest.get(row.request_id)
+                    const fromLabel =
+                      row.from_user_id === identity?.user_id
+                        ? 'You'
+                        : remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim() ||
+                          `User ${row.from_user_id.slice(0, 8)}`
+                    return (
+                      <div
+                        key={row.request_id}
+                        data-index={vi.index}
+                        ref={historyVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full"
+                        style={
+                          {
+                            transform: `translateY(${vi.start}px)`,
+                          } as CSSProperties
+                        }
+                      >
+                        <TransferCenterDownloadRow
+                          row={row}
+                          compact={false}
+                          status={live?.status ?? row.status}
+                          progress={live?.progress ?? row.progress}
+                          debugKbps={live?.debug_kbps}
+                          debugEtaSeconds={live?.debug_eta_seconds}
+                          debugPendingBytes={live?.debug_pending_bytes}
+                          fromLabel={fromLabel}
+                          setMediaPreview={setMediaPreview}
+                          cancelTransferRequest={cancelTransferRequest}
+                          removeTransferHistoryEntry={removeTransferHistoryEntry}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
+            <div className="shrink-0 space-y-1.5 border-b border-border/40 bg-muted/10 px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Seeding library</span>
+                <span className="text-[10px] tabular-nums text-muted-foreground">{seedingLibraryFiltered.length}</span>
+              </div>
+              <FilterPills value={seedingFilter} onChange={setSeedingFilter} compact />
+            </div>
+            <div ref={seedParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {seedingLibraryFiltered.length === 0 ? (
+                <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                  {uploadsVisibleBySha.length === 0 ? 'Nothing shared in any server' : 'No matches for filter'}
+                </p>
+              ) : (
+                <div
+                  className="relative w-full"
+                  style={{ height: `${seedVirtualizer.getTotalSize()}px` }}
+                >
+                  {seedVirtualizer.getVirtualItems().map((vi) => {
+                    const group = seedingLibraryFiltered[vi.index]
+                    if (!group) return null
+                    return (
+                      <div
+                        key={group.sha}
+                        data-index={vi.index}
+                        ref={seedVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full"
+                        style={
+                          {
+                            transform: `translateY(${vi.start}px)`,
+                          } as CSSProperties
+                        }
+                      >
+                        <TransferCenterSeedingRow
+                          group={group}
+                          serversBySha={serversBySha}
+                          serverNameBySigningPubkey={serverNameBySigningPubkey}
+                          live={latestUploadByAttachment.get(group.representative.attachment_id) ?? null}
+                          setMediaPreview={setMediaPreview}
+                          unshareFromServer={unshareFromServer}
+                          unshareAttachmentById={unshareAttachmentById}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </>
   )
 }

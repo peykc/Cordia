@@ -1,4 +1,5 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
 import { IdentityProvider, useIdentity } from './contexts/IdentityContext'
 import { AccountProvider, useAccount } from './contexts/AccountContext'
 import { BeaconProvider } from './contexts/BeaconContext'
@@ -27,6 +28,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { TransferCenterModal } from './components/TransferCenterModal'
 import { NotificationsModal } from './components/NotificationsModal'
 import { MediaPreviewModal } from './components/MediaPreviewModal'
+import { ThemeProvider } from './contexts/ThemeContext'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
 import AccountSetupPage from './pages/AccountSetupPage'
@@ -68,13 +70,21 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function MediaPreviewRoot() {
   const { mediaPreview, setMediaPreview } = useMediaPreview()
+  const location = useLocation()
+  const previewRef = useRef(mediaPreview)
+  previewRef.current = mediaPreview
+
+  useEffect(() => {
+    const prev = previewRef.current
+    if (!prev) return
+    if (prev.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url)
+    setMediaPreview(null)
+  }, [location.pathname, setMediaPreview])
+
   if (!mediaPreview) return null
   return (
     <MediaPreviewModal
-      type={mediaPreview.type}
-      url={mediaPreview.url}
-      attachmentId={mediaPreview.attachmentId}
-      fileName={mediaPreview.fileName}
+      {...mediaPreview}
       onClose={() => {
         if (mediaPreview.url?.startsWith('blob:')) URL.revokeObjectURL(mediaPreview.url)
         setMediaPreview(null)
@@ -90,7 +100,8 @@ function AppLayout() {
       {!isNativeVideoFullscreen && <WindowResizeHandles />}
       <AppUpdater />
       <TitleBar />
-      <div className="relative z-40" aria-hidden>
+      {/* Above TransferCenterModal (z-[71]) / NotificationsModal (z-[70]); below TitleBar (z-[9998]) */}
+      <div className="relative z-[80]" aria-hidden>
         <MediaPreviewRoot />
       </div>
       <div className="flex-1 overflow-auto min-h-0 relative z-0">
@@ -156,28 +167,30 @@ function App() {
                     <WebRTCProvider>
                       <ServersProvider>
                         <FriendsProvider>
-                        <EphemeralMessagesProvider>
-                          <ToastProvider>
-                          <SidebarWidthProvider>
-                            <ActiveServerProvider>
-                              <SettingsModalProvider>
-                                <TransferCenterModalProvider>
-                                <NotificationsModalProvider>
-                                <MediaPreviewProvider>
-                                <VideoFullscreenProvider>
-                                <ServerSyncBootstrap />
-                                <Router>
-                                  <AppLayout />
-                                </Router>
-                                </VideoFullscreenProvider>
-                                </MediaPreviewProvider>
-                                </NotificationsModalProvider>
-                                </TransferCenterModalProvider>
-                              </SettingsModalProvider>
-                            </ActiveServerProvider>
-                          </SidebarWidthProvider>
-                          </ToastProvider>
-                        </EphemeralMessagesProvider>
+                          <EphemeralMessagesProvider>
+                            <ToastProvider>
+                              <SidebarWidthProvider>
+                                <ActiveServerProvider>
+                                  <SettingsModalProvider>
+                                    <TransferCenterModalProvider>
+                                      <NotificationsModalProvider>
+                                        <MediaPreviewProvider>
+                                          <VideoFullscreenProvider>
+                                            <ThemeProvider>
+                                              <ServerSyncBootstrap />
+                                              <Router>
+                                                <AppLayout />
+                                              </Router>
+                                            </ThemeProvider>
+                                          </VideoFullscreenProvider>
+                                        </MediaPreviewProvider>
+                                      </NotificationsModalProvider>
+                                    </TransferCenterModalProvider>
+                                  </SettingsModalProvider>
+                                </ActiveServerProvider>
+                              </SidebarWidthProvider>
+                            </ToastProvider>
+                          </EphemeralMessagesProvider>
                         </FriendsProvider>
                       </ServersProvider>
                     </WebRTCProvider>

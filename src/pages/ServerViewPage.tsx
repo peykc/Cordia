@@ -30,6 +30,7 @@ import { useSpeaking } from '../contexts/SpeakingContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { cn } from '../lib/utils'
+import { avatarStyleForUserId } from '../lib/userAvatarStyle'
 import { getDraft, setDraft, clearDraft } from '../lib/messageDrafts'
 import { ServerVoiceHeader } from '../components/server/ServerVoiceHeader'
 import { ServerChatTimeline } from '../components/server/ServerChatTimeline'
@@ -273,19 +274,7 @@ function ServerViewPage() {
     return (parts[0][0] + parts[1][0]).toUpperCase()
   }, [])
 
-  const hashId = (s: string) => {
-    let hash = 0
-    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0
-    return hash
-  }
-
-  const avatarStyleForUser = useCallback((userId: string): CSSProperties => {
-    const h = hashId(userId) % 360
-    return {
-      backgroundColor: `hsl(${h}, 45%, 35%)`,
-      color: '#fff',
-    }
-  }, [])
+  const avatarStyleForUser = useCallback((userId: string): CSSProperties => avatarStyleForUserId(userId), [])
 
   const onProfileClick = useCallback((userId: string, element: HTMLElement) => {
     setProfileCardUserId(userId)
@@ -304,11 +293,11 @@ function ServerViewPage() {
   const PresenceSquare = ({ level, size = 'default' }: { level: 'active' | 'online' | 'offline' | 'in_call'; size?: 'default' | 'small' }) => {
     const cls =
       level === 'in_call'
-        ? 'bg-blue-500'
+        ? 'bg-accent'
         : level === 'active'
-          ? 'bg-green-500'
+          ? 'bg-success'
           : level === 'online'
-            ? 'bg-amber-500'
+            ? 'bg-warning'
             : 'bg-muted-foreground'
     const sizeClass = size === 'small' ? 'h-1.5 w-1.5' : 'h-2 w-2'
     return <div className={`${sizeClass} ${cls} ring-2 ring-background`} />
@@ -1131,9 +1120,23 @@ function ServerViewPage() {
                   onAddAttachment={handleAddAttachment}
                   onRemoveStagedAttachment={handleRemoveStagedAttachment}
                   onToggleStagedSpoiler={handleToggleStagedSpoiler}
-                  onMediaPreview={({ type, url, fileName }) =>
-                    setMediaPreview({ type, url, attachmentId: undefined, fileName })
-                  }
+                  onMediaPreview={({ type, url, fileName, localPath, sizeBytes }) => {
+                    if (!identity?.user_id) return
+                    setMediaPreview({
+                      type,
+                      url,
+                      attachmentId: undefined,
+                      fileName,
+                      source: 'chat',
+                      originUserId: identity.user_id,
+                      originSentAtIso: new Date().toISOString(),
+                      originDisplayName: identity.display_name ?? 'You',
+                      originAvatarDataUrl: profile.avatar_data_url ?? null,
+                      localPath,
+                      sizeBytes,
+                      showShareInChat: false,
+                    })
+                  }}
                 />
               </div>
             </>
@@ -1188,7 +1191,7 @@ function ServerViewPage() {
                   <button
                     key={member.user_id}
                     type="button"
-                    className="flex gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors w-full text-left min-w-0 overflow-visible"
+                    className="flex gap-2 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors w-full text-left min-w-0 overflow-visible"
                     onClick={(e) => {
                       setProfileCardUserId(member.user_id)
                       profileCardAnchorRef.current = e.currentTarget as HTMLElement

@@ -14,6 +14,7 @@ import {
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { readAttachmentBytes } from '../lib/tauri'
 import { getFileTypeFromExt, type FileTypeCategory } from '../lib/fileType'
+import { cn } from '../lib/utils'
 
 const ICON_SIZE = 20
 const THUMB_SIZE = 32
@@ -31,6 +32,8 @@ type Props = {
   className?: string
   /** Override box size in pixels (default THUMB_SIZE) */
   boxSize?: number
+  /** Sharp corners + square frame (e.g. transfer center list) */
+  squareThumb?: boolean
 }
 
 export function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?: string }) {
@@ -65,6 +68,7 @@ export function FileIcon({
   onMediaClick,
   className = '',
   boxSize = THUMB_SIZE,
+  squareThumb = false,
 }: Props) {
   const category = getFileTypeFromExt(fileName)
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
@@ -148,14 +152,18 @@ export function FileIcon({
     }
   }, [category, savedPath, thumbnailPath, attachmentId])
 
-  const boxCls = `shrink-0 flex items-center justify-center overflow-hidden rounded bg-muted/50 ${className}`
+  const boxCls = cn(
+    'shrink-0 flex items-center justify-center overflow-hidden bg-muted/50',
+    squareThumb ? 'rounded-none border border-border/50' : 'rounded',
+    className
+  )
 
   if (category === 'image' && mediaUrl && !loading) {
     const fullImageUrl = savedPath ? (() => { try { return convertFileSrc(savedPath) } catch { return mediaUrl } })() : mediaUrl;
     return (
       <button
         type="button"
-        className={`${boxCls} cursor-pointer hover:opacity-90 transition-opacity`}
+        className={`${boxCls} relative cursor-pointer group`}
         style={{ width: boxSize, height: boxSize }}
         onClick={() => onMediaClick?.(fullImageUrl, 'image', undefined, fileName)}
       >
@@ -163,6 +171,11 @@ export function FileIcon({
           src={mediaUrl}
           alt=""
           className="w-full h-full object-cover"
+        />
+        {/* Darken on hover only (video thumbs stay slightly dimmed for play affordance) */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
         />
       </button>
     )
@@ -175,7 +188,7 @@ export function FileIcon({
     return (
       <button
         type="button"
-        className={`${boxCls} relative cursor-pointer hover:opacity-90 transition-opacity group`}
+        className={`${boxCls} relative cursor-pointer group`}
         style={{ width: boxSize, height: boxSize }}
         onClick={() => {
           if (savedPath) {

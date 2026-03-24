@@ -239,11 +239,11 @@ export function ConnectionSettings() {
               <div
                 className={`w-2 h-2 rounded-none ${
                   status === 'connected'
-                    ? 'bg-green-500'
+                    ? 'bg-success'
                     : status === 'checking'
-                      ? 'bg-yellow-500 animate-pulse'
+                      ? 'bg-warning animate-pulse'
                       : status === 'disconnected'
-                        ? 'bg-red-500'
+                        ? 'bg-destructive'
                         : 'bg-muted-foreground'
                 }`}
               />

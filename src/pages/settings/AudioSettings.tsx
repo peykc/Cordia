@@ -439,7 +439,7 @@ export function AudioSettingsPage() {
           <Button
             variant="outline"
             onClick={handleToggleMonitoring}
-            className="w-full h-10 font-light border-border/50 hover:bg-accent text-sm"
+            className="w-full h-10 font-light border-border/50 hover:bg-white/5 text-sm"
           >
             {isMonitoring ? (
               <>
@@ -539,7 +539,7 @@ export function AudioSettingsPage() {
             {isMonitoring && audioSettings.push_to_talk_key && (
               <div className={`px-4 py-2 rounded-md text-center text-sm font-light transition-colors ${
                 isPttKeyPressed
-                  ? 'bg-green-500/20 text-green-400 border border-green-500/50'
+                  ? 'bg-success/20 text-success border border-success/50'
                   : 'bg-muted text-muted-foreground'
               }`}>
                 {isPttKeyPressed ? '🎤 Transmitting...' : `Hold "${audioSettings.push_to_talk_key}" to talk`}

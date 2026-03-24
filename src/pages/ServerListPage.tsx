@@ -310,11 +310,11 @@ function ServerListPage() {
       return (
         <div className="absolute -top-1 left-1/2 -translate-x-1/2">
           {level === 'in_call' ? (
-            <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+            <div className="h-2 w-2 bg-accent ring-2 ring-background" />
           ) : level === 'active' ? (
-            <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+            <div className="h-2 w-2 bg-success ring-2 ring-background" />
           ) : level === 'online' ? (
-            <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+            <div className="h-2 w-2 bg-warning ring-2 ring-background" />
           ) : (
             <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
           )}
@@ -383,9 +383,9 @@ function ServerListPage() {
                   <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-popover border-2 border-border rounded-md shadow-lg opacity-0 invisible group-hover/avatar:opacity-100 group-hover/avatar:visible transition-all duration-200 pointer-events-none whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       {level === 'active' ? (
-                        <div className="h-2 w-2 bg-green-500" />
+                        <div className="h-2 w-2 bg-success" />
                       ) : level === 'online' ? (
-                        <div className="h-2 w-2 bg-amber-500" />
+                        <div className="h-2 w-2 bg-warning" />
                       ) : (
                         <div className="h-2 w-2 bg-muted-foreground" />
                       )}
@@ -695,7 +695,7 @@ function ServerListPage() {
                       setShowCreateInline((v) => !v)
                     }}
                     size="sm"
-                    className="bg-foreground text-background hover:bg-foreground/90 h-9 font-light"
+                    className="h-9 font-light"
                   >
                     <Plus className="mr-2 h-4 w-4" />
                     {showCreateInline ? 'Cancel' : 'New Server'}
@@ -818,7 +818,7 @@ function ServerListPage() {
                   {/* New Server popover (inverse styling, does not affect layout) */}
                   {showCreateInline && (
                     <div className="absolute right-0 bottom-full mb-2 z-50 w-[200px] max-w-[calc(100vw-4rem)]">
-                      <div className="border-2 border-background/20 bg-foreground text-background rounded-lg p-2 shadow-lg">
+                      <div className="border border-border/40 bg-card rounded-lg p-2 shadow-lg">
                         <div className="flex items-center gap-2">
                           <div className="flex-1 px-2 py-1.5 bg-background/10 border border-background/20 rounded-md">
                             <input
@@ -872,7 +872,7 @@ function ServerListPage() {
                     {sortedServers.map((server) => (
                       (() => {
                         const isFav = favoriteServerIds.has(server.id)
-                        const cardBorder = isFav ? 'border-amber-500/70' : 'border-border'
+                        const cardBorder = isFav ? 'border-accent/70' : 'border-border/70'
                         const unread = getUnreadCount(server.id)
                         return (
                       <div key={server.id} className="relative group/card min-w-0">
@@ -905,14 +905,14 @@ function ServerListPage() {
                           }}
                           role="button"
                           tabIndex={0}
-                          className={`w-full p-4 border-2 ${cardBorder} bg-card hover:bg-accent transition-colors text-left rounded-lg min-w-0 overflow-visible corner-accent-hover`}
+                          className={`w-full p-4 border ${cardBorder} bg-white/5 shadow-cordia-panel hover:bg-card transition-colors text-left rounded-lg min-w-0 overflow-visible corner-accent-hover`}
                         >
                           <div className="relative flex items-center justify-between gap-6 min-w-0">
                             <div className="space-y-1 min-w-0 flex-1">
                               <div className="flex items-center gap-2 min-w-0">
                                 <h3 className="text-lg font-light tracking-tight truncate">{server.name}</h3>
                                 {unread > 0 && (
-                                  <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-primary/20 border border-primary/30">
+                                  <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-warning/20 text-warning border border-warning/30">
                                     {unread}
                                   </span>
                                 )}
@@ -946,7 +946,7 @@ function ServerListPage() {
                                     e.stopPropagation()
                                     toggleFavorite(server.id)
                                   }}
-                                  className={`h-9 w-9 grid place-items-center rounded-md transition-opacity hover:bg-amber-500/10 ${
+                                  className={`h-9 w-9 grid place-items-center rounded-md transition-opacity hover:bg-accent/10 ${
                                     isFav ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'
                                   }`}
                                 >
@@ -1250,11 +1250,11 @@ function ServerListPage() {
                                 )}
                                 <div className="absolute -top-1 left-1/2 -translate-x-1/2">
                                   {bestLevel === 'in_call' ? (
-                                    <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-accent ring-2 ring-background" />
                                   ) : bestLevel === 'active' ? (
-                                    <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-success ring-2 ring-background" />
                                   ) : bestLevel === 'online' ? (
-                                    <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-warning ring-2 ring-background" />
                                   ) : (
                                     <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
                                   )}
@@ -1575,7 +1575,7 @@ function ServerListPage() {
               </Button>
               <Button
                 onClick={handleCreateServer}
-                className="flex-1 h-10 bg-foreground text-background hover:bg-foreground/90 font-light"
+                className="flex-1 h-10 font-light"
                 disabled={isCreating || !serverName.trim()}
               >
                 {isCreating ? 'Creating...' : 'Create'}
