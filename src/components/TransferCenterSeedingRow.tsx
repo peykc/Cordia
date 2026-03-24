@@ -54,6 +54,8 @@ function formatBuffer(bytes?: number): string {
 
 type Props = {
   group: SeedingGroup
+  /** List-computed `ch` width: aligns `|` / dots across rows with minimal slack for current filter. */
+  sizeColumnCh: number
   serversBySha: Map<string, string[]>
   serverNameBySigningPubkey: Map<string, string>
   live?: LiveUpload | null
@@ -64,6 +66,7 @@ type Props = {
 
 export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
   group,
+  sizeColumnCh,
   serversBySha,
   serverNameBySigningPubkey,
   live,
@@ -103,6 +106,8 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
   const p =
     live?.status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round((live?.progress ?? 0) * 100)))
   const showBar = !!live && (live.status === 'transferring' || live.status === 'completed')
+  const twoActionSlots = !!item.file_path
+  const actionsExpandedClass = twoActionSlots ? 'max-w-[3.75rem]' : 'max-w-[1.75rem]'
 
   return (
     <>
@@ -132,16 +137,40 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
           }
         />
         <div className="min-w-0 flex-1">
-          <FilenameEllipsis name={item.file_name} className="block text-[11px] font-medium leading-4" />
-          <div className="text-[10px] text-muted-foreground flex w-full min-w-0 items-center gap-1.5 flex-wrap">
-            <span className="shrink-0">{formatBytes(item.size_bytes)}</span>
-            <span className="text-border/60 shrink-0">·</span>
-            <ServerReplicationIndicator
-              count={serverCount}
-              serverNames={serverKeys.map(
-                (k) => serverNameBySigningPubkey.get(k) ?? `Key ${k.slice(0, 8)}…`
-              )}
-            />
+          <FilenameEllipsis
+            name={item.file_name}
+            className="block h-4 text-[11px] font-medium leading-4"
+          />
+          {/*
+            Width comes from the panel (max formatted size in the current list + 1ch). Left-aligned sizes
+            line up with the title; `|` and dots stay column-aligned without a huge fixed `ch` gutter.
+          */}
+          <div className="mt-px flex w-max max-w-full shrink-0 items-center gap-1.5 self-start text-[10px] text-muted-foreground">
+            <span
+              className="shrink-0 truncate text-left tabular-nums"
+              style={{
+                width: `${sizeColumnCh}ch`,
+                minWidth: `${sizeColumnCh}ch`,
+                maxWidth: `${sizeColumnCh}ch`,
+              }}
+              title={formatBytes(item.size_bytes)}
+            >
+              {formatBytes(item.size_bytes)}
+            </span>
+            <span
+              className="inline-flex w-[1ch] shrink-0 select-none justify-center font-mono text-xs leading-none text-muted-foreground/80"
+              aria-hidden="true"
+            >
+              |
+            </span>
+            <span className="shrink-0">
+              <ServerReplicationIndicator
+                count={serverCount}
+                serverNames={serverKeys.map(
+                  (k) => serverNameBySigningPubkey.get(k) ?? `Key ${k.slice(0, 8)}…`
+                )}
+              />
+            </span>
           </div>
           {showBar && (
             <div className="mt-0.5 h-0.5 max-w-[200px] rounded-full bg-foreground/10 overflow-hidden">
@@ -163,13 +192,24 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
               </div>
             )}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div
+          className={cn(
+            'flex min-w-0 shrink-0 items-center gap-0.5 overflow-hidden',
+            menuOpen
+              ? cn('pointer-events-auto opacity-100', actionsExpandedClass)
+              : cn(
+                  'max-w-0 opacity-0 pointer-events-none',
+                  'group-hover:pointer-events-auto group-hover:opacity-100',
+                  twoActionSlots ? 'group-hover:max-w-[3.75rem]' : 'group-hover:max-w-[1.75rem]'
+                )
+          )}
+        >
           {!!item.file_path && (
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="h-7 w-7 opacity-0 group-hover:opacity-100"
+              className="h-7 w-7 shrink-0"
               onClick={() => openPathInFileExplorer(directoryForPath(item.file_path!))}
             >
               <FolderOpen className="h-3.5 w-3.5" />
@@ -180,7 +220,7 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7 opacity-0 group-hover:opacity-100"
+            className="h-7 w-7 shrink-0"
             title="Seeding options"
             onClick={(e) => {
               const el = e.currentTarget

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { cn } from '../lib/utils'
 
 function splitExt(name: string): { base: string; ext: string } {
   const raw = (name ?? '').trim()
@@ -77,7 +78,7 @@ export function FilenameEllipsis({ name, className, title }: Props) {
     setDisplay(name)
   }, [name])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current
     if (!el || !canvasCtx) return
 
@@ -97,7 +98,11 @@ export function FilenameEllipsis({ name, className, title }: Props) {
   }, [name, canvasCtx])
 
   return (
-    <span ref={ref} className={className} title={title ?? name}>
+    <span
+      ref={ref}
+      className={cn('min-w-0 max-w-full whitespace-nowrap overflow-hidden', className)}
+      title={title ?? name}
+    >
       {display}
     </span>
   )

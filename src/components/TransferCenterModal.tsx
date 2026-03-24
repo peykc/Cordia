@@ -12,6 +12,10 @@ import { cn } from '../lib/utils'
 const GAP_BELOW_ICON = 8
 const H_GUTTER = 16
 const V_GUTTER = 16
+/** Upper bound for popup panel height (viewport clamp still applies on small windows). */
+const POPUP_MAX_HEIGHT_PX = 555
+/** Upper bound for popup panel width (viewport clamp still applies on narrow windows). */
+const POPUP_MAX_WIDTH_PX = 655
 
 function clampPopupLeft(left: number, popupWidth: number, vw: number): number {
   const maxLeft = vw - H_GUTTER - popupWidth
@@ -29,18 +33,32 @@ export function TransferCenterModal() {
     const el = anchorRef.current
     const rect = el?.getBoundingClientRect() ?? anchorRect
     if (!rect) return
-    const popupWidth = Math.min(Math.max(720, width - H_GUTTER * 2), 1040)
-    const top = rect.bottom + GAP_BELOW_ICON
+    const horizontalPad = H_GUTTER * 2
+    /** Never wider than viewport minus gutters. */
+    const maxUsableWidth = Math.max(0, width - horizontalPad)
+    const popupWidth = Math.min(POPUP_MAX_WIDTH_PX, maxUsableWidth)
+    let top = rect.bottom + GAP_BELOW_ICON
+    let availableHeight = height - top - V_GUTTER
+    /** If anchor is low, pull the panel up so it fits vertically. */
+    const minDesiredH = 200
+    if (availableHeight < minDesiredH) {
+      top = Math.max(V_GUTTER, height - V_GUTTER - Math.max(minDesiredH, Math.floor(height * 0.92)))
+      availableHeight = height - top - V_GUTTER
+    }
+    availableHeight = Math.max(0, availableHeight)
     const left = clampPopupLeft(rect.left, popupWidth, width)
-    const availableHeight = Math.max(240, height - top - V_GUTTER)
-    const popupMaxHeight = Math.min(availableHeight, Math.max(520, Math.floor(height * 0.88)))
-    const minH = Math.min(420, availableHeight)
+    const popupMaxHeight = Math.max(
+      120,
+      Math.min(availableHeight, Math.floor(height * 0.92), POPUP_MAX_HEIGHT_PX)
+    )
+    const minH = Math.min(420, Math.max(160, popupMaxHeight))
+    const safeMinH = Math.min(minH, popupMaxHeight)
     setPanelStyle({
       top,
       left,
       width: popupWidth,
       maxHeight: popupMaxHeight,
-      minHeight: minH,
+      minHeight: safeMinH,
     })
   }, [anchorRect, anchorRef, width, height])
 

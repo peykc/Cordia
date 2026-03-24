@@ -990,15 +990,15 @@ function ServerViewPage() {
     <div className="h-full bg-background flex flex-col">
       <header className="border-b-2 border-border">
         <div className="w-full flex h-16 items-center justify-between px-6 min-w-0">
-          <div className="flex items-center gap-4 min-w-0 flex-1">
+          <div className="flex items-center min-w-0 flex-1">
             <button
+              type="button"
+              title="Back to home"
               onClick={() => navigate('/home')}
               className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
-            <div className="w-px h-6 bg-foreground/20 shrink-0"></div>
-            <h1 className="text-sm font-light tracking-wider uppercase truncate min-w-0">{server.name}</h1>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <BeaconStatus />

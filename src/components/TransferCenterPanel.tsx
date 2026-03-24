@@ -1,4 +1,12 @@
-import { memo, useMemo, useRef, useState, type CSSProperties, type ComponentType } from 'react'
+import {
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ComponentType,
+} from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Download, HardDriveDownload, HardDriveUpload, Upload } from 'lucide-react'
 import { FileIcon } from './FileIcon'
@@ -29,6 +37,19 @@ const ACTIVE_MAX_H_POPUP = 132
 const ACTIVE_MAX_H_FULL = 168
 /** Stats tiles + active strips + history + seeding section surfaces */
 const TRANSFER_SECTION_BAR_BG = 'bg-[hsl(220deg_7%_20%_/_85%)]'
+
+/** Horizontally center the selected pill in the filter strip (clamped; same idea as media gallery thumbs). */
+function scrollTransferFilterStripToCenterPill(
+  strip: HTMLElement,
+  pill: HTMLElement,
+  behavior: ScrollBehavior = 'smooth'
+) {
+  const maxScroll = Math.max(0, strip.scrollWidth - strip.clientWidth)
+  if (maxScroll <= 0) return
+  const centerX = pill.offsetLeft + pill.offsetWidth / 2
+  const left = Math.max(0, Math.min(centerX - strip.clientWidth / 2, maxScroll))
+  strip.scrollTo({ left, behavior })
+}
 
 function formatRate(kbps?: number): string {
   const safe = Math.max(0, kbps ?? 0)
@@ -105,15 +126,48 @@ const FilterPills = memo(function FilterPills({
   onChange: (f: TransferFileFilter) => void
   compact?: boolean
 }) {
+  const stripRef = useRef<HTMLDivElement>(null)
+  const valueRef = useRef(value)
+  valueRef.current = value
+
+  const centerSelected = (behavior: ScrollBehavior) => {
+    const strip = stripRef.current
+    if (!strip) return
+    const pill = strip.querySelector<HTMLElement>(`[data-transfer-filter="${CSS.escape(valueRef.current)}"]`)
+    if (pill) scrollTransferFilterStripToCenterPill(strip, pill, behavior)
+  }
+
+  useLayoutEffect(() => {
+    const id = requestAnimationFrame(() => centerSelected('smooth'))
+    return () => cancelAnimationFrame(id)
+  }, [value])
+
+  useLayoutEffect(() => {
+    const strip = stripRef.current
+    if (!strip) return
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => centerSelected('auto'))
+    })
+    ro.observe(strip)
+    return () => ro.disconnect()
+  }, [])
+
   return (
-    <div className={cn('flex flex-wrap gap-1', compact ? 'gap-0.5' : 'gap-1')}>
+    <div
+      ref={stripRef}
+      className={cn(
+        'relative flex min-w-0 flex-nowrap gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain touch-pan-x [scrollbar-width:thin]',
+        compact ? 'gap-0.5' : 'gap-1'
+      )}
+    >
       {TRANSFER_FILTER_OPTIONS.map((opt) => (
         <button
           key={opt.id}
           type="button"
+          data-transfer-filter={opt.id}
           onClick={() => onChange(opt.id)}
           className={cn(
-            'rounded-md border text-[10px] font-medium transition-colors',
+            'shrink-0 rounded-md border text-[10px] font-medium transition-colors',
             compact ? 'px-1.5 py-0.5' : 'px-2 py-1',
             value === opt.id
               ? 'border-accent/60 bg-accent/15 text-foreground'
@@ -344,6 +398,16 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
     return uploadsVisibleBySha.filter(({ representative: r }) => fileMatchesTransferFilter(r.file_name, seedingFilter))
   }, [uploadsVisibleBySha, seedingFilter])
 
+  /** Min width so `|` + dots align, without a fixed 11ch “dead zone” when all sizes are short. */
+  const seedingSizeColumnCh = useMemo(() => {
+    let maxLen = 4
+    for (const g of seedingLibraryFiltered) {
+      const len = formatBytes(g.representative.size_bytes).length
+      if (len > maxLen) maxLen = len
+    }
+    return Math.min(maxLen + 1, 16)
+  }, [seedingLibraryFiltered])
+
   const historyParentRef = useRef<HTMLDivElement>(null)
   const seedParentRef = useRef<HTMLDivElement>(null)
 
@@ -397,7 +461,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
         </div>
 
         {/* Active strips */}
-        <div className="grid shrink-0 grid-cols-1 gap-2 md:grid-cols-2 min-h-0">
+        <div className="grid shrink-0 grid-cols-1 gap-2 min-[580px]:grid-cols-2 min-h-0">
           <div className="flex min-h-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
             <div
               className={cn(
@@ -497,7 +561,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                         }}
                       />
                       <div className="min-w-0 flex-1">
-                        <FilenameEllipsis name={fileName} className="text-[11px] font-medium" />
+                        <FilenameEllipsis name={fileName} className="block h-4 text-[11px] font-medium leading-4" />
                         <div className="h-0.5 mt-1 max-w-[160px] rounded-full bg-foreground/10 overflow-hidden">
                           <div className="h-full bg-violet-500/70 rounded-full" style={{ width: `${Math.max(3, p)}%` }} />
                         </div>
@@ -512,10 +576,15 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
         </div>
 
         {/* Split history + library */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 md:grid-cols-2 overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 min-[450px]:grid-cols-2 overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className={cn('shrink-0 space-y-1.5 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
-              <div className="flex items-center justify-between gap-2">
+            <div
+              className={cn(
+                'shrink-0 min-w-0 space-y-1.5 border-b border-border/40 px-2 py-2',
+                TRANSFER_SECTION_BAR_BG
+              )}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Download history</span>
                 <span className="text-[10px] tabular-nums text-muted-foreground">{downloadHistoryForList.length}</span>
               </div>
@@ -572,8 +641,13 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
           </div>
 
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div className={cn('shrink-0 space-y-1.5 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
-              <div className="flex items-center justify-between gap-2">
+            <div
+              className={cn(
+                'shrink-0 min-w-0 space-y-1.5 border-b border-border/40 px-2 py-2',
+                TRANSFER_SECTION_BAR_BG
+              )}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Seeding library</span>
                 <span className="text-[10px] tabular-nums text-muted-foreground">{seedingLibraryFiltered.length}</span>
               </div>
@@ -606,6 +680,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                       >
                         <TransferCenterSeedingRow
                           group={group}
+                          sizeColumnCh={seedingSizeColumnCh}
                           serversBySha={serversBySha}
                           serverNameBySigningPubkey={serverNameBySigningPubkey}
                           live={latestUploadByAttachment.get(group.representative.attachment_id) ?? null}

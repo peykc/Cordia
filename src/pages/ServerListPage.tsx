@@ -644,10 +644,7 @@ function ServerListPage() {
     <div className="h-full bg-background flex flex-col overflow-hidden">
       <header className="border-b-2 border-border shrink-0">
         <div className="w-full flex h-16 items-center pl-8 pr-3">
-          <div className="flex-1 min-w-0 flex items-center gap-4">
-            <div className="w-px h-6 bg-foreground/20 shrink-0"></div>
-            <h1 className="text-sm font-light tracking-wider uppercase">Home</h1>
-          </div>
+          <div className="flex-1 min-w-0" />
           <div className="flex gap-3 items-center shrink-0 min-w-[14rem] max-w-[14.5rem] w-[14.5rem]">
             <TransferCenterButton />
             <NotificationCenterButton />

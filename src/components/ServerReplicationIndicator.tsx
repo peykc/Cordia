@@ -23,7 +23,7 @@ export const ServerReplicationIndicator = memo(function ServerReplicationIndicat
   if (count <= 0) {
     return (
       <span
-        className={cn('flex min-w-0 flex-1 justify-end text-[9px] tabular-nums text-muted-foreground/70', className)}
+        className={cn('inline-flex shrink-0 text-[9px] tabular-nums text-muted-foreground/70', className)}
         title={title}
       >
         —
@@ -32,23 +32,22 @@ export const ServerReplicationIndicator = memo(function ServerReplicationIndicat
   }
 
   const dots = Math.min(count, MAX_DOTS)
-  /** Row-reverse: new squares grow to the left; cluster reads from the right (anchored end). */
   return (
     <span
-      className={cn('flex min-w-0 flex-1 justify-end items-center align-middle', className)}
+      className={cn('inline-flex shrink-0 items-center align-middle', className)}
       title={title}
       aria-label={title.replace(/\n/g, ', ')}
     >
-      <span className="inline-flex flex-row-reverse items-center gap-0.5">
-        {count > MAX_DOTS && (
-          <span className="text-[9px] tabular-nums text-muted-foreground shrink-0">+{count - MAX_DOTS}</span>
-        )}
+      <span className="inline-flex items-center gap-0.5">
         {Array.from({ length: dots }, (_, i) => (
           <span
             key={i}
             className="h-1.5 w-1.5 shrink-0 rounded-[1px] bg-emerald-500/80 ring-1 ring-emerald-500/15"
           />
         ))}
+        {count > MAX_DOTS && (
+          <span className="text-[9px] tabular-nums text-muted-foreground shrink-0">+{count - MAX_DOTS}</span>
+        )}
       </span>
     </span>
   )

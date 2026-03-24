@@ -134,7 +134,10 @@ function TransferCenterDownloadRowInner({
         onMediaClick={onPreview}
       />
       <div className="min-w-0 flex-1">
-        <FilenameEllipsis name={row.file_name} className="block text-[11px] font-medium leading-4 text-foreground" />
+        <FilenameEllipsis
+          name={row.file_name}
+          className="block h-4 text-[11px] font-medium leading-4 text-foreground"
+        />
         <div className="text-[10px] text-muted-foreground truncate">
           {fromLabel} · {formatBytes(row.size_bytes)}
         </div>
@@ -161,42 +164,50 @@ function TransferCenterDownloadRowInner({
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
-        {!inaccessible && row.saved_path && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 opacity-0 group-hover:opacity-100"
-            onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
-            title="Open folder"
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {canCancel && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-amber-300 hover:text-amber-200 opacity-0 group-hover:opacity-100"
-            onClick={() => cancelTransferRequest(row.request_id)}
-            title="Cancel"
-          >
-            <span className="text-xs font-bold">×</span>
-          </Button>
-        )}
-        {canRemove && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-red-300 hover:text-red-200 opacity-0 group-hover:opacity-100"
-            onClick={() => removeTransferHistoryEntry(row.request_id)}
-            title="Remove from list"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        )}
+        <div
+          className={cn(
+            'flex min-w-0 items-center gap-0.5 overflow-hidden',
+            'max-w-0 opacity-0 pointer-events-none',
+            'group-hover:pointer-events-auto group-hover:opacity-100 group-hover:max-w-[5.5rem]'
+          )}
+        >
+          {!inaccessible && row.saved_path && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
+              title="Open folder"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {canCancel && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0 text-amber-300 hover:text-amber-200"
+              onClick={() => cancelTransferRequest(row.request_id)}
+              title="Cancel"
+            >
+              <span className="text-xs font-bold">×</span>
+            </Button>
+          )}
+          {canRemove && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0 text-red-300 hover:text-red-200"
+              onClick={() => removeTransferHistoryEntry(row.request_id)}
+              title="Remove from list"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )
