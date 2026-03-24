@@ -233,6 +233,8 @@ export interface AttachmentTransferState {
   saved_path?: string
   error?: string
   sha256?: string
+  /** Cordia server signing pubkey for this session (incoming uploads: message’s server). */
+  server_signing_pubkey?: string
 }
 
 export interface TransferHistoryEntry {
@@ -1900,6 +1902,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         direction: 'upload',
         status: 'connecting',
         progress: 0,
+        sha256: sharedItem.sha256,
+        server_signing_pubkey: signingPubkey || undefined,
       }))
       window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
         detail: { to_user_id: fromUserId, request_id: requestId, accepted: true },

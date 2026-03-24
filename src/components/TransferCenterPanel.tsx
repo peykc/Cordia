@@ -7,19 +7,17 @@ import {
   type CSSProperties,
   type ComponentType,
 } from 'react'
+
+const EMPTY_SIGNING_SET: ReadonlySet<string> = new Set()
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Download, HardDriveDownload, HardDriveUpload, Upload } from 'lucide-react'
-import { FileIcon } from './FileIcon'
+import { Download, FunnelPlus, FunnelX, HardDriveDownload, HardDriveUpload, Upload } from 'lucide-react'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
-import { FilenameEllipsis } from './FilenameEllipsis'
 import { formatBytes } from '../lib/bytes'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useIdentity } from '../contexts/IdentityContext'
-import { useProfile } from '../contexts/ProfileContext'
 import { useServers } from '../contexts/ServersContext'
-import { listImageTierThumbnailPath } from '../lib/transferListMedia'
 import {
   TRANSFER_FILTER_OPTIONS,
   type TransferFileFilter,
@@ -29,12 +27,14 @@ import type { AttachmentTransferState } from '../contexts/EphemeralMessagesConte
 import type { SharedAttachmentItem } from '../lib/tauri'
 import { cn } from '../lib/utils'
 import { TransferCenterDownloadRow } from './TransferCenterDownloadRow'
-import { TransferCenterSeedingRow, type LiveUpload } from './TransferCenterSeedingRow'
+import { TransferCenterActiveUploadStripRow } from './TransferCenterActiveUploadStripRow'
+import { TransferCenterSeedingRow } from './TransferCenterSeedingRow'
 
-const HISTORY_ROW_H = 56
-const SEED_ROW_H = 58
-const ACTIVE_MAX_H_POPUP = 132
-const ACTIVE_MAX_H_FULL = 168
+const HISTORY_ROW_H = 48
+const SEED_ROW_H = 48
+const ACTIVE_STRIP_ROW_H = 48
+const ACTIVE_MAX_H_POPUP = 192
+const ACTIVE_MAX_H_FULL = 240
 /** Stats tiles + active strips + history + seeding section surfaces */
 const TRANSFER_SECTION_BAR_BG = 'bg-[hsl(220deg_7%_20%_/_85%)]'
 
@@ -183,7 +183,6 @@ const FilterPills = memo(function FilterPills({
 
 export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCenterVariant }) {
   const { identity } = useIdentity()
-  const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const attachmentTransfers = useEphemeralMessagesStore((s) => s.attachmentTransfers)
   const transferHistory = useEphemeralMessagesStore((s) => s.transferHistory)
@@ -212,11 +211,12 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
     removeTransferHistoryEntry,
     cancelTransferRequest,
     unshareAttachmentById,
-    findMessageById,
   } = useEphemeralMessages()
 
   const [seedingFilter, setSeedingFilter] = useState<TransferFileFilter>('all')
   const [historyFilter, setHistoryFilter] = useState<TransferFileFilter>('all')
+  const [historyFiltersOpen, setHistoryFiltersOpen] = useState(false)
+  const [seedingFiltersOpen, setSeedingFiltersOpen] = useState(false)
 
   const serverNameBySigningPubkey = useMemo(() => {
     const map = new Map<string, string>()
@@ -230,17 +230,21 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
     return map
   }, [attachmentTransfers])
 
-  const latestUploadByAttachment = useMemo(() => {
-    const map = new Map<string, LiveUpload>()
+  /** Per content SHA: server signing pubkeys with an active outgoing upload (peer downloading from you). */
+  const activeUploadSigningKeysBySha = useMemo(() => {
+    const map = new Map<string, Set<string>>()
     for (const t of attachmentTransfers) {
       if (t.direction !== 'upload') continue
-      map.set(t.attachment_id, {
-        status: t.status,
-        progress: t.progress,
-        debugKbps: t.debug_kbps,
-        etaSeconds: t.debug_eta_seconds,
-        bufferedBytes: t.debug_buffered_bytes,
-      })
+      if (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected') continue
+      const sha = t.sha256?.trim()
+      const spk = t.server_signing_pubkey?.trim()
+      if (!sha || !spk) continue
+      let set = map.get(sha)
+      if (!set) {
+        set = new Set()
+        map.set(sha, set)
+      }
+      set.add(spk)
     }
     return map
   }, [attachmentTransfers])
@@ -273,18 +277,24 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
 
   const activeDownloadRows = useMemo(() => [...queuedRows, ...downloadingRows], [queuedRows, downloadingRows])
 
-  const activeUploadRows = useMemo(() => {
-    const out: { attachmentId: string; transfer: AttachmentTransferState }[] = []
-    const seen = new Set<string>()
+  const activeUploadGroups = useMemo(() => {
+    const byAtt = new Map<string, AttachmentTransferState[]>()
     for (const t of attachmentTransfers) {
       if (t.direction !== 'upload') continue
       if (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected') continue
-      if (seen.has(t.attachment_id)) continue
-      seen.add(t.attachment_id)
-      out.push({ attachmentId: t.attachment_id, transfer: t })
+      const list = byAtt.get(t.attachment_id) ?? []
+      list.push(t)
+      byAtt.set(t.attachment_id, list)
     }
-    return out
+    return Array.from(byAtt.entries())
+      .map(([attachmentId, transfers]) => ({ attachmentId, transfers }))
+      .sort((a, b) => a.attachmentId.localeCompare(b.attachmentId))
   }, [attachmentTransfers])
+
+  const activeUploadSessionCount = useMemo(
+    () => activeUploadGroups.reduce((acc, g) => acc + g.transfers.length, 0),
+    [activeUploadGroups]
+  )
 
   /** Sum of per-transfer rates (KB/s) for active downloads / uploads — shown on dashboard tiles. */
   const aggregateDownloadKbps = useMemo(() => {
@@ -298,12 +308,14 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
 
   const aggregateUploadKbps = useMemo(() => {
     let sum = 0
-    for (const { transfer } of activeUploadRows) {
-      const kbps = transfer.debug_kbps
+    for (const t of attachmentTransfers) {
+      if (t.direction !== 'upload') continue
+      if (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected') continue
+      const kbps = t.debug_kbps
       if (kbps != null && Number.isFinite(kbps)) sum += Math.max(0, kbps)
     }
     return sum
-  }, [activeUploadRows])
+  }, [attachmentTransfers])
 
   const activeDownloadsTileSub = useMemo(() => {
     if (activeDownloadRows.length === 0) return undefined
@@ -313,9 +325,13 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
   }, [activeDownloadRows.length, aggregateDownloadKbps, queuedRows.length])
 
   const activeUploadsTileSub = useMemo(() => {
-    if (activeUploadRows.length === 0) return undefined
-    return `${formatRate(aggregateUploadKbps)} · ${activeUploadRows.length} active`
-  }, [activeUploadRows.length, aggregateUploadKbps])
+    if (activeUploadGroups.length === 0) return undefined
+    const parts = [formatRate(aggregateUploadKbps)]
+    if (activeUploadSessionCount > activeUploadGroups.length) {
+      parts.push(`${activeUploadSessionCount} sessions`)
+    }
+    return parts.join(' · ')
+  }, [activeUploadGroups.length, activeUploadSessionCount, aggregateUploadKbps])
 
   /** O(1) lookup for active uploads strip + single source for SHA grouping dedupe. */
   const sharedByAttachmentId = useMemo(() => {
@@ -378,7 +394,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
     }
 
     const activeDown = activeDownloadRows.length
-    const activeUp = activeUploadRows.length
+    const activeUp = activeUploadGroups.length
 
     return {
       completedCount,
@@ -388,11 +404,20 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
       activeDownloadCount: activeDown,
       activeUploadCount: activeUp,
     }
-  }, [downloadRows, liveTransferByRequest, uploadsVisibleBySha, activeDownloadRows.length, activeUploadRows.length])
+  }, [downloadRows, liveTransferByRequest, uploadsVisibleBySha, activeDownloadRows.length, activeUploadGroups.length])
+
+  const activeDownloadRequestIdSet = useMemo(
+    () => new Set(activeDownloadRows.map((r) => r.request_id)),
+    [activeDownloadRows]
+  )
 
   const downloadHistoryForList = useMemo(() => {
-    return downloadRows.filter((row) => fileMatchesTransferFilter(row.file_name, historyFilter))
-  }, [downloadRows, historyFilter])
+    return downloadRows.filter(
+      (row) =>
+        !activeDownloadRequestIdSet.has(row.request_id) &&
+        fileMatchesTransferFilter(row.file_name, historyFilter)
+    )
+  }, [downloadRows, historyFilter, activeDownloadRequestIdSet])
 
   const seedingLibraryFiltered = useMemo(() => {
     return uploadsVisibleBySha.filter(({ representative: r }) => fileMatchesTransferFilter(r.file_name, seedingFilter))
@@ -410,6 +435,22 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
 
   const historyParentRef = useRef<HTMLDivElement>(null)
   const seedParentRef = useRef<HTMLDivElement>(null)
+  const activeDownloadParentRef = useRef<HTMLDivElement>(null)
+  const activeUploadParentRef = useRef<HTMLDivElement>(null)
+
+  const activeDownloadVirtualizer = useVirtualizer({
+    count: activeDownloadRows.length,
+    getScrollElement: () => activeDownloadParentRef.current,
+    estimateSize: () => ACTIVE_STRIP_ROW_H,
+    overscan: 8,
+  })
+
+  const activeUploadVirtualizer = useVirtualizer({
+    count: activeUploadGroups.length,
+    getScrollElement: () => activeUploadParentRef.current,
+    estimateSize: () => ACTIVE_STRIP_ROW_H,
+    overscan: 8,
+  })
 
   const historyVirtualizer = useVirtualizer({
     count: downloadHistoryForList.length,
@@ -474,34 +515,57 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                 <span className="text-[10px] tabular-nums text-muted-foreground">{activeDownloadRows.length}</span>
               )}
             </div>
-            <div className="min-h-0 overflow-y-auto overscroll-contain" style={{ maxHeight: activeMaxH }}>
+            <div
+              ref={activeDownloadParentRef}
+              className="min-h-0 overflow-y-auto overscroll-contain"
+              style={{ maxHeight: activeMaxH }}
+            >
               {activeDownloadRows.length === 0 ? (
                 <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">None</p>
               ) : (
-                activeDownloadRows.map((row) => {
-                  const live = liveTransferByRequest.get(row.request_id)
-                  const fromLabel =
-                    row.from_user_id === identity?.user_id
-                      ? 'You'
-                      : remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim() ||
-                        `User ${row.from_user_id.slice(0, 8)}`
-                  return (
-                    <TransferCenterDownloadRow
-                      key={row.request_id}
-                      row={row}
-                      compact
-                      status={live?.status ?? row.status}
-                      progress={live?.progress ?? row.progress}
-                      debugKbps={live?.debug_kbps}
-                      debugEtaSeconds={live?.debug_eta_seconds}
-                      debugPendingBytes={live?.debug_pending_bytes}
-                      fromLabel={fromLabel}
-                      setMediaPreview={setMediaPreview}
-                      cancelTransferRequest={cancelTransferRequest}
-                      removeTransferHistoryEntry={removeTransferHistoryEntry}
-                    />
-                  )
-                })
+                <div
+                  className="relative w-full"
+                  style={{ height: `${activeDownloadVirtualizer.getTotalSize()}px` }}
+                >
+                  {activeDownloadVirtualizer.getVirtualItems().map((vi) => {
+                    const row = activeDownloadRows[vi.index]
+                    if (!row) return null
+                    const live = liveTransferByRequest.get(row.request_id)
+                    const fromLabel =
+                      row.from_user_id === identity?.user_id
+                        ? 'You'
+                        : remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim() ||
+                          `User ${row.from_user_id.slice(0, 8)}`
+                    return (
+                      <div
+                        key={row.request_id}
+                        data-index={vi.index}
+                        ref={activeDownloadVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full"
+                        style={
+                          {
+                            transform: `translateY(${vi.start}px)`,
+                          } as CSSProperties
+                        }
+                      >
+                        <TransferCenterDownloadRow
+                          row={row}
+                          compact={false}
+                          activeStrip
+                          status={live?.status ?? row.status}
+                          progress={live?.progress ?? row.progress}
+                          debugKbps={live?.debug_kbps}
+                          debugEtaSeconds={live?.debug_eta_seconds}
+                          debugPendingBytes={live?.debug_pending_bytes}
+                          fromLabel={fromLabel}
+                          setMediaPreview={setMediaPreview}
+                          cancelTransferRequest={cancelTransferRequest}
+                          removeTransferHistoryEntry={removeTransferHistoryEntry}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
               )}
             </div>
           </div>
@@ -513,63 +577,43 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
               )}
             >
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Active uploads</span>
-              {activeUploadRows.length > 0 && (
-                <span className="text-[10px] tabular-nums text-muted-foreground">{activeUploadRows.length}</span>
+              {activeUploadGroups.length > 0 && (
+                <span className="text-[10px] tabular-nums text-muted-foreground">{activeUploadGroups.length}</span>
               )}
             </div>
-            <div className="min-h-0 overflow-y-auto overscroll-contain" style={{ maxHeight: activeMaxH }}>
-              {activeUploadRows.length === 0 ? (
+            <div
+              ref={activeUploadParentRef}
+              className="min-h-0 overflow-y-auto overscroll-contain"
+              style={{ maxHeight: activeMaxH }}
+            >
+              {activeUploadGroups.length === 0 ? (
                 <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">None</p>
               ) : (
-                activeUploadRows.map(({ attachmentId, transfer }) => {
-                  const shared = sharedByAttachmentId.get(attachmentId)
-                  const fileName = shared?.file_name ?? transfer.file_name
-                  const p = Math.max(0, Math.min(100, Math.round((transfer.progress ?? 0) * 100)))
-                  return (
-                    <div
-                      key={attachmentId}
-                      className="flex items-center gap-2 border-b border-border px-2 py-1 transition-colors duration-150 hover:bg-muted/50"
-                    >
-                      <FileIcon
-                        fileName={fileName}
-                        attachmentId={shared?.can_share_now && !shared.file_path ? shared.attachment_id : null}
-                        savedPath={shared?.file_path ?? undefined}
-                        thumbnailPath={listImageTierThumbnailPath(shared?.thumbnail_path ?? undefined, shared?.file_path ?? undefined)}
-                        boxSize={28}
-                        squareThumb
-                        onMediaClick={(url, type, aid, fn) => {
-                          const uid = transfer.from_user_id
-                          const isYou = uid === identity?.user_id
-                          const rp = remoteProfiles.getProfile(uid)
-                          const sentAt = findMessageById(transfer.message_id)?.sent_at ?? new Date().toISOString()
-                          setMediaPreview({
-                            type,
-                            url,
-                            attachmentId: aid,
-                            fileName: fn ?? fileName,
-                            source: 'transfers',
-                            originUserId: uid,
-                            originSentAtIso: sentAt,
-                            originDisplayName: isYou
-                              ? identity?.display_name ?? 'You'
-                              : rp?.display_name?.trim() || `User ${uid.slice(0, 8)}`,
-                            originAvatarDataUrl: isYou ? profile.avatar_data_url ?? null : rp?.avatar_data_url ?? null,
-                            localPath: shared?.file_path ?? null,
-                            sizeBytes: shared?.size_bytes,
-                            sha256: shared?.sha256 ?? transfer.sha256,
-                          })
-                        }}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <FilenameEllipsis name={fileName} className="block h-4 text-[11px] font-medium leading-4" />
-                        <div className="h-0.5 mt-1 max-w-[160px] rounded-full bg-foreground/10 overflow-hidden">
-                          <div className="h-full bg-violet-500/70 rounded-full" style={{ width: `${Math.max(3, p)}%` }} />
-                        </div>
+                <div
+                  className="relative w-full"
+                  style={{ height: `${activeUploadVirtualizer.getTotalSize()}px` }}
+                >
+                  {activeUploadVirtualizer.getVirtualItems().map((vi) => {
+                    const g = activeUploadGroups[vi.index]
+                    if (!g) return null
+                    const shared = sharedByAttachmentId.get(g.attachmentId)
+                    return (
+                      <div
+                        key={g.attachmentId}
+                        data-index={vi.index}
+                        ref={activeUploadVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full"
+                        style={
+                          {
+                            transform: `translateY(${vi.start}px)`,
+                          } as CSSProperties
+                        }
+                      >
+                        <TransferCenterActiveUploadStripRow group={g} shared={shared} />
                       </div>
-                      <span className="text-[10px] tabular-nums text-muted-foreground w-8">{p}%</span>
-                    </div>
-                  )
-                })
+                    )
+                  })}
+                </div>
               )}
             </div>
           </div>
@@ -578,17 +622,44 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
         {/* Split history + library */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 min-[450px]:grid-cols-2 overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div
-              className={cn(
-                'shrink-0 min-w-0 space-y-1.5 border-b border-border/40 px-2 py-2',
-                TRANSFER_SECTION_BAR_BG
-              )}
-            >
+            <div className={cn('shrink-0 min-w-0 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
               <div className="flex min-w-0 items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Download history</span>
-                <span className="text-[10px] tabular-nums text-muted-foreground">{downloadHistoryForList.length}</span>
+                <button
+                  type="button"
+                  className="flex w-fit max-w-[calc(100%-2.5rem)] shrink-0 items-center gap-1 rounded-md py-0.5 pl-0.5 pr-1 text-left hover:bg-white/5"
+                  aria-expanded={historyFiltersOpen}
+                  onClick={() => setHistoryFiltersOpen((o) => !o)}
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Download history
+                  </span>
+                  {historyFiltersOpen ? (
+                    <FunnelX
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        historyFilter !== 'all' ? 'text-accent' : 'text-muted-foreground'
+                      )}
+                      aria-hidden
+                    />
+                  ) : (
+                    <FunnelPlus
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        historyFilter !== 'all' ? 'text-accent' : 'text-muted-foreground'
+                      )}
+                      aria-hidden
+                    />
+                  )}
+                </button>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  {downloadHistoryForList.length}
+                </span>
               </div>
-              <FilterPills value={historyFilter} onChange={setHistoryFilter} compact />
+              {historyFiltersOpen ? (
+                <div className="mt-1.5 min-w-0">
+                  <FilterPills value={historyFilter} onChange={setHistoryFilter} compact />
+                </div>
+              ) : null}
             </div>
             <div ref={historyParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {downloadHistoryForList.length === 0 ? (
@@ -622,6 +693,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                         <TransferCenterDownloadRow
                           row={row}
                           compact={false}
+                          omitProgressBar
                           status={live?.status ?? row.status}
                           progress={live?.progress ?? row.progress}
                           debugKbps={live?.debug_kbps}
@@ -641,17 +713,44 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
           </div>
 
           <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border/50 bg-card/40 overflow-hidden">
-            <div
-              className={cn(
-                'shrink-0 min-w-0 space-y-1.5 border-b border-border/40 px-2 py-2',
-                TRANSFER_SECTION_BAR_BG
-              )}
-            >
+            <div className={cn('shrink-0 min-w-0 border-b border-border/40 px-2 py-2', TRANSFER_SECTION_BAR_BG)}>
               <div className="flex min-w-0 items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Seeding library</span>
-                <span className="text-[10px] tabular-nums text-muted-foreground">{seedingLibraryFiltered.length}</span>
+                <button
+                  type="button"
+                  className="flex w-fit max-w-[calc(100%-2.5rem)] shrink-0 items-center gap-1 rounded-md py-0.5 pl-0.5 pr-1 text-left hover:bg-white/5"
+                  aria-expanded={seedingFiltersOpen}
+                  onClick={() => setSeedingFiltersOpen((o) => !o)}
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Seeding library
+                  </span>
+                  {seedingFiltersOpen ? (
+                    <FunnelX
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        seedingFilter !== 'all' ? 'text-accent' : 'text-muted-foreground'
+                      )}
+                      aria-hidden
+                    />
+                  ) : (
+                    <FunnelPlus
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        seedingFilter !== 'all' ? 'text-accent' : 'text-muted-foreground'
+                      )}
+                      aria-hidden
+                    />
+                  )}
+                </button>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  {seedingLibraryFiltered.length}
+                </span>
               </div>
-              <FilterPills value={seedingFilter} onChange={setSeedingFilter} compact />
+              {seedingFiltersOpen ? (
+                <div className="mt-1.5 min-w-0">
+                  <FilterPills value={seedingFilter} onChange={setSeedingFilter} compact />
+                </div>
+              ) : null}
             </div>
             <div ref={seedParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {seedingLibraryFiltered.length === 0 ? (
@@ -666,6 +765,11 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                   {seedVirtualizer.getVirtualItems().map((vi) => {
                     const group = seedingLibraryFiltered[vi.index]
                     if (!group) return null
+                    const shaKey = group.representative.sha256?.trim() ?? ''
+                    const activeSigningForSha =
+                      shaKey.length > 0
+                        ? (activeUploadSigningKeysBySha.get(shaKey) ?? EMPTY_SIGNING_SET)
+                        : EMPTY_SIGNING_SET
                     return (
                       <div
                         key={group.sha}
@@ -683,7 +787,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                           sizeColumnCh={seedingSizeColumnCh}
                           serversBySha={serversBySha}
                           serverNameBySigningPubkey={serverNameBySigningPubkey}
-                          live={latestUploadByAttachment.get(group.representative.attachment_id) ?? null}
+                          activeSigningPubkeys={activeSigningForSha}
                           setMediaPreview={setMediaPreview}
                           unshareFromServer={unshareFromServer}
                           unshareAttachmentById={unshareAttachmentById}

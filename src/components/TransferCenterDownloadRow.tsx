@@ -56,6 +56,13 @@ export type TransferCenterDownloadRowProps = {
   setMediaPreview: (value: MediaPreviewState) => void
   cancelTransferRequest: (requestId: string) => void
   removeTransferHistoryEntry: (requestId: string) => void
+  /** History list: hide progress bar so row height matches seeding rows (finished archive). */
+  omitProgressBar?: boolean
+  /**
+   * Active downloads strip: dense layout, fixed-width bar + %, no hover-reveal actions
+   * (avoids layout shift while progress updates).
+   */
+  activeStrip?: boolean
 }
 
 function TransferCenterDownloadRowInner({
@@ -70,6 +77,8 @@ function TransferCenterDownloadRowInner({
   setMediaPreview,
   cancelTransferRequest,
   removeTransferHistoryEntry,
+  omitProgressBar = false,
+  activeStrip = false,
 }: TransferCenterDownloadRowProps) {
   const { identity } = useIdentity()
   const { profile } = useProfile()
@@ -80,7 +89,9 @@ function TransferCenterDownloadRowInner({
     status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring'
   const canRemove = inaccessible || status === 'rejected' || status === 'failed'
   const pct = status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round(progress * 100)))
-  const showBar = !inaccessible && (status === 'transferring' || status === 'completed')
+  const showBar = activeStrip
+    ? !inaccessible
+    : !omitProgressBar && !inaccessible && (status === 'transferring' || status === 'completed')
 
   const onPreview = useCallback(
     (url: string | null, type: 'image' | 'video', attachmentId?: string, fileName?: string) => {
@@ -121,69 +132,144 @@ function TransferCenterDownloadRowInner({
   return (
     <div
       className={cn(
-        'group flex items-start gap-2 border-b border-border px-2 py-1.5 transition-colors duration-150 hover:bg-muted/50',
+        'group flex gap-2 border-b border-border px-2 transition-colors duration-150 hover:bg-muted/50',
+        activeStrip ? 'items-center py-1' : 'items-start py-1.5',
         inaccessible ? 'opacity-60' : '',
-        compact ? 'py-1' : ''
+        compact && !activeStrip ? 'py-1' : ''
       )}
     >
       <FileIcon
         fileName={row.file_name}
         savedPath={inaccessible ? undefined : row.saved_path}
-        boxSize={compact ? 28 : 32}
+        boxSize={compact && !activeStrip ? 28 : 32}
         squareThumb
         onMediaClick={onPreview}
       />
       <div className="min-w-0 flex-1">
-        <FilenameEllipsis
-          name={row.file_name}
-          className="block h-4 text-[11px] font-medium leading-4 text-foreground"
-        />
-        <div className="text-[10px] text-muted-foreground truncate">
-          {fromLabel} · {formatBytes(row.size_bytes)}
-        </div>
-        {showBar && (
-          <div className="mt-0.5 h-0.5 max-w-[200px] rounded-full bg-foreground/10 overflow-hidden">
-            <div
-              className={cn('h-full rounded-full', status === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70')}
-              style={{ width: `${Math.max(2, pct)}%` }}
+        {activeStrip ? (
+          <>
+            <FilenameEllipsis
+              name={row.file_name}
+              className="block min-w-0 h-4 text-[11px] font-medium leading-4 text-foreground"
             />
-          </div>
-        )}
-        {!inaccessible &&
-          (status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring') && (
-            <div className="text-[9px] text-muted-foreground mt-0.5 space-x-1">
-              <span>{formatRate(debugKbps)}</span>
-              <span>·</span>
-              <span>ETA {formatEta(debugEtaSeconds)}</span>
-              {debugPendingBytes != null && debugPendingBytes > 64 * 1024 && (
-                <span title="Pending write buffer">· {formatBuffer(debugPendingBytes)}</span>
-              )}
+            {/* Fixed-width bar column so progress aligns across rows; meta+live stats on one line. */}
+            <div className="mt-px grid min-w-0 grid-cols-[minmax(0,1fr)_6.125rem] gap-x-2 items-center">
+              <div className="min-w-0">
+                {inaccessible ? (
+                  <p className="truncate text-[10px] leading-tight text-amber-200/90">Unavailable</p>
+                ) : (
+                  <p
+                    className="truncate text-[10px] leading-tight text-muted-foreground whitespace-nowrap tabular-nums"
+                    title={`${fromLabel} · ${formatBytes(row.size_bytes)}${
+                      status === 'queued'
+                        ? ' · Queued'
+                        : status === 'requesting' || status === 'connecting' || status === 'transferring'
+                          ? ` · ${formatRate(debugKbps)} · ETA ${formatEta(debugEtaSeconds)}${
+                              debugPendingBytes != null && debugPendingBytes > 64 * 1024
+                                ? ` · ${formatBuffer(debugPendingBytes)}`
+                                : ''
+                            }`
+                          : status === 'failed'
+                            ? ' · Failed'
+                            : ''
+                    }`}
+                  >
+                    <span className="text-muted-foreground">{fromLabel}</span>
+                    <span className="text-muted-foreground"> · </span>
+                    <span className="text-muted-foreground">{formatBytes(row.size_bytes)}</span>
+                    {status === 'queued' ? (
+                      <span className="text-muted-foreground"> · Queued</span>
+                    ) : status === 'requesting' || status === 'connecting' || status === 'transferring' ? (
+                      <>
+                        <span className="text-muted-foreground"> · </span>
+                        <span>{formatRate(debugKbps)}</span>
+                        <span className="text-muted-foreground"> · </span>
+                        <span>ETA {formatEta(debugEtaSeconds)}</span>
+                        {debugPendingBytes != null && debugPendingBytes > 64 * 1024 && (
+                          <span title="Data waiting to be written to disk" className="text-muted-foreground">
+                            {' '}
+                            · {formatBuffer(debugPendingBytes)}
+                          </span>
+                        )}
+                      </>
+                    ) : status === 'failed' ? (
+                      <span className="text-red-300/90"> · Failed</span>
+                    ) : null}
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <div className="h-0.5 w-[4.125rem] shrink-0 rounded-full bg-foreground/10 overflow-hidden">
+                  {showBar ? (
+                    <div
+                      className={cn(
+                        'h-full rounded-full',
+                        status === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70'
+                      )}
+                      style={{ width: `${Math.max(0, pct)}%` }}
+                    />
+                  ) : null}
+                </div>
+                <span className="w-[1.625rem] shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+                  {showBar ? `${pct}%` : '\u00a0'}
+                </span>
+              </div>
             </div>
-          )}
-        {inaccessible && <span className="text-[9px] text-amber-200/90">Unavailable</span>}
+          </>
+        ) : (
+          <>
+            <FilenameEllipsis
+              name={row.file_name}
+              className="block h-4 text-[11px] font-medium leading-4 text-foreground"
+            />
+            <div className="text-[10px] text-muted-foreground truncate">
+              {fromLabel} · {formatBytes(row.size_bytes)}
+            </div>
+            {showBar && (
+              <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                <div className="h-0.5 min-w-0 flex-1 max-w-[200px] rounded-full bg-foreground/10 overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full', status === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70')}
+                    style={{ width: `${Math.max(2, pct)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
+              </div>
+            )}
+            {!inaccessible &&
+              (status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring') && (
+                <div className="text-[9px] text-muted-foreground mt-0.5 space-x-1">
+                  <span>{formatRate(debugKbps)}</span>
+                  <span>·</span>
+                  <span>ETA {formatEta(debugEtaSeconds)}</span>
+                  {debugPendingBytes != null && debugPendingBytes > 64 * 1024 && (
+                    <span title="Data waiting to be written to disk">· {formatBuffer(debugPendingBytes)}</span>
+                  )}
+                </div>
+              )}
+            {inaccessible && <span className="text-[9px] text-amber-200/90">Unavailable</span>}
+          </>
+        )}
       </div>
-      <div className="flex shrink-0 items-center gap-0.5">
-        <span className="w-8 text-right text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
-        <div
-          className={cn(
-            'flex min-w-0 items-center gap-0.5 overflow-hidden',
-            'max-w-0 opacity-0 pointer-events-none',
-            'group-hover:pointer-events-auto group-hover:opacity-100 group-hover:max-w-[5.5rem]'
-          )}
-        >
-          {!inaccessible && row.saved_path && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
-              title="Open folder"
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          {canCancel && (
+      <div
+        className={cn('flex shrink-0 items-center gap-0.5', activeStrip ? 'w-[3.75rem] justify-end' : '')}
+      >
+        {!inaccessible && row.saved_path ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={() => openPathInFileExplorer(directoryForPath(row.saved_path!))}
+            title="Open folder"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+          </Button>
+        ) : activeStrip ? (
+          <div className="h-7 w-7 shrink-0" aria-hidden />
+        ) : null}
+        {activeStrip ? (
+          canCancel ? (
             <Button
               type="button"
               variant="ghost"
@@ -194,20 +280,43 @@ function TransferCenterDownloadRowInner({
             >
               <span className="text-xs font-bold">×</span>
             </Button>
-          )}
-          {canRemove && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0 text-red-300 hover:text-red-200"
-              onClick={() => removeTransferHistoryEntry(row.request_id)}
-              title="Remove from list"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          )}
-        </div>
+          ) : (
+            <div className="h-7 w-7 shrink-0" aria-hidden />
+          )
+        ) : (
+          <div
+            className={cn(
+              'flex min-w-0 items-center gap-0.5 overflow-hidden',
+              'max-w-0 opacity-0 pointer-events-none',
+              'group-hover:pointer-events-auto group-hover:opacity-100 group-hover:max-w-[3.75rem]'
+            )}
+          >
+            {canCancel && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 text-amber-300 hover:text-amber-200"
+                onClick={() => cancelTransferRequest(row.request_id)}
+                title="Cancel"
+              >
+                <span className="text-xs font-bold">×</span>
+              </Button>
+            )}
+            {canRemove && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 text-red-300 hover:text-red-200"
+                onClick={() => removeTransferHistoryEntry(row.request_id)}
+                title="Remove from list"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
