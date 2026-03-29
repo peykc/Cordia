@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { X, Loader2, Upload, FolderOpen, Info, ChevronLeft, ChevronRight, Play, Pause, RotateCcw } from 'lucide-react'
 import { Button } from './ui/button'
-import { CustomVideoPlayer } from './CustomVideoPlayer'
+import { CustomVideoPlayer, type CustomVideoPlayerHandle } from './CustomVideoPlayer'
 import { Tooltip } from './Tooltip'
-import { readAttachmentBytes, openPathInFileExplorer } from '../lib/tauri'
+import { convertFileSrc } from '@tauri-apps/api/tauri'
+import { ensureMusicCoverPreviewFull, readAttachmentBytes, openPathInFileExplorer } from '../lib/tauri'
 import { formatBytes } from '../lib/bytes'
 import type { MediaPreviewState } from '../contexts/MediaPreviewContext'
+
+type ImageVideoPreviewProps = Extract<Exclude<MediaPreviewState, null>, { type: 'image' | 'video' }> & {
+  onClose: () => void
+}
 import { avatarStyleForUserId } from '../lib/userAvatarStyle'
 import { cn } from '../lib/utils'
 import { FilenameEllipsis } from './FilenameEllipsis'
 
 const HIDE_CONTROLS_DELAY_MS = 1500
+/** Show the behind-media spinner only after this delay so fast loads never flash the loader. */
+const MEDIA_SPINNER_DELAY_MS = 200
 const IMAGE_ZOOM_SCALE = 2.25
 /** Padding, carousel collapse, and transform scale share this so immersive zoom feels one motion. */
 const IMAGE_ZOOM_LAYOUT_DURATION_CLASS = 'duration-300'
@@ -24,19 +31,26 @@ const GALLERY_STRIP_IMMERSE_MOTION = cn(
   IMAGE_ZOOM_LAYOUT_DURATION_CLASS
 )
 
-/** Matches CustomVideoPlayer main control: play / pause / replay when ended. */
+/** Filled glyphs on thumb overlay (same idea as transfer list / FileIcon video previews). */
 function galleryVideoOverlayIcon(opts: { isActive: boolean; playing: boolean; ended: boolean }) {
-  const iconClass = 'h-3.5 w-3.5 shrink-0'
+  const iconClass =
+    'h-5 w-5 shrink-0 text-white fill-white stroke-none drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]'
   if (!opts.isActive) {
-    return <Play className={`${iconClass} translate-x-[1px]`} strokeWidth={2.5} aria-hidden />
+    return <Play className={`${iconClass} translate-x-[1px]`} strokeWidth={0} aria-hidden />
   }
   if (opts.ended) {
-    return <RotateCcw className={iconClass} strokeWidth={2.5} aria-hidden />
+    return (
+      <RotateCcw
+        className="h-5 w-5 shrink-0 text-white fill-none stroke-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
+        strokeWidth={2.25}
+        aria-hidden
+      />
+    )
   }
   if (opts.playing) {
-    return <Pause className={iconClass} strokeWidth={2.5} aria-hidden />
+    return <Pause className={iconClass} strokeWidth={0} aria-hidden />
   }
-  return <Play className={`${iconClass} translate-x-[1px]`} strokeWidth={2.5} aria-hidden />
+  return <Play className={`${iconClass} translate-x-[1px]`} strokeWidth={0} aria-hidden />
 }
 
 function directoryForPath(path: string): string {
@@ -120,7 +134,7 @@ function clampImageZoomPan(
 
 const ZOOM_PAN_DRAG_THRESHOLD_PX = 5
 
-type Props = Exclude<MediaPreviewState, null> & { onClose: () => void }
+type Props = ImageVideoPreviewProps
 
 export function MediaPreviewModal({
   type,
@@ -134,6 +148,7 @@ export function MediaPreviewModal({
   originAvatarDataUrl,
   originSentAtIso,
   localPath,
+  musicCoverFullSourcePath,
   sizeBytes,
   sha256,
   aspectW,
@@ -160,6 +175,7 @@ export function MediaPreviewModal({
   const displayAttachmentId = activeGalleryItem?.attachmentId ?? attachmentId
   const displayFileName = activeGalleryItem?.fileName ?? fileName
   const displayLocalPath = activeGalleryItem?.localPath ?? localPath
+  const displayMusicCoverFullSourcePath = activeGalleryItem?.musicCoverFullSourcePath ?? musicCoverFullSourcePath
   const displaySizeBytes = activeGalleryItem?.sizeBytes ?? sizeBytes
   const displaySha256 = activeGalleryItem?.sha256 ?? sha256
   const displayAspectW = activeGalleryItem?.aspectW ?? aspectW
@@ -180,6 +196,8 @@ export function MediaPreviewModal({
   const [videoChromeCollapsed, setVideoChromeCollapsed] = useState(false)
   const [shareBusy, setShareBusy] = useState(false)
   const [imageNatural, setImageNatural] = useState<{ w: number; h: number } | null>(null)
+  /** Image `<img>` decode / paint — separate from URL resolution so we can show a delayed spinner behind. */
+  const [imageBitmapReady, setImageBitmapReady] = useState(false)
   const [imageZoomed, setImageZoomed] = useState(false)
   const [imageZoomOriginPct, setImageZoomOriginPct] = useState({ x: 50, y: 50 })
   const imageZoomOriginPctRef = useRef(imageZoomOriginPct)
@@ -205,6 +223,7 @@ export function MediaPreviewModal({
   const galleryStripRef = useRef<HTMLDivElement>(null)
   const galleryIdxRef = useRef(galleryIdx)
   galleryIdxRef.current = galleryIdx
+  const videoPlayerRef = useRef<CustomVideoPlayerHandle>(null)
   /** Stage — measured for vignette alignment with true object-contain bounds. */
   const imageStageRef = useRef<HTMLDivElement>(null)
   /** Filename strip + vignette track the visible bitmap when using object-contain (not full letterbox width). */
@@ -378,12 +397,51 @@ export function MediaPreviewModal({
     setVideoReady(false)
     setVideoAspect(null)
     setImageNatural(null)
+    setImageBitmapReady(false)
     setVideoPlaying(true)
     setImageZoomed(false)
     setImageZoomOriginPct({ x: 50, y: 50 })
     setImageZoomPan({ x: 0, y: 0 })
     setVideoChromeCollapsed(false)
   }, [displayAttachmentId, displayType, displayUrlProp])
+
+  /** Transfers: full-res album art from audio file (not the list thumb). Clear stale bitmap when opening. */
+  useLayoutEffect(() => {
+    if (displayType !== 'image') return
+    if (displayUrlProp) return
+    if (!displayMusicCoverFullSourcePath?.trim() || !displayAttachmentId?.trim()) return
+    if (createdBlobRef.current) {
+      URL.revokeObjectURL(createdBlobRef.current)
+      createdBlobRef.current = null
+    }
+    setResolvedUrl(null)
+    setLoading(true)
+  }, [displayType, displayUrlProp, displayAttachmentId, displayMusicCoverFullSourcePath])
+
+  useEffect(() => {
+    if (displayType !== 'image' || !displayMusicCoverFullSourcePath?.trim() || !displayAttachmentId?.trim()) return
+    if (displayUrlProp) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const p = await ensureMusicCoverPreviewFull(displayAttachmentId, displayMusicCoverFullSourcePath)
+        if (cancelled) return
+        if (p) {
+          setResolvedUrl(convertFileSrc(p))
+        } else {
+          setResolvedUrl(null)
+        }
+      } catch {
+        if (!cancelled) setResolvedUrl(null)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [displayType, displayAttachmentId, displayMusicCoverFullSourcePath, displayUrlProp])
 
   useEffect(() => {
     setAvatarImgFailed(false)
@@ -456,6 +514,28 @@ export function MediaPreviewModal({
 
   /** Prefer direct URL from the active item so we never show the previous item's blob/path for one frame. */
   const displayUrl = displayUrlProp ?? resolvedUrl
+
+  const mediaBusy = useMemo(() => {
+    if (loading) return true
+    if (displayType === 'image' && displayUrl && !imageBitmapReady) return true
+    if (displayType === 'video' && displayUrl && !videoReady) return true
+    return false
+  }, [loading, displayType, displayUrl, imageBitmapReady, videoReady])
+
+  const [delayedSpinnerVisible, setDelayedSpinnerVisible] = useState(false)
+  useEffect(() => {
+    if (!mediaBusy) {
+      setDelayedSpinnerVisible(false)
+      return
+    }
+    const id = window.setTimeout(() => setDelayedSpinnerVisible(true), MEDIA_SPINNER_DELAY_MS)
+    return () => window.clearTimeout(id)
+  }, [mediaBusy])
+
+  useEffect(() => {
+    if (displayType !== 'image' || !displayUrl) return
+    setImageBitmapReady(false)
+  }, [displayType, displayUrl, displayAttachmentId])
 
   const displayLabel = originDisplayName?.trim() || 'Unknown'
   let formattedTime = originSentAtIso
@@ -758,26 +838,21 @@ export function MediaPreviewModal({
                 imageImmersiveZoom ? 'p-0' : 'p-4'
               )}
             >
-            <div className="pointer-events-none flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
-        {loading ? (
-          <div className="pointer-events-auto flex flex-col items-center gap-4 text-foreground">
-            <Loader2 className="h-12 w-12 animate-spin" />
-            <span className="text-sm">Loading video…</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-border bg-[hsl(220_7%_10%)] text-foreground hover:bg-muted/60"
-              onClick={onClose}
-            >
-              Cancel
-            </Button>
-          </div>
-        ) : displayType === 'image' && displayUrl ? (
+            <div className="pointer-events-none relative flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
+              {delayedSpinnerVisible && mediaBusy ? (
+                <div
+                  className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none text-foreground/70"
+                  aria-hidden
+                >
+                  <Loader2 className="h-12 w-12 animate-spin" />
+                </div>
+              ) : null}
+              {displayType === 'image' && displayUrl ? (
           /*
             True object-contain when unzoomed (full image, no cover crop). Immersive = object-cover fill + crop.
             Vignette tracks contain rect when letterboxed. Layout zoom smoothness uses padding/carousel only.
           */
-          <div className="flex h-full min-h-0 w-full min-w-0 items-center justify-center overflow-hidden pointer-events-none">
+          <div className="relative z-10 flex h-full min-h-0 w-full min-w-0 items-center justify-center overflow-hidden pointer-events-none">
             {/*
               Outer shell is pointer-events-none so letterbox / padding passes clicks to the backdrop.
               Only the hit overlay (bitmap bounds) uses pointer-events-auto for zoom + hover vignette.
@@ -818,17 +893,20 @@ export function MediaPreviewModal({
                     src={displayUrl}
                     alt=""
                     className={cn(
-                      'pointer-events-none block h-full w-full rounded-none select-none [-webkit-user-drag:none]',
-                      imageImmersiveZoom ? 'object-cover object-center' : 'object-contain object-center'
+                      'pointer-events-none block h-full w-full rounded-none select-none transition-opacity duration-200 [-webkit-user-drag:none]',
+                      imageImmersiveZoom ? 'object-cover object-center' : 'object-contain object-center',
+                      imageBitmapReady ? 'opacity-100' : 'opacity-0'
                     )}
                     draggable={false}
                     onDragStart={(e) => e.preventDefault()}
                     onLoad={(e) => {
                       const el = e.currentTarget
+                      setImageBitmapReady(true)
                       if (el.naturalWidth > 0 && el.naturalHeight > 0) {
                         setImageNatural({ w: el.naturalWidth, h: el.naturalHeight })
                       }
                     }}
+                    onError={() => setImageBitmapReady(true)}
                   />
                   <div
                     className={cn(
@@ -892,7 +970,7 @@ export function MediaPreviewModal({
             </div>
           </div>
         ) : displayType === 'video' && displayUrl ? (
-          <div className="flex h-full min-h-0 w-full min-w-0 items-center justify-center overflow-hidden pointer-events-none">
+          <div className="relative z-10 flex h-full min-h-0 w-full min-w-0 items-center justify-center overflow-hidden pointer-events-none">
             <div
               className={cn(
                 'pointer-events-auto relative min-h-0 min-w-0 max-h-full max-w-full overflow-hidden rounded-none transition-opacity duration-150',
@@ -931,6 +1009,7 @@ export function MediaPreviewModal({
               onClick={chromeStop}
             >
               <CustomVideoPlayer
+                ref={videoPlayerRef}
                 key={`${displayAttachmentId ?? displayUrl}-${displayUrl}`}
                 src={displayUrl}
                 onCanPlay={() => setVideoReady(true)}
@@ -1018,21 +1097,34 @@ export function MediaPreviewModal({
               >
               {galleryItems.map((it, i) => {
                 const activeVideoThumb = it.type === 'video' && i === galleryIdx
+                const tabBaseLabel = it.fileName ?? `Attachment ${i + 1}`
+                const tabAriaLabel =
+                  it.type === 'video' && i === galleryIdx
+                    ? videoPlaybackEnded
+                      ? `${tabBaseLabel}, replay video`
+                      : videoPlaying
+                        ? `${tabBaseLabel}, pause video`
+                        : `${tabBaseLabel}, play video`
+                    : tabBaseLabel
                 return (
                 <button
                   key={it.attachmentId}
                   type="button"
                   role="tab"
                   aria-selected={i === galleryIdx}
-                  aria-label={it.fileName ?? `Attachment ${i + 1}`}
+                  aria-label={tabAriaLabel}
                   className={cn(
-                    'relative h-14 w-14 shrink-0 overflow-hidden rounded-none border transition-[opacity,box-shadow] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-0',
+                    'group relative h-14 w-14 shrink-0 overflow-hidden rounded-none border transition-[opacity,box-shadow] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-0',
                     i === galleryIdx
                       ? 'border-border opacity-100 ring-1 ring-ring ring-offset-0'
                       : 'border-border/50 opacity-45 hover:opacity-70'
                   )}
                   onClick={(e) => {
                     chromeStop(e)
+                    if (it.type === 'video' && i === galleryIdx) {
+                      videoPlayerRef.current?.togglePlay()
+                      return
+                    }
                     setGalleryIdx(i)
                   }}
                 >
@@ -1041,22 +1133,23 @@ export function MediaPreviewModal({
                       <img src={it.thumbnailUrl} alt="" className="h-full w-full object-cover" draggable={false} />
                       {it.type === 'video' && (
                         <span
-                          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20"
+                          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/30 transition-colors group-hover:bg-black/40"
                           aria-hidden
                         >
-                          <span className="flex h-7 w-7 items-center justify-center rounded-none bg-black/60 text-white shadow-md ring-1 ring-white/25">
-                            {galleryVideoOverlayIcon({
-                              isActive: activeVideoThumb,
-                              playing: videoPlaying,
-                              ended: videoPlaybackEnded,
-                            })}
-                          </span>
+                          {galleryVideoOverlayIcon({
+                            isActive: activeVideoThumb,
+                            playing: videoPlaying,
+                            ended: videoPlaybackEnded,
+                          })}
                         </span>
                       )}
                     </>
                   ) : it.type === 'video' ? (
-                    <div className="flex h-full w-full items-center justify-center bg-muted">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-none bg-black/60 text-white shadow-md ring-1 ring-white/25">
+                    <div className="relative flex h-full w-full items-center justify-center bg-muted">
+                      <span
+                        className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 transition-colors group-hover:bg-black/30"
+                        aria-hidden
+                      >
                         {galleryVideoOverlayIcon({
                           isActive: activeVideoThumb,
                           playing: videoPlaying,

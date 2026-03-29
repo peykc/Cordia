@@ -84,7 +84,10 @@ export function FilenameEllipsis({ name, className, title }: Props) {
 
     const recompute = () => {
       const maxPx = el.clientWidth
-      if (maxPx <= 0) return
+      if (maxPx <= 0) {
+        setDisplay(name)
+        return
+      }
       const font = getFontFor(el)
       const next = ellipsizeKeepExtToWidth(name, maxPx, font, canvasCtx)
       setDisplay(next)

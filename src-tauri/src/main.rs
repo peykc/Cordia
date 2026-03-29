@@ -8,6 +8,7 @@ mod audio_dsp;
 mod server;
 mod beacon;
 mod account_manager;
+mod waveform;
 
 #[cfg(windows)]
 mod file_association;
@@ -24,8 +25,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 use std::process::Command;
@@ -103,6 +106,9 @@ struct AttachmentRecord {
     piece_count: Option<u32>,
     #[serde(default)]
     piece_hashes: Vec<String>,
+    /// Precomputed music waveform (top/bottom bands); packaged into chat metadata for receivers.
+    #[serde(default)]
+    waveform_peaks: Option<waveform::WaveformPeaks>,
 }
 
 fn default_true() -> bool {
@@ -155,6 +161,8 @@ struct AttachmentRegistrationResult {
     piece_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     piece_hashes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    waveform_peaks: Option<waveform::WaveformPeaks>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,10 +313,16 @@ fn default_piece_size_for_bytes(size_bytes: u64) -> u32 {
     }
 }
 
-fn compute_piece_hashes(path: &PathBuf, piece_size: u32) -> Result<(u32, Vec<String>), String> {
+fn compute_piece_hashes_with_progress<F>(path: &PathBuf, piece_size: u32, mut on_progress: F) -> Result<(u32, Vec<String>), String>
+where
+    F: FnMut(u8),
+{
+    let total = std::fs::metadata(path).map_err(|e| format!("Failed to read file metadata: {}", e))?.len();
     let mut f = std::fs::File::open(path).map_err(|e| format!("Failed to open file for piece hashing: {}", e))?;
     let mut buf = vec![0u8; piece_size as usize];
     let mut out: Vec<String> = Vec::new();
+    let mut read_total: u64 = 0;
+    let mut last_pct: u8 = 0;
     loop {
         let n = f
             .read(&mut buf)
@@ -319,8 +333,31 @@ fn compute_piece_hashes(path: &PathBuf, piece_size: u32) -> Result<(u32, Vec<Str
         let mut hasher = Sha256::new();
         hasher.update(&buf[..n]);
         out.push(hex::encode(hasher.finalize()));
+        read_total += n as u64;
+        if total > 0 {
+            let pct = ((read_total * 100) / total).min(100) as u8;
+            if pct >= last_pct + 2 || pct == 100 {
+                last_pct = pct;
+                on_progress(pct);
+            }
+        }
     }
     Ok((out.len() as u32, out))
+}
+
+/// Monotonic 0–100 UI progress for attachment prep (SHA + pieces + waveform/thumb). Event name is historical (`cordia:attachment-sha-progress`).
+fn emit_prep_pct(last: &Rc<RefCell<u8>>, pe: &Option<(tauri::AppHandle, String)>, p: f64) {
+    let display = (p.round() as i32).clamp(0, 100) as u8;
+    if display <= *last.borrow() {
+        return;
+    }
+    *last.borrow_mut() = display;
+    if let Some((ref app, ref att_id)) = pe {
+        let _ = app.emit_all("cordia:attachment-sha-progress", serde_json::json!({
+            "attachment_id": att_id,
+            "percent": display,
+        }));
+    }
 }
 
 #[derive(Debug)]
@@ -423,6 +460,14 @@ fn is_image_ext(ext: &str) -> bool {
     ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "tiff", "tif"].contains(&e.as_str())
 }
 
+fn is_audio_ext(ext: &str) -> bool {
+    let e = ext.to_lowercase();
+    [
+        "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "aiff", "aif", "wma", "alac",
+    ]
+    .contains(&e.as_str())
+}
+
 fn extract_image_thumbnail(source: &PathBuf, output_path: &PathBuf, max_edge: i32) -> bool {
     let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
     let output = output_path.to_string_lossy();
@@ -473,6 +518,153 @@ fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
+/// Embedded album / cover art (mjpeg/png in a video stream). Square JPEG for chat (~2× the on-screen slot for retina).
+const AUDIO_COVER_PREP_PX: i32 = 144;
+
+fn extract_audio_embedded_cover(source: &PathBuf, output_path: &PathBuf) -> bool {
+    if let Some(parent) = output_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let vf = format!(
+        "scale={0}:{0}:force_original_aspect_ratio=increase,crop={0}:{0}",
+        AUDIO_COVER_PREP_PX
+    );
+    for map in ["0:v:0", "0:v:1"] {
+        if run_ffmpeg_audio_cover(source, output_path, map, &vf) {
+            if let Ok(meta) = std::fs::metadata(output_path) {
+                if meta.len() > 0 {
+                    return true;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(output_path);
+    }
+    false
+}
+
+/// Full-resolution (within cap) embedded cover for image overlay — not the square 144px prep thumb.
+const AUDIO_COVER_PREVIEW_MAX_PX: i32 = 2048;
+
+fn extract_audio_embedded_cover_preview_full(source: &PathBuf, output_path: &PathBuf) -> bool {
+    if let Some(parent) = output_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let vf = format!(
+        "scale={0}:{0}:force_original_aspect_ratio=decrease",
+        AUDIO_COVER_PREVIEW_MAX_PX
+    );
+    for map in ["0:v:0", "0:v:1"] {
+        if run_ffmpeg_audio_cover(source, output_path, map, &vf) {
+            if let Ok(meta) = std::fs::metadata(output_path) {
+                if meta.len() > 0 {
+                    return true;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(output_path);
+    }
+    false
+}
+
+fn run_ffmpeg_audio_cover(source: &PathBuf, output_path: &PathBuf, map: &str, vf: &str) -> bool {
+    let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    let input = source.to_string_lossy();
+    let output = output_path.to_string_lossy();
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(input.as_ref())
+        .arg("-an")
+        .arg("-map")
+        .arg(map)
+        .arg("-vf")
+        .arg(vf)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-q:v")
+        .arg("3")
+        .arg("-y")
+        .arg(output.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Extract embedded album art to `thumbs/{attachment_id}_music.jpg` (same path as upload prep) so downloaders get cover art without embedding in message JSON.
+#[tauri::command]
+fn ensure_music_cover_thumbnail(attachment_id: String, media_path: String) -> Result<Option<String>, String> {
+    let account_id = require_session()?;
+    let aid = attachment_id.trim();
+    if aid.is_empty() {
+        return Err("attachment_id is empty".to_string());
+    }
+    let media = PathBuf::from(media_path.trim());
+    if !media.exists() {
+        return Err("Media file not found".to_string());
+    }
+    let ext = media
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !is_audio_ext(&ext) {
+        return Ok(None);
+    }
+    let base = account_attachment_dir(&account_id)?;
+    let music_thumb = base.join("thumbs").join(format!("{}_music.jpg", aid));
+    if let Ok(meta) = std::fs::metadata(&music_thumb) {
+        if meta.len() > 0 {
+            return Ok(Some(music_thumb.to_string_lossy().to_string()));
+        }
+    }
+    if extract_audio_embedded_cover(&media, &music_thumb) {
+        Ok(Some(music_thumb.to_string_lossy().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Embedded art scaled up to `AUDIO_COVER_PREVIEW_MAX_PX` (fits inside box, preserves aspect). For media overlay, not list thumbs.
+#[tauri::command]
+fn ensure_music_cover_preview_full(attachment_id: String, media_path: String) -> Result<Option<String>, String> {
+    let account_id = require_session()?;
+    let aid = attachment_id.trim();
+    if aid.is_empty() {
+        return Err("attachment_id is empty".to_string());
+    }
+    let media = PathBuf::from(media_path.trim());
+    if !media.exists() {
+        return Err("Media file not found".to_string());
+    }
+    let ext = media
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !is_audio_ext(&ext) {
+        return Ok(None);
+    }
+    let base = account_attachment_dir(&account_id)?;
+    let music_full = base.join("thumbs").join(format!("{}_music_full.jpg", aid));
+    if let Ok(meta) = std::fs::metadata(&music_full) {
+        if meta.len() > 0 {
+            return Ok(Some(music_full.to_string_lossy().to_string()));
+        }
+    }
+    if extract_audio_embedded_cover_preview_full(&media, &music_full) {
+        Ok(Some(music_full.to_string_lossy().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Returns file metadata without registering the file as an attachment. Used for staging attachments before send.
 #[tauri::command]
 fn get_file_metadata(path: String) -> Result<FileMetadataResult, String> {
@@ -500,6 +692,16 @@ fn get_file_metadata(path: String) -> Result<FileMetadataResult, String> {
         extension,
         size_bytes,
     })
+}
+
+/// ffprobe first audio stream: sample rate (Hz) and optional bits-per-sample (FLAC/WAV/etc.).
+#[tauri::command]
+fn get_audio_stream_info(path: String) -> Result<Option<waveform::AudioStreamInfo>, String> {
+    let source = PathBuf::from(path.trim());
+    if !source.is_file() {
+        return Ok(None);
+    }
+    Ok(waveform::ffprobe_audio_stream_info(&source))
 }
 
 /// Computes SHA256 of a file (hex-encoded). Used for integrity verification before re-sharing.
@@ -573,6 +775,7 @@ fn register_attachment_from_path(
             piece_size: None,
             piece_count: None,
             piece_hashes: Vec::new(),
+            waveform_peaks: None,
         };
         index.records.insert(attachment_id.clone(), record);
         save_attachment_index(&base, &index)?;
@@ -638,6 +841,7 @@ fn register_attachment_from_path(
         piece_size: None,
         piece_count: None,
         piece_hashes: Vec::new(),
+        waveform_peaks: None,
     })
 }
 
@@ -664,19 +868,20 @@ fn prepare_attachment_background(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    let last_prep_pct = Rc::new(RefCell::new(0u8));
+    let pe = progress_emitter.clone();
+
     let sha256 = {
         let mut path_cache = load_path_sha_cache(&base);
         let path_key = source.to_string_lossy().to_string();
         let cached = path_cache.get(&path_key);
         let compute_sha = || {
-            if let Some((ref app, ref att_id)) = progress_emitter {
-                let app = app.clone();
-                let att_id = att_id.clone();
-                sha256_file_streaming_with_progress(&source, move |pct| {
-                    let _ = app.emit_all("cordia:attachment-sha-progress", serde_json::json!({
-                        "attachment_id": att_id,
-                        "percent": pct,
-                    }));
+            if progress_emitter.is_some() {
+                let last_prep_pct = last_prep_pct.clone();
+                let pe = pe.clone();
+                sha256_file_streaming_with_progress(&source, move |sha_pct| {
+                    let overall = (sha_pct as f64) * 0.4;
+                    emit_prep_pct(&last_prep_pct, &pe, overall);
                 })
             } else {
                 sha256_file_streaming(&source)
@@ -684,6 +889,7 @@ fn prepare_attachment_background(
         };
         if let Some(entry) = cached {
             if entry.size_bytes == size_bytes && entry.mtime_secs == mtime_secs {
+                emit_prep_pct(&last_prep_pct, &pe, 40.0);
                 entry.sha256.clone()
             } else {
                 let sha = compute_sha()?;
@@ -713,7 +919,15 @@ fn prepare_attachment_background(
         }
     };
     let piece_size = default_piece_size_for_bytes(size_bytes);
-    let (piece_count, piece_hashes) = compute_piece_hashes(&source, piece_size)?;
+    let (piece_count, piece_hashes) = compute_piece_hashes_with_progress(&source, piece_size, {
+        let last_prep_pct = last_prep_pct.clone();
+        let pe = pe.clone();
+        move |piece_pct| {
+            let overall = (40.0_f64 + (piece_pct as f64) * 0.25).min(65.0);
+            emit_prep_pct(&last_prep_pct, &pe, overall);
+        }
+    })?;
+
     let cached_file_name = with_attachment_index_lock(|| -> Result<Option<String>, String> {
         let mut index = load_attachment_index(&base);
         let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
@@ -744,7 +958,7 @@ fn prepare_attachment_background(
             } else {
                 None
             };
-            rec.status = "ready".to_string();
+            rec.status = "preparing".to_string();
             rec.piece_size = Some(piece_size);
             rec.piece_count = Some(piece_count);
             rec.piece_hashes = piece_hashes.clone();
@@ -753,12 +967,28 @@ fn prepare_attachment_background(
         Ok(cached_file_name)
     })?;
 
+    let extract_from_media = if let Some(cache_name) = &cached_file_name {
+        cache_dir.join(cache_name)
+    } else {
+        source.clone()
+    };
+
+    let mut waveform_peaks_opt: Option<waveform::WaveformPeaks> = None;
+    if is_audio_ext(extension) {
+        waveform_peaks_opt = waveform::compute_waveform_peaks_with_progress(&extract_from_media, waveform::WAVE_BARS, {
+            let last_prep_pct = last_prep_pct.clone();
+            let pe = pe.clone();
+            move |wf_pct| {
+                let overall = (65.0_f64 + (wf_pct as f64) * 0.3).min(95.0);
+                emit_prep_pct(&last_prep_pct, &pe, overall);
+            }
+        });
+    }
+
+    let mut thumb_path_str: Option<String> = None;
     if is_video_ext(extension) || is_image_ext(extension) {
-        let extract_from = if let Some(cache_name) = &cached_file_name {
-            cache_dir.join(cache_name)
-        } else {
-            source
-        };
+        emit_prep_pct(&last_prep_pct, &pe, 88.0);
+        let extract_from = extract_from_media;
         let thumb_path = if is_image_ext(extension) {
             base.join("thumbs").join(format!("{}_720.jpg", attachment_id))
         } else {
@@ -777,15 +1007,38 @@ fn prepare_attachment_background(
             extract_thumbnail(&extract_from, &thumb_path, extension)
         };
         if ok {
-            with_attachment_index_lock(|| {
-                let mut index = load_attachment_index(&base);
-                if let Some(rec) = index.records.get_mut(attachment_id) {
-                    rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
-                    let _ = save_attachment_index(&base, &index);
-                }
-            });
+            thumb_path_str = Some(thumb_path.to_string_lossy().to_string());
+        }
+    } else if is_audio_ext(extension) {
+        emit_prep_pct(&last_prep_pct, &pe, 92.0);
+        let music_thumb = base.join("thumbs").join(format!("{}_music.jpg", attachment_id));
+        if extract_audio_embedded_cover(&extract_from_media, &music_thumb) {
+            thumb_path_str = Some(music_thumb.to_string_lossy().to_string());
         }
     }
+
+    if !is_audio_ext(extension) {
+        emit_prep_pct(&last_prep_pct, &pe, 95.0);
+    } else if waveform_peaks_opt.is_none() {
+        emit_prep_pct(&last_prep_pct, &pe, 95.0);
+    }
+
+    with_attachment_index_lock(|| -> Result<(), String> {
+        let mut index = load_attachment_index(&base);
+        if let Some(rec) = index.records.get_mut(attachment_id) {
+            if let Some(wave) = waveform_peaks_opt {
+                rec.waveform_peaks = Some(wave);
+            }
+            if let Some(ref thumb) = thumb_path_str {
+                rec.thumbnail_path = Some(thumb.clone());
+            }
+            rec.status = "ready".to_string();
+            save_attachment_index(&base, &index)?;
+        }
+        Ok(())
+    })?;
+
+    emit_prep_pct(&last_prep_pct, &pe, 100.0);
 
     Ok(())
 }
@@ -835,6 +1088,7 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
         piece_size: rec.piece_size,
         piece_count: rec.piece_count,
         piece_hashes: rec.piece_hashes.clone(),
+        waveform_peaks: rec.waveform_peaks.clone(),
     }))
 }
 
@@ -2900,6 +3154,9 @@ fn main() {
             decrypt_ephemeral_chat_message,
             decrypt_ephemeral_chat_message_by_signing_pubkey,
             get_file_metadata,
+            get_audio_stream_info,
+            ensure_music_cover_thumbnail,
+            ensure_music_cover_preview_full,
             compute_file_sha256,
             register_attachment_from_path,
             get_attachment_record,

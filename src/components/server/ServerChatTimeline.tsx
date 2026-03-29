@@ -551,7 +551,7 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
       data={chatItems}
       computeItemKey={(_, item) => item.id}
       alignToBottom
-      followOutput="smooth"
+      followOutput="auto"
       initialTopMostItemIndex={Math.max(chatItems.length - 1, 0)}
       itemContent={itemContent}
     />

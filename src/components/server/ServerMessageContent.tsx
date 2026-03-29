@@ -10,12 +10,13 @@ import { FileIcon, IconForCategory } from '../FileIcon'
 import { ImageDownPlay } from '../icons'
 import { CustomVideoPlayer } from '../CustomVideoPlayer'
 import { ChatMediaSlot, ChatFileRowSlot } from '../ChatMediaSlot'
+import { ChatMusicAttachmentCard } from '../ChatMusicAttachmentCard'
 import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
-import { buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
+import { buildChatAudioPreviewState, buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
 import { attachmentShareInChatVisible } from '../../lib/attachmentShareInChat'
 import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
-import type { ChatMediaGalleryItem } from '../../contexts/MediaPreviewContext'
+import type { ChatAudioGalleryItem, ChatMediaGalleryItem } from '../../contexts/MediaPreviewContext'
 import {
   CHAT_MEDIA_MIN_W,
   CHAT_MEDIA_GRID_MAX_W,
@@ -25,6 +26,16 @@ import {
 } from '../../lib/chatMessageLayout'
 
 const NOT_DOWNLOADED_CARD_NARROW_PX = 110
+
+function chatMusicAudioSrc(hasPath: string | undefined | null): string | null {
+  return hasPath ? convertFileSrc(hasPath) : null
+}
+
+/** Prefer local prep thumbnail when present; otherwise use embedded cover from the message (receivers). */
+function musicCoverSrc(att: EphemeralAttachmentMeta, thumbPath: string | undefined): string | undefined {
+  if (thumbPath) return convertFileSrc(thumbPath)
+  return att.music_cover_data_url
+}
 
 function imageTierPreviewPath(
   thumbPath: string | undefined,
@@ -192,6 +203,72 @@ export function ServerMessageContent({
         handleShareAgainAttachment,
       }),
       chatMediaGallery,
+    })
+  }
+
+  const openAudioPreview = (
+    att: EphemeralAttachmentMeta,
+    hasPath: string | undefined,
+    opts?: { musicCoverFullSourcePath?: string | null; localPath?: string | null }
+  ) => {
+    if (!setMediaPreview) return
+    const lp = (opts?.localPath ?? hasPath)?.trim()
+    if (!lp) return
+
+    const attachmentsList = msg.attachments ?? (msg.attachment ? [msg.attachment] : [])
+    const audioOnly = attachmentsList.filter(
+      (a: EphemeralAttachmentMeta) => getFileTypeFromExt(a.file_name) === 'music'
+    )
+    let chatAudioGallery: { items: ChatAudioGalleryItem[]; startIndex: number } | undefined
+    if (audioOnly.length >= 2) {
+      const items: ChatAudioGalleryItem[] = []
+      for (const a of audioOnly) {
+        const pres = getAttachmentPresentation(a)
+        const path = pres.hasPath?.trim()
+        if (!path) continue
+        const isOwnAtt = msg.from_user_id === identity?.user_id
+        const sh = shareInChatVisible(a, isOwnAtt, pres.hasPath)
+        const thumbUrl = musicCoverSrc(a, pres.thumbPath) ?? null
+        items.push({
+          attachmentId: a.attachment_id,
+          localPath: path,
+          thumbnailUrl: thumbUrl,
+          fileName: a.file_name,
+          sizeBytes: a.size_bytes,
+          sha256: a.sha256,
+          musicCoverFullSourcePath: path,
+          showShareInChat: sh,
+          onShareInChat: sh ? () => handleShareAgainAttachment(a, isOwnAtt, pres.hasPath) : undefined,
+        })
+      }
+      if (items.length >= 2) {
+        const startIndex = items.findIndex((it) => it.attachmentId === att.attachment_id)
+        if (startIndex >= 0) {
+          chatAudioGallery = { items, startIndex }
+        }
+      }
+    }
+
+    setMediaPreview({
+      ...buildChatAudioPreviewState({
+        attachmentId: att.attachment_id,
+        fileName: att.file_name,
+        msg,
+        att,
+        hasPath: lp,
+        musicCoverFullSourcePath: opts?.musicCoverFullSourcePath,
+        serverSigningPubkey: server?.signing_pubkey ?? '',
+        identityUserId: identity?.user_id,
+        profileAvatarDataUrl: profile?.avatar_data_url,
+        getProfile: getProfile ?? (() => undefined),
+        fallbackNameForUser: fallbackNameForUser ?? ((id: string) => `User ${id.slice(0, 8)}`),
+        ownDisplayName: identity?.display_name ?? 'You',
+        isSharedInServer,
+        justSharedKeys,
+        hasActiveUploadForAttachment,
+        handleShareAgainAttachment,
+      }),
+      chatAudioGallery,
     })
   }
 
@@ -800,6 +877,7 @@ export function ServerMessageContent({
                                                     const isOwn = msg.from_user_id === identity?.user_id
                                                     const {
                                                       hasPath,
+                                                      thumbPath,
                                                       notDownloaded,
                                                       liveDownload,
                                                       downloadProgress,
@@ -863,90 +941,191 @@ export function ServerMessageContent({
                                                             }
                                                             wideContent={
                                                               <>
-                                                                <ChatFileRowSlot
-                                                                  icon={<IconForCategory cat={category} className="text-muted-foreground" />}
-                                                                  title={att.file_name}
-                                                                  size={formatBytes(att.size_bytes)}
-                                                                >
-                                                                  <div className="flex flex-col items-end gap-1 shrink-0">
-                                                                    {!liveDownload && (
-                                                                      <Button
-                                                                        type="button"
-                                                                        variant="outline"
-                                                                        size="icon"
-                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                        onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)}
-                                                                        disabled={stateLabel !== 'Available'}
-                                                                        aria-label="Download"
-                                                                      >
-                                                                        {stateLabel === 'Available' ? (
-                                                                          <Download className="h-3.5 w-3.5" />
-                                                                        ) : (
-                                                                          <Ban className="h-3.5 w-3.5" aria-hidden />
-                                                                        )}
-                                                                      </Button>
-                                                                    )}
-                                                                    {stateLabel === 'Unavailable' && (
-                                                                      <span className="text-[9px] text-muted-foreground text-right">Not available</span>
-                                                                    )}
-                                                                    {showDownloadProgress && (
-                                                                      <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                        <div
-                                                                          className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                          style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                        />
-                                                                      </div>
-                                                                    )}
-                                                                  </div>
-                                                                </ChatFileRowSlot>
+                                                                {category === 'music' ? (
+                                                                  <ChatMusicAttachmentCard
+                                                                    audioSrc={chatMusicAudioSrc(hasPath)}
+                                                                    waveformSeed={att.attachment_id}
+                                                                    waveformPeaks={att.waveform_peaks}
+                                                                    coverSrc={musicCoverSrc(att, thumbPath)}
+                                                                    attachmentId={att.attachment_id}
+                                                                    localMediaPathForCover={hasPath ?? undefined}
+                                                                    onOpenAudioPreview={
+                                                                      hasPath ? () => openAudioPreview(att, hasPath) : undefined
+                                                                    }
+                                                                    title={att.file_name}
+                                                                    size={formatBytes(att.size_bytes)}
+                                                                  >
+                                                                    <div className="flex flex-col items-center justify-center gap-1 shrink-0">
+                                                                      {!liveDownload && (
+                                                                        <Button
+                                                                          type="button"
+                                                                          variant="outline"
+                                                                          size="icon"
+                                                                          className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                          onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)}
+                                                                          disabled={stateLabel !== 'Available'}
+                                                                          aria-label="Download"
+                                                                        >
+                                                                          {stateLabel === 'Available' ? (
+                                                                            <Download className="h-3.5 w-3.5" />
+                                                                          ) : (
+                                                                            <Ban className="h-3.5 w-3.5" aria-hidden />
+                                                                          )}
+                                                                        </Button>
+                                                                      )}
+                                                                      {stateLabel === 'Unavailable' && (
+                                                                        <span className="text-[9px] text-muted-foreground text-center">Not available</span>
+                                                                      )}
+                                                                      {showDownloadProgress && (
+                                                                        <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                          <div
+                                                                            className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                                            style={{ width: `${Math.max(2, downloadProgress)}%` }}
+                                                                          />
+                                                                        </div>
+                                                                      )}
+                                                                    </div>
+                                                                  </ChatMusicAttachmentCard>
+                                                                ) : (
+                                                                  <ChatFileRowSlot
+                                                                    icon={<IconForCategory cat={category} className="text-muted-foreground" />}
+                                                                    title={att.file_name}
+                                                                    size={formatBytes(att.size_bytes)}
+                                                                  >
+                                                                    <div className="flex flex-col items-end gap-1 shrink-0">
+                                                                      {!liveDownload && (
+                                                                        <Button
+                                                                          type="button"
+                                                                          variant="outline"
+                                                                          size="icon"
+                                                                          className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                          onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)}
+                                                                          disabled={stateLabel !== 'Available'}
+                                                                          aria-label="Download"
+                                                                        >
+                                                                          {stateLabel === 'Available' ? (
+                                                                            <Download className="h-3.5 w-3.5" />
+                                                                          ) : (
+                                                                            <Ban className="h-3.5 w-3.5" aria-hidden />
+                                                                          )}
+                                                                        </Button>
+                                                                      )}
+                                                                      {stateLabel === 'Unavailable' && (
+                                                                        <span className="text-[9px] text-muted-foreground text-right">Not available</span>
+                                                                      )}
+                                                                      {showDownloadProgress && (
+                                                                        <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                          <div
+                                                                            className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                                            style={{ width: `${Math.max(2, downloadProgress)}%` }}
+                                                                          />
+                                                                        </div>
+                                                                      )}
+                                                                    </div>
+                                                                  </ChatFileRowSlot>
+                                                                )}
                                                               </>
                                                             }
                                                           />
                                                         ) : (
                                                           <div className="relative">
-                                                            <ChatFileRowSlot
-                                                              className="border border-border/50"
-                                                              icon={<IconForCategory cat={category} className="text-muted-foreground" />}
-                                                              title={att.file_name}
-                                                              size={formatBytes(att.size_bytes)}
-                                                            >
-                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
-                                                                <span className="shrink-0">
-                                                                  <Tooltip content="Share again">
-                                                                    <Button
-                                                                      type="button"
-                                                                      variant="outline"
-                                                                      size="icon"
-                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                      onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, true, hasPath)
-                                                                      }}
-                                                                    >
-                                                                      <Upload className="h-3.5 w-3.5" />
-                                                                    </Button>
-                                                                  </Tooltip>
-                                                                </span>
-                                                              )}
-                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
-                                                                <span className="shrink-0">
-                                                                  <Tooltip content="Share in this chat">
-                                                                    <Button
-                                                                      type="button"
-                                                                      variant="outline"
-                                                                      size="icon"
-                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                      onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, hasPath)
-                                                                      }}
-                                                                    >
-                                                                      <Upload className="h-3.5 w-3.5" />
-                                                                    </Button>
-                                                                  </Tooltip>
-                                                                </span>
-                                                              )}
-                                                            </ChatFileRowSlot>
+                                                            {category === 'music' ? (
+                                                              <ChatMusicAttachmentCard
+                                                                className="border border-border/50"
+                                                                audioSrc={chatMusicAudioSrc(hasPath)}
+                                                                waveformSeed={att.attachment_id}
+                                                                    waveformPeaks={att.waveform_peaks}
+                                                                coverSrc={musicCoverSrc(att, thumbPath)}
+                                                                attachmentId={att.attachment_id}
+                                                                localMediaPathForCover={hasPath ?? undefined}
+                                                                onOpenAudioPreview={
+                                                                  hasPath ? () => openAudioPreview(att, hasPath) : undefined
+                                                                }
+                                                                title={att.file_name}
+                                                                size={formatBytes(att.size_bytes)}
+                                                              >
+                                                                {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share again">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, true, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                                {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share in this chat">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, false, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                              </ChatMusicAttachmentCard>
+                                                            ) : (
+                                                              <ChatFileRowSlot
+                                                                className="border border-border/50"
+                                                                icon={<IconForCategory cat={category} className="text-muted-foreground" />}
+                                                                title={att.file_name}
+                                                                size={formatBytes(att.size_bytes)}
+                                                              >
+                                                                {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share again">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, true, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                                {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share in this chat">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, false, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                              </ChatFileRowSlot>
+                                                            )}
                                                           </div>
                                                         )}
                                                       </div>
@@ -1320,7 +1499,11 @@ export function ServerMessageContent({
                                                               attachmentId={!hasPath && (isOwn ? sharedItem?.can_share_now : false) ? att.attachment_id : null}
                                                               savedPath={hasPath ?? undefined}
                                                               thumbnailPath={thumbPath ?? undefined}
-                                                              onMediaClick={(url, type, attachmentId, fileName) => {
+                                                              onMediaClick={(url, type, attachmentId, fileName, opts) => {
+                                                                if (type === 'audio') {
+                                                                  openAudioPreview(att, hasPath, opts)
+                                                                  return
+                                                                }
                                                                 openAttachmentPreview(
                                                                   type as 'image' | 'video',
                                                                   url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
@@ -1408,88 +1591,188 @@ export function ServerMessageContent({
                                                               </>
                                                             }
                                                             wideContent={
-                                                              <ChatFileRowSlot
-                                                                icon={<IconForCategory cat={fileCategory} className="text-muted-foreground" />}
+                                                              fileCategory === 'music' ? (
+                                                              <ChatMusicAttachmentCard
+                                                                audioSrc={chatMusicAudioSrc(hasPath)}
+                                                                waveformSeed={att.attachment_id}
+                                                                    waveformPeaks={att.waveform_peaks}
+                                                                coverSrc={musicCoverSrc(att, thumbPath)}
+                                                                attachmentId={att.attachment_id}
+                                                                localMediaPathForCover={hasPath ?? undefined}
+                                                                onOpenAudioPreview={
+                                                                  hasPath ? () => openAudioPreview(att, hasPath) : undefined
+                                                                }
                                                                 title={att.file_name}
                                                                 size={formatBytes(att.size_bytes)}
                                                               >
-                                                                <div className="flex flex-col items-end gap-1 shrink-0">
-                                                                  <Button
-                                                                    type="button"
-                                                                    variant="outline"
-                                                                    size="icon"
-                                                                    className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                    onClick={() => attachmentStateLabel === 'Available' && requestAttachmentDownload(msg, att)}
-                                                                    disabled={attachmentStateLabel !== 'Available'}
-                                                                    aria-label="Download"
-                                                                  >
-                                                                    {attachmentStateLabel === 'Available' ? (
-                                                                      <Download className="h-3.5 w-3.5" />
-                                                                    ) : (
-                                                                      <Ban className="h-3.5 w-3.5" aria-hidden />
+                                                                  <div className="flex flex-col items-center justify-center gap-1 shrink-0">
+                                                                    <Button
+                                                                      type="button"
+                                                                      variant="outline"
+                                                                      size="icon"
+                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                      onClick={() => attachmentStateLabel === 'Available' && requestAttachmentDownload(msg, att)}
+                                                                      disabled={attachmentStateLabel !== 'Available'}
+                                                                      aria-label="Download"
+                                                                    >
+                                                                      {attachmentStateLabel === 'Available' ? (
+                                                                        <Download className="h-3.5 w-3.5" />
+                                                                      ) : (
+                                                                        <Ban className="h-3.5 w-3.5" aria-hidden />
+                                                                      )}
+                                                                    </Button>
+                                                                    {attachmentStateLabel === 'Unavailable' && (
+                                                                      <span className="text-[9px] text-muted-foreground text-center">Not available</span>
                                                                     )}
-                                                                  </Button>
-                                                                  {attachmentStateLabel === 'Unavailable' && (
-                                                                    <span className="text-[9px] text-muted-foreground text-right">Not available</span>
-                                                                  )}
-                                                                  {showProgress && (
-                                                                    <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                      <div
-                                                                        className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                        style={{ width: `${Math.max(2, p)}%` }}
-                                                                      />
-                                                                    </div>
-                                                                  )}
-                                                                </div>
-                                                              </ChatFileRowSlot>
+                                                                    {showProgress && (
+                                                                      <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                        <div
+                                                                          className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                                          style={{ width: `${Math.max(2, p)}%` }}
+                                                                        />
+                                                                      </div>
+                                                                    )}
+                                                                  </div>
+                                                                </ChatMusicAttachmentCard>
+                                                              ) : (
+                                                                <ChatFileRowSlot
+                                                                  icon={<IconForCategory cat={fileCategory} className="text-muted-foreground" />}
+                                                                  title={att.file_name}
+                                                                  size={formatBytes(att.size_bytes)}
+                                                                >
+                                                                  <div className="flex flex-col items-end gap-1 shrink-0">
+                                                                    <Button
+                                                                      type="button"
+                                                                      variant="outline"
+                                                                      size="icon"
+                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                      onClick={() => attachmentStateLabel === 'Available' && requestAttachmentDownload(msg, att)}
+                                                                      disabled={attachmentStateLabel !== 'Available'}
+                                                                      aria-label="Download"
+                                                                    >
+                                                                      {attachmentStateLabel === 'Available' ? (
+                                                                        <Download className="h-3.5 w-3.5" />
+                                                                      ) : (
+                                                                        <Ban className="h-3.5 w-3.5" aria-hidden />
+                                                                      )}
+                                                                    </Button>
+                                                                    {attachmentStateLabel === 'Unavailable' && (
+                                                                      <span className="text-[9px] text-muted-foreground text-right">Not available</span>
+                                                                    )}
+                                                                    {showProgress && (
+                                                                      <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                                        <div
+                                                                          className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                                          style={{ width: `${Math.max(2, p)}%` }}
+                                                                        />
+                                                                      </div>
+                                                                    )}
+                                                                  </div>
+                                                                </ChatFileRowSlot>
+                                                              )
                                                             }
                                                           />
                                                         ) : (
                                                           <div className="relative">
-                                                            <ChatFileRowSlot
-                                                              className="border border-border/50"
-                                                              icon={<IconForCategory cat={fileCategory} className="text-muted-foreground" />}
-                                                              title={att.file_name}
-                                                              size={formatBytes(att.size_bytes)}
-                                                            >
-                                                              {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
-                                                                <span className="shrink-0">
-                                                                  <Tooltip content="Share again">
-                                                                    <Button
-                                                                      type="button"
-                                                                      variant="outline"
-                                                                      size="icon"
-                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                      onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, true, hasPath)
-                                                                      }}
-                                                                    >
-                                                                      <Upload className="h-3.5 w-3.5" />
-                                                                    </Button>
-                                                                  </Tooltip>
-                                                                </span>
-                                                              )}
-                                                              {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
-                                                                <span className="shrink-0">
-                                                                  <Tooltip content="Seed in this server">
-                                                                    <Button
-                                                                      type="button"
-                                                                      variant="outline"
-                                                                      size="icon"
-                                                                      className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
-                                                                      aria-label="Seed in this server"
-                                                                      onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleShareAgainAttachment(att, false, hasPath)
-                                                                      }}
-                                                                    >
-                                                                      <Upload className="h-3.5 w-3.5" />
-                                                                    </Button>
-                                                                  </Tooltip>
-                                                                </span>
-                                                              )}
-                                                            </ChatFileRowSlot>
+                                                            {fileCategory === 'music' ? (
+                                                              <ChatMusicAttachmentCard
+                                                                className="border border-border/50"
+                                                                audioSrc={chatMusicAudioSrc(hasPath)}
+                                                                waveformSeed={att.attachment_id}
+                                                                    waveformPeaks={att.waveform_peaks}
+                                                                coverSrc={musicCoverSrc(att, thumbPath)}
+                                                                attachmentId={att.attachment_id}
+                                                                localMediaPathForCover={hasPath ?? undefined}
+                                                                onOpenAudioPreview={
+                                                                  hasPath ? () => openAudioPreview(att, hasPath) : undefined
+                                                                }
+                                                                title={att.file_name}
+                                                                size={formatBytes(att.size_bytes)}
+                                                              >
+                                                                {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share again">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, true, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                                {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Seed in this server">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        aria-label="Seed in this server"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, false, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                              </ChatMusicAttachmentCard>
+                                                            ) : (
+                                                              <ChatFileRowSlot
+                                                                className="border border-border/50"
+                                                                icon={<IconForCategory cat={fileCategory} className="text-muted-foreground" />}
+                                                                title={att.file_name}
+                                                                size={formatBytes(att.size_bytes)}
+                                                              >
+                                                                {isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Share again">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, true, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                                {!isOwn && shareInChatVisible(att, isOwn, hasPath) && (
+                                                                  <span className="shrink-0">
+                                                                    <Tooltip content="Seed in this server">
+                                                                      <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80 hover:bg-background/90 hover:border-foreground/70"
+                                                                        aria-label="Seed in this server"
+                                                                        onClick={(e) => {
+                                                                          e.stopPropagation()
+                                                                          handleShareAgainAttachment(att, false, hasPath)
+                                                                        }}
+                                                                      >
+                                                                        <Upload className="h-3.5 w-3.5" />
+                                                                      </Button>
+                                                                    </Tooltip>
+                                                                  </span>
+                                                                )}
+                                                              </ChatFileRowSlot>
+                                                            )}
                                                           </div>
                                                         )}
                                                       </div>

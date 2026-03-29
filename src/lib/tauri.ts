@@ -130,6 +130,11 @@ export async function decryptEphemeralChatMessageBySigningPubkey(
   return await invoke('decrypt_ephemeral_chat_message_by_signing_pubkey', { signingPubkey, encryptedPayloadB64 })
 }
 
+export interface AttachmentWaveformPeaks {
+  top: number[]
+  bottom: number[]
+}
+
 export interface AttachmentRegistrationResult {
   attachment_id: string
   sha256: string
@@ -144,6 +149,7 @@ export interface AttachmentRegistrationResult {
   piece_size?: number | null
   piece_count?: number | null
   piece_hashes?: string[]
+  waveform_peaks?: AttachmentWaveformPeaks | null
 }
 
 export interface SharedAttachmentItem {
@@ -172,6 +178,70 @@ export interface AttachmentPieceMetadataResult {
 
 export async function getFileMetadata(path: string): Promise<{ file_name: string; extension: string; size_bytes: number }> {
   return await invoke('get_file_metadata', { path })
+}
+
+/** ffprobe first audio stream (requires ffprobe on PATH). Bits may be null for lossy codecs. */
+export interface AudioStreamInfo {
+  sampleRateHz: number
+  bitsPerSample: number | null
+}
+
+export async function getAudioStreamInfo(path: string): Promise<AudioStreamInfo | null> {
+  try {
+    return await invoke<AudioStreamInfo | null>('get_audio_stream_info', { path })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Writes embedded album art to thumbs/{attachmentId}_music.jpg (same as upload prep) and returns the path, or null if none.
+ * Cached per attachment id so transfer lists / virtualized rows don’t pay one IPC round-trip per mount for the same file.
+ */
+const musicCoverResolved = new Map<string, string | null>()
+const musicCoverInFlight = new Map<string, Promise<string | null>>()
+
+/** Sync read after at least one `ensureMusicCoverThumbnail` for this id in the session. */
+export function getCachedMusicCoverPath(attachmentId: string): string | null | undefined {
+  const id = attachmentId.trim()
+  if (!id) return undefined
+  if (!musicCoverResolved.has(id)) return undefined
+  return musicCoverResolved.get(id)!
+}
+
+/** ~2048px max edge JPEG for overlay; distinct from list/chat `*_music.jpg` prep thumb. */
+export async function ensureMusicCoverPreviewFull(
+  attachmentId: string,
+  mediaPath: string
+): Promise<string | null> {
+  return await invoke('ensure_music_cover_preview_full', { attachmentId, mediaPath })
+}
+
+export async function ensureMusicCoverThumbnail(
+  attachmentId: string,
+  mediaPath: string
+): Promise<string | null> {
+  const id = attachmentId.trim()
+  if (!id) return null
+  if (musicCoverResolved.has(id)) {
+    return musicCoverResolved.get(id)!
+  }
+  let p = musicCoverInFlight.get(id)
+  if (!p) {
+    p = invoke<string | null>('ensure_music_cover_thumbnail', { attachmentId: id, mediaPath })
+      .then((result) => {
+        const v = result ?? null
+        musicCoverResolved.set(id, v)
+        musicCoverInFlight.delete(id)
+        return v
+      })
+      .catch((err) => {
+        musicCoverInFlight.delete(id)
+        throw err
+      })
+    musicCoverInFlight.set(id, p)
+  }
+  return p
 }
 
 /** Computes SHA256 of a file (hex-encoded). For integrity verification before re-sharing. */

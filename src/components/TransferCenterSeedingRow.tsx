@@ -14,7 +14,7 @@ import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { cn } from '../lib/utils'
 import { ServerReplicationIndicator } from './ServerReplicationIndicator'
-import { listImageTierThumbnailPath } from '../lib/transferListMedia'
+import { transferListThumbnailPath } from '../lib/transferListMedia'
 
 export type SeedingGroup = { sha: string; items: SharedAttachmentItem[]; representative: SharedAttachmentItem }
 
@@ -123,34 +123,49 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
   const shaTrim = item.sha256?.trim() ?? ''
   const serverKeys = shaTrim ? (serversBySha.get(shaTrim) ?? []) : []
   const serverCount = serverKeys.length
-  const tierThumb = listImageTierThumbnailPath(item.thumbnail_path ?? undefined, item.file_path ?? undefined)
+  const tierThumb = transferListThumbnailPath(item.file_name, item.thumbnail_path ?? undefined, item.file_path ?? undefined)
 
   return (
     <>
       <div className="group flex items-start gap-2 border-b border-border px-2 py-1.5 transition-colors duration-150 hover:bg-muted/50">
         <FileIcon
           fileName={item.file_name}
-          attachmentId={item.can_share_now && !item.file_path ? item.attachment_id : null}
+          attachmentId={item.attachment_id}
           savedPath={item.file_path ?? undefined}
           thumbnailPath={tierThumb}
           boxSize={32}
           squareThumb
-          onMediaClick={(url, type, attachmentId, fileName) =>
-            setMediaPreview({
-              type,
-              url,
+          onMediaClick={(url, type, attachmentId, fileName, opts) => {
+            const base = {
               attachmentId,
               fileName,
-              source: 'transfers',
+              source: 'transfers' as const,
               originUserId: identity?.user_id ?? '',
               originSentAtIso: item.created_at,
               originDisplayName: identity?.display_name?.trim() || 'You',
               originAvatarDataUrl: profile.avatar_data_url ?? null,
-              localPath: item.file_path ?? null,
               sizeBytes: item.size_bytes,
               sha256: item.sha256,
+            }
+            if (type === 'audio') {
+              const lp = opts?.localPath?.trim() ?? item.file_path?.trim()
+              if (!lp) return
+              setMediaPreview({
+                type: 'audio',
+                localPath: lp,
+                musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
+                ...base,
+              })
+              return
+            }
+            setMediaPreview({
+              type,
+              url,
+              ...base,
+              localPath: item.file_path ?? null,
+              musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
             })
-          }
+          }}
         />
         <div className="min-w-0 flex-1">
           <FilenameEllipsis

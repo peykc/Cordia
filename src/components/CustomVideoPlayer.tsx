@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react'
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Ref,
+} from 'react'
 import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize, Minimize2, ChevronUp, ChevronDown, PictureInPicture, Loader2 } from 'lucide-react'
 import { getCurrent } from '@tauri-apps/api/window'
 import { Button } from './ui/button'
@@ -72,21 +80,29 @@ type Props = {
   onChromeCollapsedChange?: (collapsed: boolean) => void
 }
 
-export function CustomVideoPlayer({
-  src,
-  className,
-  onCanPlay,
-  onAspectRatio,
-  showControls = false,
-  keepControlsWhenPaused = false,
-  autoPlay = false,
-  getScrollTarget,
-  onPlayingChange,
-  onPlaybackEndedChange,
-  collapsibleChrome = false,
-  chromeCollapsed = false,
-  onChromeCollapsedChange,
-}: Props) {
+export type CustomVideoPlayerHandle = {
+  /** Same behavior as the main play / pause / replay control. */
+  togglePlay: () => void
+}
+
+export const CustomVideoPlayer = forwardRef<CustomVideoPlayerHandle, Props>(function CustomVideoPlayer(
+  {
+    src,
+    className,
+    onCanPlay,
+    onAspectRatio,
+    showControls = false,
+    keepControlsWhenPaused = false,
+    autoPlay = false,
+    getScrollTarget,
+    onPlayingChange,
+    onPlaybackEndedChange,
+    collapsibleChrome = false,
+    chromeCollapsed = false,
+    onChromeCollapsedChange,
+  },
+  ref
+) {
   const { setNativeVideoFullscreen } = useVideoFullscreen()
   const videoRef = useRef<HTMLVideoElement>(null)
   const hasAutoPlayedRef = useRef(false)
@@ -547,6 +563,16 @@ export function CustomVideoPlayer({
     if (v.paused) void v.play()
     else v.pause()
   }
+
+  const togglePlayRef = useRef(togglePlay)
+  togglePlayRef.current = togglePlay
+  useImperativeHandle(
+    ref,
+    () => ({
+      togglePlay: () => togglePlayRef.current(),
+    }),
+    []
+  )
 
   const toggleMute = () => setMuted((m) => !m)
 
@@ -1086,4 +1112,6 @@ export function CustomVideoPlayer({
   )
 
   return wrapper
-}
+})
+
+CustomVideoPlayer.displayName = 'CustomVideoPlayer'

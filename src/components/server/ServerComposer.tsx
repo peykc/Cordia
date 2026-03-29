@@ -38,8 +38,8 @@ export interface ServerComposerProps {
   onRemoveStagedAttachment: (stagedId: string) => void
   onToggleStagedSpoiler: (stagedId: string) => void
   onMediaPreview: (opts: {
-    type: 'image' | 'video'
-    url: string
+    type: 'image' | 'video' | 'audio'
+    url: string | null
     fileName: string
     localPath: string
     sizeBytes: number
@@ -87,7 +87,19 @@ function ServerComposerImpl({
                       fileName={att.file_name}
                       attachmentId={null}
                       savedPath={att.path}
-                      onMediaClick={(url, type, _attachmentId, fileName) => {
+                      onMediaClick={(url, type, _attachmentId, fileName, opts) => {
+                        if (type === 'audio') {
+                          const lp = opts?.localPath?.trim() ?? att.path
+                          if (!lp) return
+                          onMediaPreview({
+                            type: 'audio',
+                            url: null,
+                            fileName: fileName ?? att.file_name,
+                            localPath: lp,
+                            sizeBytes: att.size_bytes,
+                          })
+                          return
+                        }
                         if (isMedia) {
                           onMediaPreview({
                             type: type as 'image' | 'video',
@@ -107,7 +119,7 @@ function ServerComposerImpl({
                           {att.ready
                             ? formatBytes(att.size_bytes)
                             : att.preparePercent != null
-                              ? `Preparing ${att.preparePercent}%`
+                              ? `Preparing ${Math.round(att.preparePercent)}%`
                               : 'Preparing…'}
                         </span>
                       </div>

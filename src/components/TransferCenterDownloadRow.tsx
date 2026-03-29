@@ -94,24 +94,45 @@ function TransferCenterDownloadRowInner({
     : !omitProgressBar && !inaccessible && (status === 'transferring' || status === 'completed')
 
   const onPreview = useCallback(
-    (url: string | null, type: 'image' | 'video', attachmentId?: string, fileName?: string) => {
+    (
+      url: string | null,
+      type: 'image' | 'video' | 'audio',
+      attachmentId?: string,
+      fileName?: string,
+      opts?: { musicCoverFullSourcePath?: string | null; localPath?: string | null }
+    ) => {
       const uid = row.from_user_id
       const isYou = uid === identity?.user_id
       const rp = remoteProfiles.getProfile(uid)
       const sentFromMsg = findMessageById(row.message_id)?.sent_at
-      setMediaPreview({
-        type,
-        url,
+      const base = {
         attachmentId,
         fileName,
-        source: 'transfers',
+        source: 'transfers' as const,
         originUserId: uid,
         originSentAtIso: sentFromMsg ?? row.created_at,
         originDisplayName: fromLabel,
         originAvatarDataUrl: isYou ? profile.avatar_data_url ?? null : rp?.avatar_data_url ?? null,
-        localPath: row.saved_path ?? null,
         sizeBytes: row.size_bytes,
-        sha256: undefined,
+        sha256: undefined as string | undefined,
+      }
+      if (type === 'audio') {
+        const lp = opts?.localPath?.trim() ?? row.saved_path?.trim()
+        if (!lp) return
+        setMediaPreview({
+          type: 'audio',
+          localPath: lp,
+          musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
+          ...base,
+        })
+        return
+      }
+      setMediaPreview({
+        type,
+        url,
+        ...base,
+        localPath: row.saved_path ?? null,
+        musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
       })
     },
     [
@@ -140,6 +161,7 @@ function TransferCenterDownloadRowInner({
     >
       <FileIcon
         fileName={row.file_name}
+        attachmentId={row.attachment_id}
         savedPath={inaccessible ? undefined : row.saved_path}
         boxSize={compact && !activeStrip ? 28 : 32}
         squareThumb

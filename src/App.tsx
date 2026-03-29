@@ -28,6 +28,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { TransferCenterModal } from './components/TransferCenterModal'
 import { NotificationsModal } from './components/NotificationsModal'
 import { MediaPreviewModal } from './components/MediaPreviewModal'
+import { MediaPreviewModalAudio } from './components/MediaPreviewModalAudio'
 import { ThemeProvider } from './contexts/ThemeContext'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
@@ -77,11 +78,21 @@ function MediaPreviewRoot() {
   useEffect(() => {
     const prev = previewRef.current
     if (!prev) return
-    if (prev.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url)
+    if (prev.type !== 'audio' && prev.url?.startsWith('blob:')) URL.revokeObjectURL(prev.url)
     setMediaPreview(null)
   }, [location.pathname, setMediaPreview])
 
   if (!mediaPreview) return null
+  if (mediaPreview.type === 'audio') {
+    return (
+      <MediaPreviewModalAudio
+        {...mediaPreview}
+        onClose={() => {
+          setMediaPreview(null)
+        }}
+      />
+    )
+  }
   return (
     <MediaPreviewModal
       {...mediaPreview}

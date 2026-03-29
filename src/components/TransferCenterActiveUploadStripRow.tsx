@@ -12,7 +12,7 @@ import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
-import { listImageTierThumbnailPath } from '../lib/transferListMedia'
+import { transferListThumbnailPath } from '../lib/transferListMedia'
 import { cn } from '../lib/utils'
 
 export type ActiveUploadGroup = { attachmentId: string; transfers: AttachmentTransferState[] }
@@ -131,27 +131,52 @@ function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
   const sb = shared?.size_bytes
   const sizePart = sb != null && Number.isFinite(Number(sb)) ? formatBytes(sb) : '—'
 
-  const tierThumb = listImageTierThumbnailPath(shared?.thumbnail_path ?? undefined, shared?.file_path ?? undefined)
+  const tierThumb = transferListThumbnailPath(
+    fileName,
+    shared?.thumbnail_path ?? undefined,
+    shared?.file_path ?? undefined
+  )
 
   const onPreview = useCallback(
-    (url: string | null, type: 'image' | 'video', aid?: string, fn?: string) => {
+    (
+      url: string | null,
+      type: 'image' | 'video' | 'audio',
+      aid?: string,
+      fn?: string,
+      opts?: { musicCoverFullSourcePath?: string | null; localPath?: string | null }
+    ) => {
       const uid = primary.from_user_id
       const isYou = uid === identity?.user_id
       const rp = remoteProfiles.getProfile(uid)
       const sentAt = findMessageById(primary.message_id)?.sent_at ?? new Date().toISOString()
-      setMediaPreview({
-        type,
-        url,
+      const base = {
         attachmentId: aid,
         fileName: fn ?? fileName,
-        source: 'transfers',
+        source: 'transfers' as const,
         originUserId: uid,
         originSentAtIso: sentAt,
         originDisplayName: isYou ? identity?.display_name ?? 'You' : rp?.display_name?.trim() || `User ${uid.slice(0, 8)}`,
         originAvatarDataUrl: isYou ? profile.avatar_data_url ?? null : rp?.avatar_data_url ?? null,
-        localPath: shared?.file_path ?? null,
         sizeBytes: shared?.size_bytes,
         sha256: shared?.sha256 ?? primary.sha256,
+      }
+      if (type === 'audio') {
+        const lp = opts?.localPath?.trim() ?? shared?.file_path?.trim()
+        if (!lp) return
+        setMediaPreview({
+          type: 'audio',
+          localPath: lp,
+          musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
+          ...base,
+        })
+        return
+      }
+      setMediaPreview({
+        type,
+        url,
+        ...base,
+        localPath: shared?.file_path ?? null,
+        musicCoverFullSourcePath: opts?.musicCoverFullSourcePath ?? null,
       })
     },
     [
@@ -216,7 +241,7 @@ function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
       <div className="group flex items-center gap-2 border-b border-border px-2 py-1 transition-colors duration-150 hover:bg-muted/50">
         <FileIcon
           fileName={fileName}
-          attachmentId={shared?.can_share_now && !shared.file_path ? shared.attachment_id : null}
+          attachmentId={shared?.attachment_id ?? null}
           savedPath={shared?.file_path ?? undefined}
           thumbnailPath={tierThumb}
           boxSize={32}

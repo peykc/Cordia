@@ -2,6 +2,20 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from 're
 
 export type MediaPreviewSource = 'chat' | 'transfers'
 
+/** One audio file in a multi-attachment chat message (skip prev/next in audio modal). */
+export type ChatAudioGalleryItem = {
+  attachmentId: string
+  localPath: string
+  /** List-style cover for carousel thumb (prep path or embedded data URL); null → music icon. */
+  thumbnailUrl?: string | null
+  fileName?: string
+  sizeBytes?: number
+  sha256?: string
+  musicCoverFullSourcePath?: string | null
+  showShareInChat?: boolean
+  onShareInChat?: () => void | Promise<void>
+}
+
 /** One slot in a multi-attachment chat message gallery (images/videos only). */
 export type ChatMediaGalleryItem = {
   type: 'image' | 'video'
@@ -15,13 +29,12 @@ export type ChatMediaGalleryItem = {
   aspectH?: number
   /** Thumbnail for carousel; null shows a placeholder. */
   thumbnailUrl: string | null
+  musicCoverFullSourcePath?: string | null
   showShareInChat?: boolean
   onShareInChat?: () => void | Promise<void>
 }
 
-export type MediaPreviewState = {
-  type: 'image' | 'video'
-  url: string | null
+type MediaPreviewCommon = {
   attachmentId?: string
   fileName?: string
   /** Where the preview was opened (hides share-in-chat in transfers). */
@@ -36,17 +49,44 @@ export type MediaPreviewState = {
   localPath?: string | null
   sizeBytes?: number
   sha256?: string
-  aspectW?: number
-  aspectH?: number
   showShareInChat?: boolean
   /** Set when source === 'chat' && showShareInChat; runs share/reseed for current server. */
   onShareInChat?: () => void | Promise<void>
-  /** Chat-only: 2+ media attachments in one message — prev/next + thumbnail strip. */
-  chatMediaGallery?: {
-    items: ChatMediaGalleryItem[]
-    startIndex: number
-  }
-} | null
+}
+
+export type MediaPreviewState =
+  | ({
+      type: 'image' | 'video'
+      url: string | null
+      /**
+       * Transfers: open embedded album art from this audio file at full resolution in the image viewer
+       * (`thumbs/{id}_music_full.jpg`), not the list preview (`url`).
+       */
+      musicCoverFullSourcePath?: string | null
+      aspectW?: number
+      aspectH?: number
+      /** Chat-only: 2+ media attachments in one message — prev/next + thumbnail strip. */
+      chatMediaGallery?: {
+        items: ChatMediaGalleryItem[]
+        startIndex: number
+      }
+    } & MediaPreviewCommon)
+  | ({
+      type: 'audio'
+      /** Absolute path to the audio file on disk (playback + optional cover extraction). */
+      localPath: string
+      /**
+       * When set, full-res embedded cover is extracted from this path (same as transfers image flow).
+       * When absent, the modal shows the music icon as art.
+       */
+      musicCoverFullSourcePath?: string | null
+      /** Chat-only: 2+ audio attachments in one message — skip prev/next beside play (Plexamp-style). */
+      chatAudioGallery?: {
+        items: ChatAudioGalleryItem[]
+        startIndex: number
+      }
+    } & MediaPreviewCommon)
+  | null
 
 type MediaPreviewContextType = {
   mediaPreview: MediaPreviewState

@@ -12,7 +12,7 @@ import {
   Play,
 } from 'lucide-react'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
-import { readAttachmentBytes } from '../lib/tauri'
+import { ensureMusicCoverThumbnail, getCachedMusicCoverPath, readAttachmentBytes } from '../lib/tauri'
 import { getFileTypeFromExt, type FileTypeCategory } from '../lib/fileType'
 import { cn } from '../lib/utils'
 
@@ -25,10 +25,19 @@ type Props = {
   attachmentId?: string | null
   /** For completed downloads or uploads: use local path for file/thumbnail */
   savedPath?: string | null
-  /** Pre-generated thumbnail path (from ffmpeg) for video/image when savedPath is the main file */
+  /** Video/image: ffmpeg thumb or tiered image path. Music: `thumbs/{id}_music.jpg` when already prepared (same file as chat). */
   thumbnailPath?: string | null
-  /** Called when image/video thumbnail is clicked. For video with attachmentId, url is null and attachmentId is provided for deferred loading. */
-  onMediaClick?: (url: string | null, type: 'image' | 'video', attachmentId?: string, fileName?: string) => void
+  /**
+   * Called when image/video thumbnail is clicked. For video with attachmentId, url is null and attachmentId is provided for deferred loading.
+   * For music with local audio + attachmentId, pass `opts.musicCoverFullSourcePath` so the overlay loads full-res embed (not the list thumb `url`).
+   */
+  onMediaClick?: (
+    url: string | null,
+    type: 'image' | 'video' | 'audio',
+    attachmentId?: string,
+    fileName?: string,
+    opts?: { musicCoverFullSourcePath?: string | null; /** When `attachmentId` is missing (e.g. composer staging) */ localPath?: string | null }
+  ) => void
   className?: string
   /** Override box size in pixels (default THUMB_SIZE) */
   boxSize?: number
@@ -73,14 +82,83 @@ export function FileIcon({
   const category = getFileTypeFromExt(fileName)
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  /** Stale `thumbnailPath` in DB can point at a missing file — skip thumb and use `ensure` like chat. */
+  const [musicThumbPathFailed, setMusicThumbPathFailed] = useState(false)
+  /** True while the current `mediaUrl` came from `thumbnailPath` (so `onError` can retry with ensure). */
+  const musicCoverFromThumbRef = useRef(false)
   const blobUrlRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (category !== 'image' && category !== 'video') return
+    setMusicThumbPathFailed(false)
+  }, [thumbnailPath, attachmentId, savedPath, fileName])
+
+  useEffect(() => {
+    if (category !== 'image' && category !== 'video' && category !== 'music') return
 
     let cancelled = false
 
     const resolve = async () => {
+      if (category === 'music') {
+        const thumb = thumbnailPath?.trim()
+        if (thumb && !musicThumbPathFailed) {
+          try {
+            musicCoverFromThumbRef.current = true
+            const url = convertFileSrc(thumb)
+            if (!cancelled) setMediaUrl(url)
+          } catch {
+            musicCoverFromThumbRef.current = false
+            if (!cancelled) {
+              setMediaUrl(null)
+              setMusicThumbPathFailed(true)
+            }
+          }
+          return
+        }
+        musicCoverFromThumbRef.current = false
+        if (!cancelled) setMediaUrl(null)
+        const aid = attachmentId?.trim()
+        const sp = savedPath?.trim()
+        if (aid && sp) {
+          const cached = getCachedMusicCoverPath(aid)
+          if (cached !== undefined) {
+            if (!cancelled) {
+              if (cached) {
+                try {
+                  setMediaUrl(convertFileSrc(cached))
+                } catch {
+                  setMediaUrl(null)
+                }
+              } else {
+                setMediaUrl(null)
+              }
+            }
+            return
+          }
+          setLoading(true)
+          try {
+            const p = await ensureMusicCoverThumbnail(aid, sp)
+            if (!cancelled) {
+              if (p) {
+                try {
+                  setMediaUrl(convertFileSrc(p))
+                } catch {
+                  setMediaUrl(null)
+                }
+              } else {
+                setMediaUrl(null)
+              }
+            }
+          } catch {
+            if (!cancelled) setMediaUrl(null)
+          } finally {
+            if (!cancelled) setLoading(false)
+          }
+        } else {
+          if (!cancelled) setMediaUrl(null)
+        }
+        return
+      }
+
       if (category === 'image') {
         const path = thumbnailPath || savedPath
         if (path) {
@@ -150,7 +228,7 @@ export function FileIcon({
         blobUrlRef.current = null
       }
     }
-  }, [category, savedPath, thumbnailPath, attachmentId])
+  }, [category, savedPath, thumbnailPath, attachmentId, musicThumbPathFailed])
 
   const boxCls = cn(
     'shrink-0 flex items-center justify-center overflow-hidden bg-muted/50',
@@ -233,12 +311,88 @@ export function FileIcon({
     )
   }
 
-  // Fallback: icon
+  // Music: same `thumbs/{id}_music.jpg` as chat (thumbnailPath or ensure from local audio); else music icon
+  if (category === 'music' && mediaUrl && !loading) {
+    return (
+      <button
+        type="button"
+        className={`${boxCls} relative cursor-pointer group`}
+        style={{ width: boxSize, height: boxSize }}
+        onClick={() => {
+          const sp = savedPath?.trim()
+          const aid = attachmentId?.trim()
+          if (sp && aid) {
+            onMediaClick?.(null, 'audio', aid, fileName, { musicCoverFullSourcePath: sp, localPath: sp })
+          } else {
+            onMediaClick?.(mediaUrl, 'image', undefined, fileName)
+          }
+        }}
+      >
+        <img
+          src={mediaUrl}
+          alt=""
+          className="h-full w-full object-cover"
+          draggable={false}
+          onError={() => {
+            setMediaUrl(null)
+            if (musicCoverFromThumbRef.current) {
+              musicCoverFromThumbRef.current = false
+              setMusicThumbPathFailed(true)
+            }
+          }}
+        />
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+        />
+      </button>
+    )
+  }
+
+  // Fallback: icon (music with local file opens audio modal; icon as cover when list had no art)
+  if (category === 'music') {
+    const sp = savedPath?.trim()
+    const aid = attachmentId?.trim()
+    if (sp && aid) {
+      return (
+        <button
+          type="button"
+          className={`${boxCls} relative cursor-pointer group`}
+          style={{ width: boxSize, height: boxSize }}
+          onClick={() =>
+            onMediaClick?.(null, 'audio', aid, fileName, { musicCoverFullSourcePath: null, localPath: sp })
+          }
+        >
+          <IconForCategory cat="music" className="text-muted-foreground" />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+          />
+        </button>
+      )
+    }
+    if (sp && !aid) {
+      return (
+        <button
+          type="button"
+          className={`${boxCls} relative cursor-pointer group`}
+          style={{ width: boxSize, height: boxSize }}
+          onClick={() =>
+            onMediaClick?.(null, 'audio', undefined, fileName, { musicCoverFullSourcePath: null, localPath: sp })
+          }
+        >
+          <IconForCategory cat="music" className="text-muted-foreground" />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+          />
+        </button>
+      )
+    }
+  }
+
   return (
-    <div
-      className={boxCls}
-      style={{ width: boxSize, height: boxSize }}
-    >
+    <div className={boxCls} style={{ width: boxSize, height: boxSize }}>
       <IconForCategory cat={category} className="text-muted-foreground" />
     </div>
   )

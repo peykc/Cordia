@@ -34,6 +34,12 @@ import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrent } from '@tauri-apps/api/window'
 
+/** Precomputed in native attachment prep (FFmpeg); travels with the message so clients skip decoding audio for the canvas. */
+export type WaveformPeaksPayload = {
+  top: number[]
+  bottom: number[]
+}
+
 export interface EphemeralAttachmentMeta {
   attachment_id: string
   file_name: string
@@ -46,6 +52,10 @@ export interface EphemeralAttachmentMeta {
   aspect_ratio_h?: number
   /** Local path for preview while bundling (before SHA/registration completes). Sender-only. */
   preview_path?: string
+  /** When set (audio attachments from Cordia prep), waveform UI uses this instead of Web Audio decode. */
+  waveform_peaks?: WaveformPeaksPayload
+  /** Embedded album art from prep (data URL); sent with the message so receivers can show it without local FFmpeg. */
+  music_cover_data_url?: string
 }
 
 export interface EphemeralChatMessage {

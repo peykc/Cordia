@@ -72,6 +72,22 @@ function getMediaDimensions(
   })
 }
 
+/** Poll until the attachment index reports full prep (SHA, pieces, waveform/thumb) so send never races a half-ready record. */
+async function waitForAttachmentRecordReady(
+  attachmentId: string,
+  opts?: { timeoutMs?: number; intervalMs?: number }
+): Promise<Awaited<ReturnType<typeof getAttachmentRecord>>> {
+  const timeoutMs = opts?.timeoutMs ?? 120_000
+  const intervalMs = opts?.intervalMs ?? 100
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const rec = await getAttachmentRecord(attachmentId)
+    if (rec?.status === 'ready' && rec.sha256) return rec
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  return getAttachmentRecord(attachmentId)
+}
+
 /** Strip to 8-char code for display/copy (XXXX-XXXX), same pattern as friend code. */
 function normalizeInviteCode(code: string): string {
   return (code ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
@@ -494,7 +510,9 @@ function ServerViewPage() {
         setStagedAttachments((prev) =>
           prev.some((a) => a.attachment_id === attachment_id)
             ? prev.map((a) =>
-                a.attachment_id === attachment_id ? { ...a, preparePercent: Math.min(100, percent) } : a
+                a.attachment_id === attachment_id
+                  ? { ...a, preparePercent: Math.min(100, Math.round(percent)) }
+                  : a
               )
             : prev
         )
@@ -557,7 +575,7 @@ function ServerViewPage() {
           })),
           text: text || undefined,
         })
-        const records = await Promise.all(attachmentIds.map((id) => getAttachmentRecord(id)))
+        const records = await Promise.all(attachmentIds.map((id) => waitForAttachmentRecordReady(id)))
         const isMediaFile = (fileName: string) =>
           isMediaType(getFileTypeFromExt(fileName) as Parameters<typeof isMediaType>[0])
         const dimensions = await Promise.all(
@@ -1122,6 +1140,25 @@ function ServerViewPage() {
                   onToggleStagedSpoiler={handleToggleStagedSpoiler}
                   onMediaPreview={({ type, url, fileName, localPath, sizeBytes }) => {
                     if (!identity?.user_id) return
+                    if (type === 'audio') {
+                      const lp = localPath?.trim()
+                      if (!lp) return
+                      setMediaPreview({
+                        type: 'audio',
+                        localPath: lp,
+                        attachmentId: undefined,
+                        fileName,
+                        source: 'chat',
+                        originUserId: identity.user_id,
+                        originSentAtIso: new Date().toISOString(),
+                        originDisplayName: identity.display_name ?? 'You',
+                        originAvatarDataUrl: profile.avatar_data_url ?? null,
+                        musicCoverFullSourcePath: null,
+                        sizeBytes,
+                        showShareInChat: false,
+                      })
+                      return
+                    }
                     setMediaPreview({
                       type,
                       url,
