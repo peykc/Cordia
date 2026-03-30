@@ -380,7 +380,8 @@ export function MediaPreviewModalAudio({
     bitsPerSample: number | null
   } | null>(null)
 
-  const layoutRef = useRef<HTMLDivElement | null>(null)
+  /** Media letterbox (available region below toolbar) — not the player chrome box, so tier/cover don’t collapse before cover/waveform load. */
+  const letterboxMeasureRef = useRef<HTMLDivElement | null>(null)
   const [layoutSize, setLayoutSize] = useState({ w: 0, h: 0 })
 
   const [volume, setVolume] = useState(1)
@@ -454,16 +455,15 @@ export function MediaPreviewModalAudio({
     armPendingPlay()
   }, [waveformPlaybackReady, audioSrc, attachmentId, armPendingPlay])
 
-  const setMergedRefs = useCallback(
+  const setPlayerRootRef = useCallback(
     (el: HTMLDivElement | null) => {
-      layoutRef.current = el
       ;(cardRootRef as MutableRefObject<HTMLDivElement | null>).current = el
     },
     [cardRootRef]
   )
 
   useLayoutEffect(() => {
-    const el = layoutRef.current
+    const el = letterboxMeasureRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
       const cr = entries[0]?.contentRect
@@ -1012,28 +1012,37 @@ export function MediaPreviewModalAudio({
           onKeyDown={(e) => e.key === 'Enter' && onClose()}
         />
         <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pointer-events-none">
+          {/*
+            Letterbox around the player is pointer-events-none so clicks reach the backdrop (same as image/video modal).
+            Only the centered player chrome receives hits.
+          */}
           <div
-            ref={setMergedRefs}
-            className={cn(
-              'relative z-10 flex min-h-0 min-w-0 flex-1 overflow-hidden px-3 py-3 sm:px-4 pointer-events-auto',
-              isLandscape
-                ? 'flex-row items-center justify-center gap-4'
-                : 'flex-col items-center justify-center px-4 sm:px-6'
-            )}
-            onClick={chromeStop}
+            ref={letterboxMeasureRef}
+            className="flex min-h-0 min-w-0 w-full flex-1 items-center justify-center overflow-hidden px-3 py-3 sm:px-4 pointer-events-none"
           >
-            {shouldLoadMedia && audioSrc ? (
-              <audio
-                ref={audioRef}
-                src={audioSrc}
-                preload={preloadAttr}
-                className="hidden"
-                onLoadedMetadata={onAudioLoadedMetadata}
-                onCanPlay={onAudioCanPlay}
-              />
-            ) : null}
+            <div
+              ref={setPlayerRootRef}
+              className={cn(
+                'relative z-10 flex w-full max-h-full min-h-0 min-w-0 justify-center overflow-hidden pointer-events-auto',
+                isLandscape
+                  ? 'max-w-6xl flex-row items-center gap-4'
+                  : 'max-w-xl flex-col items-center px-1 sm:px-2'
+              )}
+              onClick={chromeStop}
+            >
+              {shouldLoadMedia && audioSrc ? (
+                <audio
+                  ref={audioRef}
+                  src={audioSrc}
+                  preload={preloadAttr}
+                  className="hidden"
+                  onLoadedMetadata={onAudioLoadedMetadata}
+                  onCanPlay={onAudioCanPlay}
+                />
+              ) : null}
 
-            {isLandscape ? landscapePlayerRow : portraitPlayerColumn}
+              {isLandscape ? landscapePlayerRow : portraitPlayerColumn}
+            </div>
           </div>
 
           {hasAudioGallery && galleryItems && (
