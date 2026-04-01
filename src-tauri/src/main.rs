@@ -460,12 +460,18 @@ fn is_image_ext(ext: &str) -> bool {
     ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "tiff", "tif"].contains(&e.as_str())
 }
 
+/// Extensions treated as audio for prep (waveform, cover) and routing. Keep in sync with `MUSIC_EXT` in `src/lib/fileType.ts`.
+const AUDIO_FILE_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "m4b", "m4p", "aac", "aiff", "aif", "wma", "alac",
+    "ac3", "eac3", "ec3",
+    "amr", "awb", "3ga",
+    "ape", "tta", "wv", "dsf", "dff",
+    "mka", "caf", "mp2", "spx", "mpc", "ofr",
+];
+
 fn is_audio_ext(ext: &str) -> bool {
     let e = ext.to_lowercase();
-    [
-        "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "aiff", "aif", "wma", "alac",
-    ]
-    .contains(&e.as_str())
+    AUDIO_FILE_EXTENSIONS.iter().any(|&a| a == e.as_str())
 }
 
 fn extract_image_thumbnail(source: &PathBuf, output_path: &PathBuf, max_edge: i32) -> bool {

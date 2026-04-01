@@ -27,6 +27,15 @@ export const SKELETON_HIGHLIGHT_SIGMA = 10
 export const SKELETON_HIGHLIGHT_SHARPNESS = 64
 export const SKELETON_INVERSE_SWEEP = false
 
+/**
+ * Cap redraw rate for the animated loading skeleton (still smooth motion, not static).
+ * Avoids 60fps × N cards during scroll; tune 20–30 for feel vs cost.
+ */
+export const LOADING_WAVEFORM_MAX_FPS = 24
+
+/** While playing, sync React state (time labels, aria) at most this often; canvas uses refs + RAF in between. */
+export const WAVEFORM_TRANSPORT_UI_SYNC_MS = 80
+
 /** Start loading audio / client waveform only when near viewport (reduces N× decode when many tracks). */
 export const LAZY_MEDIA_ROOT_MARGIN = '120px'
 

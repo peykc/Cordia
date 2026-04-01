@@ -18,8 +18,47 @@ const VIDEO_EXT = new Set([
   'mp4', 'mov', 'webm', 'avi', 'mkv', 'm4v', 'wmv', 'flv', 'mpeg', 'mpg', '3gp', 'ogv',
 ])
 
+/**
+ * Treat as music in UI (icons, chat cards, audio preview). Keep in sync with `is_audio_ext` in `src-tauri/src/main.rs`
+ * (attachment prep: waveform, embedded cover). Formats FFmpeg / WebView can usually decode.
+ */
 const MUSIC_EXT = new Set([
-  'mp3', 'flac', 'wav', 'opus', 'ogg', 'm4a', 'aac', 'wma', 'oga', 'webm', 'aiff', 'aif',
+  // Common
+  'mp3',
+  'flac',
+  'wav',
+  'opus',
+  'ogg',
+  'oga',
+  'm4a',
+  'm4b',
+  'm4p',
+  'aac',
+  'wma',
+  'alac',
+  'aiff',
+  'aif',
+  // Dolby / surround
+  'ac3',
+  'eac3',
+  'ec3',
+  // Voice / mobile
+  'amr',
+  'awb',
+  '3ga',
+  // Lossless / hi-res
+  'ape',
+  'tta',
+  'wv',
+  'dsf',
+  'dff',
+  // Other containers / codecs
+  'mka',
+  'caf',
+  'mp2',
+  'spx',
+  'mpc',
+  'ofr',
 ])
 
 const PROGRAM_EXT = new Set([

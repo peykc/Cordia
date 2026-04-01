@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { getAttachmentRecord } from '../../lib/tauri'
 import type { WaveformPeaksPayload } from '../../contexts/EphemeralMessagesContext'
 import {
   LAZY_MEDIA_ROOT_MARGIN,
+  LAZY_CHAT_COVER_ROOT_MARGIN,
+  LOADING_WAVEFORM_MAX_FPS,
   SCRUB_COMPLETION_RATIO,
+  WAVEFORM_TRANSPORT_UI_SYNC_MS,
   SCRUB_END_EPSILON_SEC,
   SEEK_NUDGE_BACK_SEC,
   SEEK_NOOP_EPS_SEC,
@@ -63,6 +66,21 @@ export type UseMusicWaveformOptions = {
   compact?: boolean
   waveHeight?: number
   onDecodedSampleRate?: (sampleRate: number) => void
+  /**
+   * Chat: shared `<audio>` mounted outside the virtualized list so playback survives row unmount.
+   * When set, this instance does not render a local `<audio>` tag; all transport uses this ref.
+   */
+  sharedAudioRef?: RefObject<HTMLAudioElement | null> | null
+  /**
+   * Chat: bind shared element and start playback; return that element for use in the same synchronous turn (flushSync).
+   */
+  requestChatPlayback?: (() => HTMLAudioElement | null) | null
+  /**
+   * Chat: bind shared element without playing; return element for the same synchronous turn after flushSync.
+   */
+  claimPlaybackForScrub?: (() => HTMLAudioElement | null) | null
+  /** Cap canvas backing store DPR (e.g. `1` in chat lists on retina — big win vs 100 bars × 2× pixels). */
+  maxCanvasDpr?: number
 }
 
 export function useMusicWaveform({
@@ -75,9 +93,17 @@ export function useMusicWaveform({
   compact = false,
   waveHeight: waveHOverride,
   onDecodedSampleRate,
+  sharedAudioRef = null,
+  requestChatPlayback = null,
+  claimPlaybackForScrub = null,
+  maxCanvasDpr,
 }: UseMusicWaveformOptions) {
   const cardRootRef = useRef<HTMLDivElement | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const internalAudioRef = useRef<HTMLAudioElement | null>(null)
+  const audioRef = sharedAudioRef ?? internalAudioRef
+  /** Always read the real media node; stale useCallbacks (e.g. window pointerup after chat migrate) must not use a captured `audioRef`. */
+  const liveAudioElRef = useRef<() => HTMLAudioElement | null>(() => null)
+  liveAudioElRef.current = () => audioRef.current
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const waveWrapRef = useRef<HTMLDivElement | null>(null)
   const pendingPlayRef = useRef(false)
@@ -87,6 +113,8 @@ export function useMusicWaveform({
   const scrubEndRafRef = useRef<number | null>(null)
 
   const [shouldLoadMedia, setShouldLoadMedia] = useState(() => lazyLoadMediaProp === false)
+  /** When false, loading skeleton RAF pauses (card off-screen) — keeps animation when visible. */
+  const [skeletonInView, setSkeletonInView] = useState(true)
   const [wantsPlaybackBuffer, setWantsPlaybackBuffer] = useState(false)
 
   const [playing, setPlaying] = useState(false)
@@ -106,8 +134,11 @@ export function useMusicWaveform({
   const lastCanvasGeomRef = useRef<{ w: number; h: number; dpr: number }>({ w: 0, h: 0, dpr: 0 })
   const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null)
   const canvasElRef = useRef<HTMLCanvasElement | null>(null)
+  const lastTransportUiSyncRef = useRef(0)
 
   const displayProgress = dragProgress ?? progress
+  const displayProgressRef = useRef(displayProgress)
+  displayProgressRef.current = displayProgress
 
   const seeded = useMemo(() => seededSplitPeaks(waveformSeed, WAVE_BARS), [waveformSeed])
 
@@ -140,7 +171,7 @@ export function useMusicWaveform({
   const flushPendingPlay = useCallback(() => {
     if (!pendingPlayRef.current) return
     if (gatePlayUntilWaveformReady && !waveformPlaybackReady) return
-    const el = audioRef.current
+    const el = liveAudioElRef.current()
     if (!el) return
     if (el.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return
     pendingPlayRef.current = false
@@ -173,16 +204,17 @@ export function useMusicWaveform({
     isDraggingRef.current = false
     setDragProgress(null)
     cancelScrubEndSeek()
-    const el = audioRef.current
-    if (el) {
-      el.pause()
-      setPlaying(false)
-      playbackEndedRef.current = false
-      setPlaybackEnded(false)
-      setProgress(0)
-      setCurrentSec(0)
-      setDurationSec(0)
-    }
+    const el = liveAudioElRef.current()
+    if (!el) return
+    // Shared chat transport: never pause/reset the global element on row remount or identity churn.
+    if (sharedAudioRef) return
+    el.pause()
+    setPlaying(false)
+    playbackEndedRef.current = false
+    setPlaybackEnded(false)
+    setProgress(0)
+    setCurrentSec(0)
+    setDurationSec(0)
   }, [audioSrc, waveformSeed, lazyLoadMediaProp, cancelScrubEndSeek])
 
   useEffect(() => {
@@ -199,6 +231,19 @@ export function useMusicWaveform({
     io.observe(root)
     return () => io.disconnect()
   }, [audioSrc, lazyLoadMediaProp])
+
+  useEffect(() => {
+    const root = cardRootRef.current
+    if (!root || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver(
+      (entries) => {
+        setSkeletonInView(entries.some((e) => e.isIntersecting))
+      },
+      { root: null, rootMargin: LAZY_CHAT_COVER_ROOT_MARGIN, threshold: 0 }
+    )
+    io.observe(root)
+    return () => io.disconnect()
+  }, [])
 
   const syncTimeFromAudio = useCallback((el: HTMLAudioElement) => {
     const d = el.duration
@@ -222,7 +267,7 @@ export function useMusicWaveform({
         el.currentTime = 0
         scrubEndRafRef.current = requestAnimationFrame(() => {
           scrubEndRafRef.current = null
-          if (audioRef.current !== el) return
+          if (liveAudioElRef.current() !== el) return
           const d2 = el.duration
           if (!Number.isFinite(d2) || d2 <= 0) return
           el.currentTime = Math.max(0, d2 - SCRUB_END_EPSILON_SEC)
@@ -247,7 +292,7 @@ export function useMusicWaveform({
         if (isScrubEndSnap && Number.isFinite(d) && d > 0) {
           runSeekNearEnd(el, d)
           queueMicrotask(() => {
-            if (audioRef.current !== el) return
+            if (liveAudioElRef.current() !== el) return
             syncTimeFromAudio(el)
           })
           return
@@ -256,7 +301,7 @@ export function useMusicWaveform({
       }
       el.currentTime = seconds
       queueMicrotask(() => {
-        if (audioRef.current !== el) return
+        if (liveAudioElRef.current() !== el) return
         syncTimeFromAudio(el)
       })
     },
@@ -291,14 +336,59 @@ export function useMusicWaveform({
   }, [flushPendingPlay])
 
   useEffect(() => {
+    if (!sharedAudioRef || !shouldLoadMedia) return
+    const el = sharedAudioRef.current
+    if (!el) return
+    const onMeta = () => {
+      const a = sharedAudioRef.current
+      if (!a) return
+      onAudioLoadedMetadata({ currentTarget: a } as React.SyntheticEvent<HTMLAudioElement>)
+    }
+    const onCan = () => onAudioCanPlay()
+    el.addEventListener('loadedmetadata', onMeta)
+    el.addEventListener('canplay', onCan)
+    if (el.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      syncTimeFromAudio(el)
+      const pending = pendingSeekRatioRef.current
+      if (pending != null && Number.isFinite(el.duration) && el.duration > 0) {
+        commitSeekRatio(el, pending)
+        pendingSeekRatioRef.current = null
+      }
+      flushPendingPlay()
+    }
+    return () => {
+      el.removeEventListener('loadedmetadata', onMeta)
+      el.removeEventListener('canplay', onCan)
+    }
+  }, [
+    sharedAudioRef,
+    shouldLoadMedia,
+    onAudioLoadedMetadata,
+    onAudioCanPlay,
+    syncTimeFromAudio,
+    commitSeekRatio,
+    flushPendingPlay,
+  ])
+
+  useEffect(() => {
     if (!shouldLoadMedia) return
-    const el = audioRef.current
+    const el = liveAudioElRef.current()
     if (!el) return
     let rafId = 0
 
     const tick = () => {
       if (!isDraggingRef.current) {
-        syncTimeFromAudio(el)
+        const d = el.duration
+        const t = el.currentTime
+        if (Number.isFinite(d) && d > 0 && Number.isFinite(t)) {
+          displayProgressRef.current = t / d
+        }
+        drawWaveformRef.current()
+        const nowMs = performance.now()
+        if (nowMs - lastTransportUiSyncRef.current >= WAVEFORM_TRANSPORT_UI_SYNC_MS) {
+          lastTransportUiSyncRef.current = nowMs
+          syncTimeFromAudio(el)
+        }
       }
       if (!el.paused) {
         rafId = requestAnimationFrame(tick)
@@ -309,6 +399,7 @@ export function useMusicWaveform({
       setPlaying(true)
       playbackEndedRef.current = false
       setPlaybackEnded(false)
+      lastTransportUiSyncRef.current = 0
       cancelAnimationFrame(rafId)
       rafId = requestAnimationFrame(tick)
     }
@@ -331,7 +422,7 @@ export function useMusicWaveform({
     }
     const onDuration = () => syncTimeFromAudio(el)
     const onSeeked = () => {
-      const v = audioRef.current
+      const v = liveAudioElRef.current()
       if (!v || v !== el) return
       const d = v.duration
       const t = v.currentTime
@@ -354,8 +445,21 @@ export function useMusicWaveform({
     el.addEventListener('durationchange', onDuration)
     el.addEventListener('seeked', onSeeked)
 
-    if (!el.paused) {
+    // `play` does not re-fire when we attach to an element that is already playing (remount / migrate).
+    if (!el.paused && !el.ended) {
+      setPlaying(true)
+      playbackEndedRef.current = false
+      setPlaybackEnded(false)
       rafId = requestAnimationFrame(tick)
+    } else {
+      syncTimeFromAudio(el)
+      if (el.ended) {
+        setPlaying(false)
+        playbackEndedRef.current = true
+        setPlaybackEnded(true)
+      } else {
+        setPlaying(false)
+      }
     }
 
     return () => {
@@ -366,7 +470,7 @@ export function useMusicWaveform({
       el.removeEventListener('durationchange', onDuration)
       el.removeEventListener('seeked', onSeeked)
     }
-  }, [shouldLoadMedia, audioSrc, syncTimeFromAudio])
+  }, [shouldLoadMedia, audioSrc, syncTimeFromAudio, sharedAudioRef])
 
   useEffect(() => {
     if (packagedPeaks) return
@@ -459,7 +563,8 @@ export function useMusicWaveform({
     }
     const w = Math.max(1, Math.floor(wrap.clientWidth))
     const h = waveH
-    const dpr = window.devicePixelRatio || 1
+    const dprRaw = window.devicePixelRatio || 1
+    const dpr = maxCanvasDpr != null ? Math.min(dprRaw, maxCanvasDpr) : dprRaw
     const lg = lastCanvasGeomRef.current
     if (w !== lg.w || h !== lg.h || dpr !== lg.dpr) {
       lastCanvasGeomRef.current = { w, h, dpr }
@@ -483,7 +588,7 @@ export function useMusicWaveform({
     const topFg = hslFromVar('--primary', 1)
     const bottomFg = hslFromVar('--primary', 0.5)
 
-    const playW = displayProgress * w
+    const playW = displayProgressRef.current * w
 
     const isSkeleton = waveformStatus === 'seed' || waveformStatus === 'loading'
     /** Only animate while decoding — never at 60fps for every nearby `seed` row (was main scroll-jank source). */
@@ -565,22 +670,35 @@ export function useMusicWaveform({
       ctx.fillRect(xDevice - Math.floor(lineW / 2), 0, lineW, hDevice)
       ctx.restore()
     }
-  }, [peaks, displayProgress, waveH, waveformStatus])
+  }, [peaks, waveH, waveformStatus, maxCanvasDpr])
+
+  const drawWaveformRef = useRef(drawWaveform)
+  drawWaveformRef.current = drawWaveform
+
+  /** Progress/drag updates without recreating drawWaveform (avoids ResizeObserver churn during playback). */
+  useEffect(() => {
+    drawWaveform()
+  }, [displayProgress, drawWaveform])
 
   useEffect(() => {
-    const run = waveformStatus === 'loading'
+    const run = waveformStatus === 'loading' && skeletonInView
     if (!run) return
     const startMs = performance.now()
     loadingAnimPhaseRef.current = 0
+    const minStepMs = 1000 / LOADING_WAVEFORM_MAX_FPS
     let id = 0
+    let lastRedraw = 0
     const loop = (now: number) => {
-      loadingAnimPhaseRef.current = (now - startMs) * 0.001
-      drawWaveform()
+      if (now - lastRedraw >= minStepMs) {
+        lastRedraw = now
+        loadingAnimPhaseRef.current = (now - startMs) * 0.001
+        drawWaveform()
+      }
       id = requestAnimationFrame(loop)
     }
     id = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(id)
-  }, [waveformStatus, drawWaveform])
+  }, [waveformStatus, drawWaveform, skeletonInView])
 
   useEffect(() => {
     drawWaveform()
@@ -605,14 +723,26 @@ export function useMusicWaveform({
       setShouldLoadMedia(true)
       setWantsPlaybackBuffer(true)
       pendingPlayRef.current = true
+      if (!liveAudioElRef.current() && requestChatPlayback) {
+        requestChatPlayback()
+      }
       return
     }
-    const el = audioRef.current
+    let el = liveAudioElRef.current()
+    if (!el && requestChatPlayback) {
+      el = requestChatPlayback()
+    }
     if (!el) {
       pendingPlayRef.current = true
       return
     }
     if (el.paused) {
+      // Chat: row may still be using a local `<audio>` after lazy-load; migrate to shared transport
+      // before playing so Virtuoso unmount does not stop playback.
+      if (requestChatPlayback) {
+        const shared = requestChatPlayback()
+        if (shared) el = shared
+      }
       setWantsPlaybackBuffer(true)
       const d = el.duration
       const t = el.currentTime
@@ -629,7 +759,7 @@ export function useMusicWaveform({
           if (played) return
           played = true
           window.clearTimeout(fallbackTid)
-          const a = audioRef.current
+          const a = liveAudioElRef.current()
           if (!a || a !== el) return
           void a.play().catch(() => {})
         }
@@ -643,7 +773,7 @@ export function useMusicWaveform({
     } else {
       el.pause()
     }
-  }, [audioSrc, shouldLoadMedia, syncTimeFromAudio, playbackUnlocked])
+  }, [audioSrc, shouldLoadMedia, syncTimeFromAudio, playbackUnlocked, requestChatPlayback])
 
   const finalizeWaveDrag = useCallback(() => {
     if (!isDraggingRef.current) return
@@ -666,7 +796,7 @@ export function useMusicWaveform({
     isDraggingRef.current = false
     setDragProgress(null)
 
-    const el = audioRef.current
+    const el = liveAudioElRef.current()
     if (!el || !Number.isFinite(el.duration) || el.duration <= 0) return
 
     const ratio = lastDragRatioRef.current
@@ -693,7 +823,7 @@ export function useMusicWaveform({
       commitSeekRatio(el, ratio)
       if (wasPlayingBeforeWaveDragRef.current) {
         queueMicrotask(() => {
-          const a = audioRef.current
+          const a = liveAudioElRef.current()
           if (a && a === el) void a.play().catch(() => {})
         })
       }
@@ -709,6 +839,10 @@ export function useMusicWaveform({
       const target = e.currentTarget
       const wrap = waveWrapRef.current
       if (!wrap) return
+      let el = liveAudioElRef.current()
+      if (claimPlaybackForScrub) {
+        el = claimPlaybackForScrub() ?? el
+      }
       target.setPointerCapture(e.pointerId)
       activeWaveDragPointerIdRef.current = e.pointerId
       isDraggingRef.current = true
@@ -733,9 +867,12 @@ export function useMusicWaveform({
         wasPlayingBeforeWaveDragRef.current = false
         pendingSeekRatioRef.current = ratio
         setShouldLoadMedia(true)
+        if (claimPlaybackForScrub) {
+          el = claimPlaybackForScrub() ?? el
+        }
         return
       }
-      const el = audioRef.current
+      if (!el) el = liveAudioElRef.current()
       if (el && Number.isFinite(el.duration) && el.duration > 0) {
         if (el.ended) {
           runSeekNearEnd(el, el.duration)
@@ -750,7 +887,15 @@ export function useMusicWaveform({
         pendingSeekRatioRef.current = ratio
       }
     },
-    [canPlay, shouldLoadMedia, finalizeWaveDrag, playbackUnlocked, cancelScrubEndSeek, runSeekNearEnd]
+    [
+      canPlay,
+      shouldLoadMedia,
+      finalizeWaveDrag,
+      playbackUnlocked,
+      cancelScrubEndSeek,
+      runSeekNearEnd,
+      claimPlaybackForScrub,
+    ]
   )
 
   const onWavePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -795,9 +940,12 @@ export function useMusicWaveform({
       ? 'auto'
       : 'metadata'
 
+  const showLocalAudioTag = Boolean(shouldLoadMedia && audioSrc && !sharedAudioRef)
+
   return {
     cardRootRef,
     audioRef,
+    showLocalAudioTag,
     canvasRef,
     waveWrapRef,
     shouldLoadMedia,

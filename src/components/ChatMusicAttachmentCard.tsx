@@ -1,4 +1,15 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from 'react'
+import { flushSync } from 'react-dom'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { AudioLines, Pause, Play, RotateCcw } from 'lucide-react'
 import { FilenameEllipsis } from './FilenameEllipsis'
@@ -7,6 +18,7 @@ import { ChatMediaSlot } from './ChatMediaSlot'
 import { cn } from '../lib/utils'
 import { ensureMusicCoverThumbnail } from '../lib/tauri'
 import type { WaveformPeaksPayload } from '../contexts/EphemeralMessagesContext'
+import { ChatInlineAudioContext } from '../contexts/ChatInlineAudioContext'
 import { LAZY_CHAT_COVER_ROOT_MARGIN } from './music/musicWaveformShared'
 import { useMusicWaveform } from './music/useMusicWaveform'
 
@@ -44,12 +56,38 @@ function ChatMusicAttachmentCardInner({
   compact,
   children,
 }: Props) {
+  const chatInline = useContext(ChatInlineAudioContext)
+  const useDetachedChatAudio = Boolean(chatInline && attachmentId && audioSrc)
+  /** Match by id only so remount / browser-normalized `src` cannot drop shared binding. */
+  const isDetachedActive =
+    useDetachedChatAudio && chatInline!.activeTrack?.attachmentId === attachmentId
+
+  const requestChatPlayback = useCallback((): HTMLAudioElement | null => {
+    if (!chatInline || !attachmentId || !audioSrc) return null
+    let out: HTMLAudioElement | null = null
+    flushSync(() => {
+      chatInline.playTrack(attachmentId, audioSrc)
+      out = chatInline.sharedAudioRef.current
+    })
+    return out
+  }, [chatInline, attachmentId, audioSrc])
+
+  const claimPlaybackForScrub = useCallback((): HTMLAudioElement | null => {
+    if (!chatInline || !attachmentId || !audioSrc) return null
+    let out: HTMLAudioElement | null = null
+    flushSync(() => {
+      chatInline.armTrack(attachmentId, audioSrc)
+      out = chatInline.sharedAudioRef.current
+    })
+    return out
+  }, [chatInline, attachmentId, audioSrc])
+
   const {
     cardRootRef,
     audioRef,
+    showLocalAudioTag,
     canvasRef,
     waveWrapRef,
-    shouldLoadMedia,
     preloadAttr,
     onAudioLoadedMetadata,
     onAudioCanPlay,
@@ -73,6 +111,10 @@ function ChatMusicAttachmentCardInner({
     attachmentId,
     lazyLoadMedia: true,
     compact,
+    sharedAudioRef: isDetachedActive ? chatInline!.sharedAudioRef : null,
+    requestChatPlayback: useDetachedChatAudio && !isDetachedActive ? requestChatPlayback : null,
+    claimPlaybackForScrub: useDetachedChatAudio && !isDetachedActive ? claimPlaybackForScrub : null,
+    maxCanvasDpr: 1,
   })
 
   const coverSlotRef = useRef<HTMLDivElement | null>(null)
@@ -166,6 +208,9 @@ function ChatMusicAttachmentCardInner({
       </div>
     )
 
+  /** Skip rendering work for cards that are in the DOM but not on-screen (helps multi-attach messages). */
+  const scrollPerfStyle = { contentVisibility: 'auto' as const } satisfies CSSProperties
+
   return (
     <div
       ref={cardRootRef}
@@ -174,11 +219,12 @@ function ChatMusicAttachmentCardInner({
         compact && 'min-h-[68px]',
         className
       )}
+      style={scrollPerfStyle}
     >
-      {shouldLoadMedia && audioSrc ? (
+      {showLocalAudioTag ? (
         <audio
-          ref={audioRef}
-          src={audioSrc}
+          ref={audioRef as RefObject<HTMLAudioElement>}
+          src={audioSrc ?? undefined}
           preload={preloadAttr}
           className="hidden"
           onLoadedMetadata={onAudioLoadedMetadata}

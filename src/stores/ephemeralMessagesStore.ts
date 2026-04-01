@@ -9,7 +9,7 @@ function bucketKey(signingPubkey: string, chatId: string): string {
   return `${signingPubkey}::${chatId}`
 }
 
-interface EphemeralMessagesState {
+export interface EphemeralMessagesState {
   messagesByBucket: MessageBuckets
   attachmentTransfers: AttachmentTransferState[]
   transferHistory: TransferHistoryEntry[]

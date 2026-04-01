@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type MutableRefObject,
+  type RefObject,
 } from 'react'
 import {
   AudioLines,
@@ -1032,7 +1033,7 @@ export function MediaPreviewModalAudio({
             >
               {shouldLoadMedia && audioSrc ? (
                 <audio
-                  ref={audioRef}
+                  ref={audioRef as RefObject<HTMLAudioElement>}
                   src={audioSrc}
                   preload={preloadAttr}
                   className="hidden"

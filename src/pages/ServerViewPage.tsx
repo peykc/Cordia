@@ -36,6 +36,7 @@ import { ServerVoiceHeader } from '../components/server/ServerVoiceHeader'
 import { ServerChatTimeline } from '../components/server/ServerChatTimeline'
 import { ServerComposer, type StagedAttachment } from '../components/server/ServerComposer'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
+import { ChatInlineAudioProvider } from '../contexts/ChatInlineAudioContext'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
 import { useRenderCount } from '../lib/useRenderCount'
 
@@ -1076,8 +1077,11 @@ function ServerViewPage() {
                 onLeaveVoice={handleLeaveVoice}
               />
 
-              {/* Text Chat Area */}
+              {/* Text Chat Area — shared inline audio lives above Virtuoso so playback survives virtualization */}
               <div className="flex-1 flex flex-col overflow-hidden">
+                <ChatInlineAudioProvider
+                  resetKey={`${serverId ?? 'no-server'}:${groupChat?.id ?? 'no-chat'}`}
+                >
                 <div className="flex-1 overflow-hidden">
                     {chatMessages.length === 0 && (
                       <div className="flex justify-center py-12">
@@ -1128,6 +1132,7 @@ function ServerViewPage() {
                       />
                     )}
                 </div>
+                </ChatInlineAudioProvider>
                 <ServerComposer
                   messageInputRef={messageInputRef}
                   composerHasText={composerHasText}
