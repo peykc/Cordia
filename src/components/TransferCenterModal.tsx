@@ -79,11 +79,25 @@ export function TransferCenterModal() {
 
   useEffect(() => {
     if (!isOpen) return
-    refreshSharedAttachments().catch(() => {})
-    const t = window.setTimeout(() => {
+    /** Defer heavy `listSharedAttachments` + store updates until after the popup paints (avoids multi‑second main-thread freeze with 500+ rows). */
+    const runRefresh = () => {
+      void refreshSharedAttachments()
+    }
+    let idleCallbackId: number | null = null
+    let refreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+    if (typeof requestIdleCallback !== 'undefined') {
+      idleCallbackId = requestIdleCallback(runRefresh, { timeout: 1800 })
+    } else {
+      refreshTimeoutId = window.setTimeout(runRefresh, 1)
+    }
+    const accessibilityTimeoutId = window.setTimeout(() => {
       refreshTransferHistoryAccessibility().catch(() => {})
-    }, 180)
-    return () => window.clearTimeout(t)
+    }, 280)
+    return () => {
+      if (idleCallbackId != null) cancelIdleCallback(idleCallbackId)
+      if (refreshTimeoutId != null) clearTimeout(refreshTimeoutId)
+      clearTimeout(accessibilityTimeoutId)
+    }
   }, [isOpen, refreshSharedAttachments, refreshTransferHistoryAccessibility])
 
   useEffect(() => {

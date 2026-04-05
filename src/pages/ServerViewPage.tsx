@@ -169,11 +169,7 @@ function ServerViewPage() {
   const [composerHasText, setComposerHasText] = useState(false)
   const virtuosoScrollerRef = useRef<HTMLDivElement | null>(null)
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
-  const lastInitialBottomScrollChatKeyRef = useRef<string | null>(null)
-  const pendingBottomStabilizeRef = useRef(0)
-  /** When true, user has scrolled away from bottom (e.g. wheel up); skip forced bottom scroll until send/receipt or they return. */
-  const userScrolledAwayRef = useRef(false)
-  const coalescedStabilizeRafRef = useRef<number | null>(null)
+
   const bundlingProgressRef = useRef<{
     messageId: string
     attachmentIds: string[]
@@ -643,11 +639,8 @@ function ServerViewPage() {
           text,
         })
       }
-      userScrolledAwayRef.current = false
-      pendingBottomStabilizeRef.current = 12
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' })
       requestAnimationFrame(() => {
-        virtuosoRef.current?.autoscrollToBottom()
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       })
     } catch (error) {
       console.warn('Failed to send:', error)
@@ -892,70 +885,7 @@ function ServerViewPage() {
     []
   )
 
-  useEffect(() => {
-    const el = virtuosoScrollerRef.current
-    if (!el) return
-    const runStabilize = () => {
-      if (pendingBottomStabilizeRef.current <= 0 || userScrolledAwayRef.current) return false
-      const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
-      if (distanceFromBottom <= 4) {
-        userScrolledAwayRef.current = false
-        pendingBottomStabilizeRef.current = 0
-        return false
-      }
-      pendingBottomStabilizeRef.current -= 1
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.autoscrollToBottom()
-      })
-      return pendingBottomStabilizeRef.current > 0
-    }
-    const MAX_SETTLE_FRAMES = 16
-    let settleCount = 0
-    const tick = () => {
-      coalescedStabilizeRafRef.current = null
-      settleCount += 1
-      const shouldContinue = runStabilize()
-      if (shouldContinue && settleCount < MAX_SETTLE_FRAMES) {
-        coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
-      }
-    }
-    coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
-    const onScroll = () => {
-      if (pendingBottomStabilizeRef.current <= 0) return
-      if (coalescedStabilizeRafRef.current != null) return
-      coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    const onWheel = () => {
-      const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
-      if (distanceFromBottom > 12) userScrolledAwayRef.current = true
-    }
-    el.addEventListener('wheel', onWheel, { passive: true })
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      el.removeEventListener('wheel', onWheel)
-      if (coalescedStabilizeRafRef.current != null) cancelAnimationFrame(coalescedStabilizeRafRef.current)
-    }
-  }, [chatMessages.length, groupChat?.id])
 
-  useEffect(() => {
-    if (!groupChat?.id) return
-    if (!chatMessages.length) return
-    const chatKey = `${serverId ?? 'no-server'}:${groupChat.id}`
-    const scrollRunKey = `${chatKey}:${location.key}`
-    if (lastInitialBottomScrollChatKeyRef.current === scrollRunKey) return
-    lastInitialBottomScrollChatKeyRef.current = scrollRunKey
-    userScrolledAwayRef.current = false
-    pendingBottomStabilizeRef.current = 12
-    const raf = requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.autoscrollToBottom()
-      })
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [serverId, groupChat?.id, chatMessages.length, location.key])
 
   useEffect(() => {
     if (!groupChat?.id) return

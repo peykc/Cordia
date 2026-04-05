@@ -77,6 +77,8 @@ export interface EphemeralChatMessage {
   delivered_by?: string[]
   /** SHA compute progress 0–100 while bundling. Sender-only. */
   bundling_progress?: number
+  /** Cached encrypted payload for background retries. Sender-only. */
+  encrypted_payload?: string
 }
 
 interface SendEphemeralChatInput {
@@ -1768,17 +1770,52 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           const settingsForMessage = messageSettingsFor(m.signing_pubkey)
           const maxBudgetBytes = Math.max(32, settingsForMessage.max_sync_kb) * 1024
           const usedBytes = budgetUsedBySigning.get(m.signing_pubkey) ?? 0
-          const payload =
-            m.kind === 'mixed' && m.attachments?.length
-              ? JSON.stringify({ kind: 'mixed', attachments: m.attachments, text: m.text || undefined, sent_at: m.sent_at } satisfies EphemeralPayload)
-              : m.kind === 'attachment' && m.attachment
-                ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
-                : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
-          const estimate = storageBytes(payload) + 128
-          if (usedBytes + estimate > maxBudgetBytes) continue
+          
+          let encrypted_payload = m.encrypted_payload
+          let estimate = encrypted_payload ? encrypted_payload.length : ((m as any)._cached_estimate || 0)
+          
+          if (!encrypted_payload) {
+            if (!estimate) {
+              const payload =
+                m.kind === 'mixed' && m.attachments?.length
+                  ? JSON.stringify({ kind: 'mixed', attachments: m.attachments, text: m.text || undefined, sent_at: m.sent_at } satisfies EphemeralPayload)
+                  : m.kind === 'attachment' && m.attachment
+                    ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
+                    : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
+              estimate = storageBytes(payload) + 128
+              ;(m as any)._cached_estimate = estimate
+              
+              if (usedBytes + estimate > maxBudgetBytes) continue
+              try {
+                encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(m.signing_pubkey, payload)
+                m.encrypted_payload = encrypted_payload
+              } catch {
+                continue // Ignore encrypt errors; keep pending for next retry tick.
+              }
+            } else {
+              // We got budget estimate from cache, but it's not encrypted yet.
+              if (usedBytes + estimate > maxBudgetBytes) continue
+              
+              // We need to re-serialize to encrypt because budget freed up
+              const payload =
+                m.kind === 'mixed' && m.attachments?.length
+                  ? JSON.stringify({ kind: 'mixed', attachments: m.attachments, text: m.text || undefined, sent_at: m.sent_at } satisfies EphemeralPayload)
+                  : m.kind === 'attachment' && m.attachment
+                    ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
+                    : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
+              try {
+                encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(m.signing_pubkey, payload)
+                m.encrypted_payload = encrypted_payload
+              } catch {
+                continue
+              }
+            }
+          } else {
+            if (usedBytes + estimate > maxBudgetBytes) continue
+          }
+
           budgetUsedBySigning.set(m.signing_pubkey, usedBytes + estimate)
           try {
-            const encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(m.signing_pubkey, payload)
             if (cancelled) return
             window.dispatchEvent(
               new CustomEvent('cordia:send-ephemeral-chat', {
@@ -1791,7 +1828,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
               })
             )
           } catch {
-            // Ignore encrypt/send errors; keep pending for next retry tick.
+            // Ignore send errors; keep pending for next retry tick.
           }
         }
       } finally {
@@ -2235,6 +2272,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       local_only: true,
       delivery_status: 'pending',
       delivered_by: [],
+      encrypted_payload,
     }
     setMessagesByBucket((prev) => {
       return appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage)
@@ -2276,6 +2314,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       local_only: true,
       delivery_status: 'pending',
       delivered_by: [],
+      encrypted_payload,
     }
     setMessagesByBucket((prev) => {
       return appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage)
@@ -2430,6 +2469,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       local_only: true,
       delivery_status: 'pending',
       delivered_by: [],
+      encrypted_payload,
     }
     setMessagesByBucket((prev) => {
       const next = replaceMessageId

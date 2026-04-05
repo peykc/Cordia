@@ -552,7 +552,10 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
       computeItemKey={(_, item) => item.id}
       alignToBottom
       followOutput="auto"
-      initialTopMostItemIndex={Math.max(chatItems.length - 1, 0)}
+      initialTopMostItemIndex={99999999}
+      atBottomThreshold={100}
+      defaultItemHeight={100}
+      increaseViewportBy={300}
       itemContent={itemContent}
     />
   )

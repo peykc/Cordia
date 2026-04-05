@@ -165,6 +165,7 @@ function TransferCenterDownloadRowInner({
         savedPath={inaccessible ? undefined : row.saved_path}
         boxSize={compact && !activeStrip ? 28 : 32}
         squareThumb
+        deferThumbnailWork
         onMediaClick={onPreview}
       />
       <div className="min-w-0 flex-1">

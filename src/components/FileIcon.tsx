@@ -44,6 +44,12 @@ type Props = {
   boxSize?: number
   /** Sharp corners + square frame (e.g. transfer center list) */
   squareThumb?: boolean
+  /**
+   * When true (transfer lists): wait until the thumb slot is near the viewport before resolving paths,
+   * calling `ensureMusicCoverThumbnail` / `readAttachmentBytes`, or assigning `<img src>`. Avoids hundreds
+   * of loads when a virtualized list’s overscan + first paint still mount many rows.
+   */
+  deferThumbnailWork?: boolean
 }
 
 export function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?: string }) {
@@ -79,8 +85,14 @@ export function FileIcon({
   className = '',
   boxSize = THUMB_SIZE,
   squareThumb = false,
+  deferThumbnailWork = false,
 }: Props) {
   const category = getFileTypeFromExt(fileName)
+  const needsLazyMediaThumb =
+    deferThumbnailWork &&
+    (category === 'image' || category === 'video' || category === 'music')
+  const thumbGateRef = useRef<HTMLDivElement>(null)
+  const [thumbWorkAllowed, setThumbWorkAllowed] = useState(!needsLazyMediaThumb)
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   /** Stale `thumbnailPath` in DB can point at a missing file — skip thumb and use `ensure` like chat. */
@@ -101,6 +113,41 @@ export function FileIcon({
   }, [category, mediaUrl])
 
   useEffect(() => {
+    if (!needsLazyMediaThumb) {
+      setThumbWorkAllowed(true)
+      return
+    }
+    setThumbWorkAllowed(false)
+  }, [needsLazyMediaThumb, attachmentId, fileName, savedPath, thumbnailPath, category])
+
+  useEffect(() => {
+    if (!needsLazyMediaThumb || thumbWorkAllowed) return
+    const el = thumbGateRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setThumbWorkAllowed(true)
+      return
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setThumbWorkAllowed(true)
+          io.disconnect()
+        }
+      },
+      { root: null, rootMargin: '200px', threshold: 0.01 }
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [needsLazyMediaThumb, thumbWorkAllowed, attachmentId, fileName])
+
+  useEffect(() => {
+    if (thumbWorkAllowed) return
+    setMediaUrl(null)
+    setLoading(false)
+  }, [thumbWorkAllowed])
+
+  useEffect(() => {
+    if (!thumbWorkAllowed) return
     if (category !== 'image' && category !== 'video' && category !== 'music') return
 
     let cancelled = false
@@ -236,13 +283,23 @@ export function FileIcon({
         blobUrlRef.current = null
       }
     }
-  }, [category, savedPath, thumbnailPath, attachmentId, musicThumbPathFailed])
+  }, [thumbWorkAllowed, category, savedPath, thumbnailPath, attachmentId, musicThumbPathFailed])
 
   const boxCls = cn(
     'shrink-0 flex items-center justify-center overflow-hidden bg-muted/50',
     squareThumb ? 'rounded-none border border-border/50' : 'rounded',
     className
   )
+
+  if (needsLazyMediaThumb && !thumbWorkAllowed) {
+    return (
+      <div ref={thumbGateRef} className="shrink-0" style={{ width: boxSize, height: boxSize }}>
+        <div className={cn(boxCls, 'h-full w-full')}>
+          <IconForCategory cat={category} className="text-muted-foreground opacity-70" />
+        </div>
+      </div>
+    )
+  }
 
   if (category === 'image' && mediaUrl && !loading) {
     const fullImageUrl = savedPath ? (() => { try { return convertFileSrc(savedPath) } catch { return mediaUrl } })() : mediaUrl;

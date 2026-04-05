@@ -246,6 +246,7 @@ function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
           thumbnailPath={tierThumb}
           boxSize={32}
           squareThumb
+          deferThumbnailWork
           onMediaClick={onPreview}
         />
         <div className="min-w-0 flex-1">

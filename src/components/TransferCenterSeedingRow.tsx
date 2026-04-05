@@ -135,6 +135,7 @@ export const TransferCenterSeedingRow = memo(function TransferCenterSeedingRow({
           thumbnailPath={tierThumb}
           boxSize={32}
           squareThumb
+          deferThumbnailWork
           onMediaClick={(url, type, attachmentId, fileName, opts) => {
             const base = {
               attachmentId,
