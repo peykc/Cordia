@@ -9,7 +9,7 @@ import { formatBytes } from '../../lib/bytes'
 import { NotDownloadedCardByWidth } from './NotDownloadedCardByWidth'
 import { getFileTypeFromExt } from '../../lib/fileType'
 import { FilenameEllipsis } from '../FilenameEllipsis'
-import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
+import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
 
 const NOT_DOWNLOADED_CARD_NARROW_PX = 110
 

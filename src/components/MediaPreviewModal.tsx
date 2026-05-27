@@ -6,7 +6,7 @@ import { Tooltip } from './Tooltip'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { ensureMusicCoverPreviewFull, readAttachmentBytes, openPathInFileExplorer } from '../lib/tauri'
 import { formatBytes } from '../lib/bytes'
-import type { MediaPreviewState } from '../contexts/MediaPreviewContext'
+import type { MediaPreviewState } from '../domain/media/types'
 
 type ImageVideoPreviewProps = Extract<Exclude<MediaPreviewState, null>, { type: 'image' | 'video' }> & {
   onClose: () => void

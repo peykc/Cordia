@@ -33,92 +33,28 @@ import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handl
 import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrent } from '@tauri-apps/api/window'
+import type { EphemeralAttachmentMeta } from '../domain/attachments/types'
+import type {
+  AddBundlingMessageInput,
+  EphemeralChatMessage,
+  MessageBuckets,
+  SendEphemeralAttachmentInput,
+  SendEphemeralChatInput,
+  SendMixedMessageInput,
+} from '../domain/messages/types'
+import type { AttachmentTransferState, TransferHistoryEntry } from '../domain/transfers/types'
+import { getServersForContentSha, isContentSharedInServer } from '../domain/sharing/selectors'
 
-/** Precomputed in native attachment prep (FFmpeg); travels with the message so clients skip decoding audio for the canvas. */
-export type WaveformPeaksPayload = {
-  top: number[]
-  bottom: number[]
-}
-
-export interface EphemeralAttachmentMeta {
-  attachment_id: string
-  file_name: string
-  extension: string
-  size_bytes: number
-  sha256: string
-  spoiler?: boolean
-  /** Optional aspect ratio from sender so shimmer/container can match on first paint. */
-  aspect_ratio_w?: number
-  aspect_ratio_h?: number
-  /** Local path for preview while bundling (before SHA/registration completes). Sender-only. */
-  preview_path?: string
-  /** When set (audio attachments from Cordia prep), waveform UI uses this instead of Web Audio decode. */
-  waveform_peaks?: WaveformPeaksPayload
-  /** ffprobe duration from prep; chat can show clocks without loading `<audio>` metadata. */
-  audio_duration_secs?: number
-  /** Embedded album art from prep (data URL); sent with the message so receivers can show it without local FFmpeg. */
-  music_cover_data_url?: string
-}
-
-export interface EphemeralChatMessage {
-  id: string
-  signing_pubkey: string
-  chat_id: string
-  from_user_id: string
-  text: string
-  kind?: 'text' | 'attachment' | 'mixed'
-  /** Single attachment (legacy / single-attachment messages). */
-  attachment?: EphemeralAttachmentMeta
-  /** Multiple attachments in draft order; attachments render first, then text as caption below. */
-  attachments?: EphemeralAttachmentMeta[]
-  sent_at: string
-  local_only?: boolean
-  delivery_status?: 'pending' | 'delivered' | 'bundling'
-  delivered_by?: string[]
-  /** SHA compute progress 0–100 while bundling. Sender-only. */
-  bundling_progress?: number
-  /** Cached encrypted payload for background retries. Sender-only. */
-  encrypted_payload?: string
-}
-
-interface SendEphemeralChatInput {
-  serverId: string
-  signingPubkey: string
-  chatId: string
-  fromUserId: string
-  text: string
-}
-
-interface SendEphemeralAttachmentInput {
-  serverId: string
-  signingPubkey: string
-  chatId: string
-  fromUserId: string
-  attachment: EphemeralAttachmentMeta
-}
-
-export interface SendMixedMessageInput {
-  serverId: string
-  signingPubkey: string
-  chatId: string
-  fromUserId: string
-  /** Attachments in display order (draft order). Shown first in chat. */
-  attachments: EphemeralAttachmentMeta[]
-  /** Optional caption, shown below the attachment grid. */
-  text?: string
-  /** When provided, replace this message (e.g. bundling placeholder) instead of appending. */
-  replaceMessageId?: string
-}
-
-export interface AddBundlingMessageInput {
-  messageId: string
-  signingPubkey: string
-  chatId: string
-  fromUserId: string
-  /** Staged attachments with path for preview. */
-  staged: Array<{ path: string; file_name: string; extension: string; size_bytes: number; spoiler?: boolean }>
-  text?: string
-}
+export type { WaveformPeaksPayload } from '../domain/content/types'
+export type { EphemeralAttachmentMeta } from '../domain/attachments/types'
+export type {
+  AddBundlingMessageInput,
+  EphemeralChatMessage,
+  SendEphemeralAttachmentInput,
+  SendEphemeralChatInput,
+  SendMixedMessageInput,
+} from '../domain/messages/types'
+export type { AttachmentTransferState, TransferHistoryEntry } from '../domain/transfers/types'
 
 interface IncomingEphemeralChatDetail {
   signing_pubkey: string
@@ -187,6 +123,8 @@ const UPLOAD_MAX_BUFFER = 8 * 1024 * 1024
 const UPLOAD_LOW_WATER = 2 * 1024 * 1024
 const MAX_PENDING_BYTES = 1024 * 1024
 const RESUME_PENDING_BYTES = 512 * 1024
+const TRANSFER_UI_UPDATE_MS = 250
+const TRANSFER_DEBUG_UI_UPDATE_MS = 1000
 
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
@@ -230,49 +168,8 @@ interface EphemeralMessagesContextType {
   findMessageById: (messageId: string) => EphemeralChatMessage | undefined
 }
 
-export interface AttachmentTransferState {
-  request_id: string
-  message_id: string
-  attachment_id: string
-  from_user_id: string
-  to_user_id: string
-  file_name: string
-  direction: 'upload' | 'download'
-  status: 'queued' | 'requesting' | 'connecting' | 'transferring' | 'completed' | 'rejected' | 'failed'
-  progress: number
-  debug_kbps?: number
-  debug_buffered_bytes?: number
-  debug_pending_bytes?: number
-  debug_eta_seconds?: number
-  saved_path?: string
-  error?: string
-  sha256?: string
-  /** Cordia server signing pubkey for this session (incoming uploads: message’s server). */
-  server_signing_pubkey?: string
-}
-
-export interface TransferHistoryEntry {
-  request_id: string
-  message_id: string
-  attachment_id: string
-  file_name: string
-  size_bytes?: number
-  from_user_id: string
-  to_user_id: string
-  direction: 'upload' | 'download'
-  status: AttachmentTransferState['status']
-  progress: number
-  saved_path?: string
-  is_inaccessible?: boolean
-  created_at: string
-  updated_at: string
-  /** Cordia server for this session (uploads you sent); persisted for seeding downloader list. */
-  server_signing_pubkey?: string
-}
-
 const EphemeralMessagesContext = createContext<EphemeralMessagesContextType | null>(null)
 
-type MessageBuckets = Record<string, EphemeralChatMessage[]>
 const PERSIST_KEY_PREFIX = 'cordia:ephemeral-bucket'
 const TRANSFER_HISTORY_KEY_PREFIX = 'cordia:attachment-transfer-history'
 const UNREAD_STATE_KEY_PREFIX = 'cordia:ephemeral-unread-state'
@@ -618,7 +515,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const last = progressTickRef.current.get(requestId) ?? 0
     const clamped = Math.max(0, Math.min(1, progress))
     // Throttle progress writes to keep UI responsive during large transfers.
-    if (clamped < 1 && now - last < 800) return
+    if (clamped < 1 && now - last < TRANSFER_UI_UPDATE_MS) return
     progressTickRef.current.set(requestId, now)
     upsertTransfer(requestId, (prev) => ({
       ...(prev as AttachmentTransferState),
@@ -768,8 +665,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     }
 
-    // Throttle UI updates for both downloads and uploads to avoid freezing the app
-    if (now - lastTick < 1000) return
+    // Debug metrics are useful but noisier than progress; commit them less often.
+    if (now - lastTick < TRANSFER_DEBUG_UI_UPDATE_MS) return
     debugTickRef.current.set(requestId, now)
 
     const prevState = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
@@ -784,7 +681,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
     if (typeof window !== 'undefined' && window.localStorage?.getItem('CORDIA_DEBUG_TRANSFERS') === '1') {
       const lastLog = debugLogTickRef.current.get(requestId) ?? 0
-      if (now - lastLog >= 1000) {
+      if (now - lastLog >= TRANSFER_DEBUG_UI_UPDATE_MS) {
         debugLogTickRef.current.set(requestId, now)
         const dir = bufferedBytes !== undefined ? 'upload' : 'download'
         console.debug(`[Transfer ${dir}] ${requestId.slice(0, 12)}… speed=${Math.round(speedEma ?? 0)} KB/s eta=${finalEta?.toFixed(1) ?? '?'}s buffered=${bufferedBytes ?? 0} pending=${pendingBytes ?? 0}`)
@@ -2667,16 +2564,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }
 
   const isSharedInServer: EphemeralMessagesContextType['isSharedInServer'] = useCallback((serverSigningPubkey, sha256) => {
-    if (!serverSigningPubkey || !sha256) return false
-    const list = serverSharedSha[serverSigningPubkey]
-    return Array.isArray(list) && list.includes(sha256)
+    return isContentSharedInServer(serverSharedSha, serverSigningPubkey, sha256)
   }, [serverSharedSha])
 
   const getServersForSha: EphemeralMessagesContextType['getServersForSha'] = useCallback((sha256) => {
-    if (!sha256) return []
-    return Object.keys(serverSharedSha).filter((serverKey) =>
-      Array.isArray(serverSharedSha[serverKey]) && serverSharedSha[serverKey].includes(sha256)
-    )
+    return getServersForContentSha(serverSharedSha, sha256)
   }, [serverSharedSha])
 
   const getCachedPathForSha: EphemeralMessagesContextType['getCachedPathForSha'] = useCallback((sha256) => {

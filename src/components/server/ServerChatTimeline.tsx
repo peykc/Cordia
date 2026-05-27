@@ -2,9 +2,10 @@ import React, { memo, useMemo, useRef, type ComponentProps, type MutableRefObjec
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { MessageBubble } from '../MessageBubble'
 import { ServerMessageContent } from './ServerMessageContent'
-import type { EphemeralChatMessage } from '../../contexts/EphemeralMessagesContext'
-import type { MediaPreviewState } from '../../contexts/MediaPreviewContext'
-import type { AttachmentTransferState, TransferHistoryEntry } from '../../contexts/EphemeralMessagesContext'
+import { useMessageById } from '../../stores/ephemeralMessagesStore'
+import type { EphemeralChatMessage } from '../../domain/messages/types'
+import type { MediaPreviewState } from '../../domain/media/types'
+import type { AttachmentTransferState, TransferHistoryEntry } from '../../domain/transfers/types'
 import type { PresenceLevel } from '../../contexts/PresenceContext'
 import type { Server } from '../../lib/tauri'
 
@@ -88,9 +89,10 @@ const ServerMessageRow = memo(function ServerMessageRow({
   callbacksRef,
 }: ServerMessageRowProps) {
   const callbacks = callbacksRef.current
+  const liveMsg = useMessageById(msg.id) ?? msg
   return (
     <MessageBubble
-      msg={msg}
+      msg={liveMsg}
       isFirstInGroup={isFirstInGroup}
       displayName={displayName}
       levelColor={levelColor}
@@ -98,7 +100,7 @@ const ServerMessageRow = memo(function ServerMessageRow({
       lastDeliveredMessageId={lastDeliveredMessageId}
       lastPendingMessageId={lastPendingMessageId}
     >
-      <ServerMessageContent msg={msg} rowModel={rowModel} callbacks={callbacks} />
+      <ServerMessageContent msg={liveMsg} rowModel={rowModel} callbacks={callbacks} />
     </MessageBubble>
   )
 })

@@ -12,7 +12,7 @@ interface ServerHeaderProps {
 
 function ServerHeaderImpl({ onBack, onUserAvatarClick }: ServerHeaderProps) {
   return (
-    <header className="h-14 border-b-2 border-border bg-card flex items-center justify-between px-4 shrink-0 transition-all duration-300 ease-in-out">
+    <header className="h-14 border-b-2 border-border bg-background flex items-center justify-between px-4 shrink-0 transition-all duration-300 ease-in-out">
       <div className="flex items-center min-w-0 flex-1">
         <button
           type="button"

@@ -15,8 +15,9 @@ import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
 import { buildChatAudioPreviewState, buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
 import { attachmentShareInChatVisible } from '../../lib/attachmentShareInChat'
-import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
-import type { ChatAudioGalleryItem, ChatMediaGalleryItem } from '../../contexts/MediaPreviewContext'
+import { buildAttachmentPresentation } from '../../features/chat/buildAttachmentPresentation'
+import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
+import type { ChatAudioGalleryItem, ChatMediaGalleryItem } from '../../domain/media/types'
 import {
   CHAT_MEDIA_MIN_W,
   CHAT_MEDIA_GRID_MAX_W,
@@ -280,30 +281,19 @@ export function ServerMessageContent({
     attachmentTransfersByMessageId && msg ? attachmentTransfersByMessageId[msg.id] ?? [] : []
 
   const getAttachmentPresentation = (att: { attachment_id: string; sha256?: string; preview_path?: string | null }) => {
-    const sharedItem = sharedByAttachmentId?.[att.attachment_id]
-    const unsharedRec = unsharedAttachmentRecords?.[att.attachment_id]
-    const completedDownloadPath = completedDownloadPathByAttachmentId?.[att.attachment_id]
-    const cachedPath = att.sha256 ? getCachedPathForSha?.(att.sha256) ?? undefined : undefined
-    const liveDownload = attachmentTransferRows.find(
-      (t: any) =>
-        t.direction === 'download' &&
-        t.attachment_id === att.attachment_id &&
-        (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
-    )
     const isOwn = msg.from_user_id === identity?.user_id
-    const hasPath = isOwn
-      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? cachedPath ?? att.preview_path ?? undefined)
-      : (completedDownloadPath ?? cachedPath ?? undefined)
-    const thumbPath = isOwn
-      ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
-      : undefined
-    const notDownloaded = !isOwn && !hasAccessibleCompletedDownload?.(att.attachment_id) && !hasPath
-    const downloadProgress = liveDownload
-      ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100)))
-      : 0
-    const showDownloadProgress =
-      !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
-    return { sharedItem, hasPath, thumbPath, notDownloaded, liveDownload, downloadProgress, showDownloadProgress }
+    return buildAttachmentPresentation({
+      att: att as EphemeralAttachmentMeta,
+      isOwn,
+      attachmentTransferRows,
+      transferHistory: [],
+      sharedAttachments: [],
+      sharedByAttachmentId,
+      completedDownloadPathByAttachmentId,
+      unsharedAttachmentRecords: unsharedAttachmentRecords ?? {},
+      hasAccessibleCompletedDownload: hasAccessibleCompletedDownload ?? (() => false),
+      getCachedPathForSha: getCachedPathForSha ?? (() => null),
+    })
   }
 
   const hasRejectedDownloadForAttachment = (att: { attachment_id: string }) =>

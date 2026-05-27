@@ -6,9 +6,10 @@ import type { EphemeralMessagesState } from '../stores/ephemeralMessagesStore'
  */
 export function selectUploadActiveLayoutSig(s: EphemeralMessagesState): string {
   const keys: string[] = []
-  for (const t of s.attachmentTransfers) {
+  for (const id of s.activeUploadIds) {
+    const t = s.transfersByRequestId[id]
+    if (!t) continue
     if (t.direction !== 'upload') continue
-    if (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected') continue
     const sha = t.sha256?.trim() ?? ''
     const spk = t.server_signing_pubkey?.trim() ?? ''
     if (!spk) continue
@@ -22,19 +23,7 @@ export function selectUploadActiveLayoutSig(s: EphemeralMessagesState): string {
  * Stable while only **transferring** download progress changes — same set of active download request_ids.
  */
 export function selectActiveDownloadRequestIdsSig(s: EphemeralMessagesState): string {
-  const ids: string[] = []
-  for (const t of s.attachmentTransfers) {
-    if (t.direction !== 'download') continue
-    if (
-      t.status !== 'requesting' &&
-      t.status !== 'connecting' &&
-      t.status !== 'transferring' &&
-      t.status !== 'queued'
-    ) {
-      continue
-    }
-    ids.push(t.request_id)
-  }
+  const ids = [...s.activeDownloadIds]
   ids.sort()
   return ids.join('\0')
 }

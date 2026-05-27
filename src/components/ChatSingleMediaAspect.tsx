@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, type ReactNode } from 'react'
-import type { EphemeralAttachmentMeta } from '../contexts/EphemeralMessagesContext'
+import type { EphemeralAttachmentMeta } from '../domain/attachments/types'
 
 type Aspect = { w: number; h: number }
 

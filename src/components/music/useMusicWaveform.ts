@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { getAttachmentRecord } from '../../lib/tauri'
-import type { WaveformPeaksPayload } from '../../contexts/EphemeralMessagesContext'
+import type { WaveformPeaksPayload } from '../../domain/content/types'
 import {
   LAZY_MEDIA_ROOT_MARGIN,
   LAZY_CHAT_COVER_ROOT_MARGIN,
@@ -79,6 +79,11 @@ export type UseMusicWaveformOptions = {
   maxCanvasDpr?: number
   /** From attachment prep / message JSON — show total time without loading `<audio>` metadata. */
   audioDurationSecs?: number | null
+  /**
+   * Chat inline cards only: skip canvas draw path (no 100-bar RAF redraw). Parent should render
+   * `SimplifiedMusicWaveform` using `peaks` + `waveformStatus`. Modal keeps default `false`.
+   */
+  chatBarWaveform?: boolean
 }
 
 export function useMusicWaveform({
@@ -96,6 +101,7 @@ export function useMusicWaveform({
   claimPlaybackForScrub = null,
   maxCanvasDpr,
   audioDurationSecs: audioDurationSecsProp,
+  chatBarWaveform = false,
 }: UseMusicWaveformOptions) {
   const cardRootRef = useRef<HTMLDivElement | null>(null)
   const internalAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -386,7 +392,7 @@ export function useMusicWaveform({
         if (Number.isFinite(d) && d > 0 && Number.isFinite(t)) {
           displayProgressRef.current = t / d
         }
-        drawWaveformRef.current()
+        if (!chatBarWaveform) drawWaveformRef.current()
         const nowMs = performance.now()
         if (nowMs - lastTransportUiSyncRef.current >= WAVEFORM_TRANSPORT_UI_SYNC_MS) {
           lastTransportUiSyncRef.current = nowMs
@@ -473,7 +479,7 @@ export function useMusicWaveform({
       el.removeEventListener('durationchange', onDuration)
       el.removeEventListener('seeked', onSeeked)
     }
-  }, [shouldLoadMedia, audioSrc, syncTimeFromAudio, sharedAudioRef])
+  }, [shouldLoadMedia, audioSrc, syncTimeFromAudio, sharedAudioRef, chatBarWaveform])
 
   useEffect(() => {
     if (packagedPeaks) return
@@ -546,6 +552,7 @@ export function useMusicWaveform({
   const waveH = waveHOverride ?? (compact ? 20 : 32)
 
   const drawWaveform = useCallback(() => {
+    if (chatBarWaveform) return
     const canvas = canvasRef.current
     const wrap = waveWrapRef.current
     if (!canvas || !wrap) return
@@ -663,18 +670,19 @@ export function useMusicWaveform({
       ctx.fillRect(xDevice - Math.floor(lineW / 2), 0, lineW, hDevice)
       ctx.restore()
     }
-  }, [peaks, waveH, waveformStatus, maxCanvasDpr])
+  }, [peaks, waveH, waveformStatus, maxCanvasDpr, chatBarWaveform])
 
   const drawWaveformRef = useRef(drawWaveform)
   drawWaveformRef.current = drawWaveform
 
   /** Progress/drag updates without recreating drawWaveform (avoids ResizeObserver churn during playback). */
   useEffect(() => {
+    if (chatBarWaveform) return
     drawWaveform()
-  }, [displayProgress, drawWaveform])
+  }, [displayProgress, drawWaveform, chatBarWaveform])
 
   useEffect(() => {
-    const run = waveformStatus === 'loading' && skeletonInView
+    const run = waveformStatus === 'loading' && skeletonInView && !chatBarWaveform
     if (!run) return
     const startMs = performance.now()
     loadingAnimPhaseRef.current = 0
@@ -691,9 +699,10 @@ export function useMusicWaveform({
     }
     id = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(id)
-  }, [waveformStatus, drawWaveform, skeletonInView])
+  }, [waveformStatus, drawWaveform, skeletonInView, chatBarWaveform])
 
   useEffect(() => {
+    if (chatBarWaveform) return
     drawWaveform()
     const wrap = waveWrapRef.current
     if (!wrap) return
@@ -707,7 +716,7 @@ export function useMusicWaveform({
       cancelAnimationFrame(roRaf)
       ro.disconnect()
     }
-  }, [drawWaveform])
+  }, [drawWaveform, chatBarWaveform])
 
   const togglePlay = useCallback(() => {
     if (!audioSrc) return
@@ -965,5 +974,6 @@ export function useMusicWaveform({
     formatClock: formatAudioClock,
     waveformStatus,
     waveformPlaybackReady,
+    peaks,
   }
 }

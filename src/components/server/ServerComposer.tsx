@@ -22,6 +22,8 @@ export interface StagedAttachment {
   thumbnail_path?: string | null
   ready?: boolean
   preparePercent?: number
+  /** Set when registration or prep failed; row stays in draft until removed. */
+  prepareError?: string
 }
 
 export interface ServerComposerProps {
@@ -126,12 +128,21 @@ function ServerComposerImpl({
                     <div className="min-w-0 flex-1 flex flex-col gap-1">
                       <FilenameEllipsis name={att.file_name} className="text-xs truncate" />
                       <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-muted-foreground">
-                          {att.ready
-                            ? formatBytes(att.size_bytes)
-                            : att.preparePercent != null
-                              ? `Preparing ${Math.round(att.preparePercent)}%`
-                              : 'Preparing…'}
+                        <span
+                          className={cn(
+                            'text-[10px]',
+                            att.prepareError ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                        >
+                          {att.prepareError
+                            ? att.prepareError
+                            : att.ready
+                              ? formatBytes(att.size_bytes)
+                              : !att.attachment_id
+                                ? 'Queued…'
+                                : att.preparePercent != null
+                                  ? `Preparing ${Math.round(att.preparePercent)}%`
+                                  : 'Preparing…'}
                         </span>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
@@ -215,7 +226,9 @@ function ServerComposerImpl({
           <Tooltip
             content={
               stagedAttachments.length > 0 && stagedAttachments.some((a) => !a.ready)
-                ? 'Wait for attachments to finish preparing'
+                ? stagedAttachments.some((a) => !a.attachment_id && !a.prepareError)
+                  ? 'Wait for attachments to finish queuing and preparing'
+                  : 'Wait for attachments to finish preparing, or remove failed ones'
                 : 'Send'
             }
           >
@@ -226,7 +239,8 @@ function ServerComposerImpl({
               disabled={
                 !canSendMessages ||
                 (!composerHasText && stagedAttachments.length === 0) ||
-                (stagedAttachments.length > 0 && stagedAttachments.some((a) => !a.ready))
+                (stagedAttachments.length > 0 &&
+                  stagedAttachments.some((a) => !a.ready || !a.attachment_id || a.prepareError))
               }
             >
               <Send className="h-4 w-4" />

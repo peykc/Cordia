@@ -1,5 +1,6 @@
-import type { MediaPreviewState } from '../contexts/MediaPreviewContext'
-import type { EphemeralAttachmentMeta, EphemeralChatMessage } from '../contexts/EphemeralMessagesContext'
+import type { MediaPreviewState } from '../domain/media/types'
+import type { EphemeralAttachmentMeta } from '../domain/attachments/types'
+import type { EphemeralChatMessage } from '../domain/messages/types'
 import { attachmentShareInChatVisible } from './attachmentShareInChat'
 
 export function buildChatMediaPreviewState(params: {

@@ -5,7 +5,7 @@ import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 import { formatBytes } from '../../lib/bytes'
 import { NotDownloadedCardByWidth } from './NotDownloadedCardByWidth' // I should move this to a shared file too
-import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
+import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
 
 const NOT_DOWNLOADED_CARD_NARROW_PX = 110
 

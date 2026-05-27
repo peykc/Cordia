@@ -1,12 +1,28 @@
-import { useTheme } from '../../contexts/ThemeContext'
+import { type PerformanceProfile, useTheme } from '../../contexts/ThemeContext'
 import { THEME_PRESETS, type ThemeId } from '../../theme/presets'
 
 const THEME_LABELS: Record<ThemeId, string> = {
   default: 'Cordia Dark',
+  amoled: 'Amoled Dark',
+}
+
+const PERFORMANCE_LABELS: Record<PerformanceProfile, { label: string; description: string }> = {
+  quality: {
+    label: 'Quality',
+    description: 'Full visual effects and normal media behavior.',
+  },
+  balanced: {
+    label: 'Balanced',
+    description: 'Keeps the look while preparing for reduced work in busy views.',
+  },
+  'low-end': {
+    label: 'Low-end',
+    description: 'Reduces blur, shimmer, heavy shadows, transitions, and costly media effects.',
+  },
 }
 
 export function CustomizeSettings() {
-  const { themeId, setThemeId } = useTheme()
+  const { themeId, setThemeId, performanceProfile, setPerformanceProfile } = useTheme()
 
   const handleChange = (id: ThemeId) => {
     setThemeId(id)
@@ -59,7 +75,7 @@ export function CustomizeSettings() {
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-light truncate">{THEME_LABELS[id]}</p>
                 <p className="text-[11px] text-muted-foreground truncate">
-                  Neutral dark with Discord-like layering.
+                  {id === 'default' ? 'Neutral dark with Discord-like layering.' : 'Ultra-dark contrast for OLED screens.'}
                 </p>
               </div>
               <div
@@ -71,6 +87,42 @@ export function CustomizeSettings() {
             </button>
           )
         })}
+      </div>
+
+      <div className="border-t border-border/50 pt-4 space-y-3">
+        <div className="space-y-1">
+          <h3 className="text-sm font-medium tracking-tight">Performance Profile</h3>
+          <p className="text-xs text-muted-foreground">
+            Quality keeps Cordia looking the same. Low-end mode disables expensive visual effects for weaker hardware.
+          </p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {(Object.keys(PERFORMANCE_LABELS) as PerformanceProfile[]).map((profile) => {
+            const selected = profile === performanceProfile
+            const item = PERFORMANCE_LABELS[profile]
+            return (
+              <button
+                key={profile}
+                type="button"
+                onClick={() => setPerformanceProfile(profile)}
+                className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                  selected ? 'border-foreground bg-background/60' : 'border-border/70 hover:border-foreground/60'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-light">{item.label}</p>
+                  <span
+                    className={`h-2 w-2 rounded-full border ${
+                      selected ? 'bg-foreground border-foreground' : 'bg-transparent border-muted-foreground'
+                    }`}
+                    aria-hidden
+                  />
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{item.description}</p>
+              </button>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

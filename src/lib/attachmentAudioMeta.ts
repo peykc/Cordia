@@ -1,4 +1,4 @@
-import type { WaveformPeaksPayload } from '../contexts/EphemeralMessagesContext'
+import type { WaveformPeaksPayload } from '../domain/content/types'
 import { WAVE_BARS } from '../components/music/musicWaveformShared'
 
 /** Same bar count as native prep / Web decode — use when attaching peaks to outgoing chat metadata. */

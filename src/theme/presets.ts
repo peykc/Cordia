@@ -1,4 +1,4 @@
-export type ThemeId = 'default'
+export type ThemeId = 'default' | 'amoled'
 
 export interface Theme {
   /** Base app background (maps to --cordia-bg). */
@@ -33,6 +33,22 @@ export const THEME_PRESETS: Record<ThemeId, Theme> = {
     messageDraft: '223 8% 27%',
     // Borders: #292B2F – thin 1px, subtle
     border: '220 7% 17%',
+    // Blurple accent: #5865F2
+    accent: '235 86% 65%',
+  },
+  amoled: {
+    // Primary background (main chat/feed): #1a1a1e
+    background: '240 7% 11%',
+    // Secondary (sidebars, lists): #121214
+    sidebar: '240 5% 7%',
+    friendsList: '240 5% 7%',
+    // Attachment cards: #242429
+    card: '240 6% 15%',
+    cardElevated: '240 7% 17%',
+    // Bottom input / compose: #202024 (derived)
+    messageDraft: '240 6% 13%',
+    // Borders: #18181b (derived)
+    border: '240 6% 10%',
     // Blurple accent: #5865F2
     accent: '235 86% 65%',
   },

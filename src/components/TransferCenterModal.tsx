@@ -28,6 +28,8 @@ export function TransferCenterModal() {
   const { width, height } = useWindowSize()
   const { refreshSharedAttachments, refreshTransferHistoryAccessibility } = useEphemeralMessages()
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({})
+  /** Mount heavy panel after the shell paints so click→visible isn’t blocked by O(n) transfer memos on huge lists. */
+  const [heavyPanelReady, setHeavyPanelReady] = useState(false)
 
   const layoutPanel = useCallback(() => {
     const el = anchorRef.current
@@ -76,6 +78,22 @@ export function TransferCenterModal() {
       window.removeEventListener('scroll', onMove, true)
     }
   }, [isOpen, layoutPanel])
+
+  useEffect(() => {
+    if (!isOpen) {
+      setHeavyPanelReady(false)
+      return
+    }
+    setHeavyPanelReady(false)
+    let innerRaf = 0
+    const outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => setHeavyPanelReady(true))
+    })
+    return () => {
+      cancelAnimationFrame(outerRaf)
+      cancelAnimationFrame(innerRaf)
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (!isOpen) return
@@ -142,7 +160,32 @@ export function TransferCenterModal() {
           </h1>
         </header>
         <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 flex flex-col">
-          <TransferCenterPanel variant="popup" />
+          {heavyPanelReady ? (
+            <TransferCenterPanel variant="popup" />
+          ) : (
+            <div
+              className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden opacity-80"
+              aria-busy
+              aria-label="Loading transfers"
+            >
+              <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
+                {Array.from({ length: 4 }, (_, i) => (
+                  <div
+                    key={i}
+                    className="h-[52px] animate-pulse rounded-lg border border-border/40 bg-muted/30"
+                  />
+                ))}
+              </div>
+              <div className="grid min-h-0 shrink-0 grid-cols-1 gap-2 min-[580px]:grid-cols-2">
+                <div className="h-[120px] animate-pulse rounded-lg border border-border/40 bg-muted/25" />
+                <div className="h-[120px] animate-pulse rounded-lg border border-border/40 bg-muted/25" />
+              </div>
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 min-[450px]:grid-cols-2 overflow-hidden">
+                <div className="min-h-0 animate-pulse rounded-lg border border-border/40 bg-muted/20" />
+                <div className="min-h-0 animate-pulse rounded-lg border border-border/40 bg-muted/20" />
+              </div>
+            </div>
+          )}
         </div>
         <footer className="shrink-0 border-t border-border/60 px-3 py-2 flex items-center justify-center bg-muted/20">
           <button

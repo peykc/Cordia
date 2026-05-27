@@ -40,6 +40,7 @@ import { ChatInlineAudioProvider } from '../contexts/ChatInlineAudioContext'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
 import { isValidWaveformPeaksPayload } from '../lib/attachmentAudioMeta'
 import { useRenderCount } from '../lib/useRenderCount'
+import { waitForAttachmentRecordReady, enqueueStagedAttachmentAdd } from '../lib/stagedAttachmentAddPipeline'
 
 /** Get intrinsic dimensions for a media URL so we can store aspect on the message (shimmer correct on load). */
 function getMediaDimensions(
@@ -72,22 +73,6 @@ function getMediaDimensions(
     video.preload = 'metadata'
     video.src = url
   })
-}
-
-/** Poll until the attachment index reports full prep (SHA, pieces, waveform/thumb) so send never races a half-ready record. */
-async function waitForAttachmentRecordReady(
-  attachmentId: string,
-  opts?: { timeoutMs?: number; intervalMs?: number }
-): Promise<Awaited<ReturnType<typeof getAttachmentRecord>>> {
-  const timeoutMs = opts?.timeoutMs ?? 120_000
-  const intervalMs = opts?.intervalMs ?? 100
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const rec = await getAttachmentRecord(attachmentId)
-    if (rec?.status === 'ready' && rec.sha256) return rec
-    await new Promise((r) => setTimeout(r, intervalMs))
-  }
-  return getAttachmentRecord(attachmentId)
 }
 
 /** Strip to 8-char code for display/copy (XXXX-XXXX), same pattern as friend code. */
@@ -565,9 +550,9 @@ function ServerViewPage() {
 
     try {
       if (toSend.length > 0) {
-        const allPrepared = toSend.every((a) => a.attachment_id && a.ready)
+        const allPrepared = toSend.every((a) => a.attachment_id && a.ready && !a.prepareError)
         if (!allPrepared) {
-          throw new Error('Attachments are still preparing. Please wait.')
+          throw new Error('Attachments are still preparing or failed. Please wait or remove failed files.')
         }
         const attachmentIds = toSend.map((a) => a.attachment_id!).filter(Boolean)
         const messageId = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
@@ -670,28 +655,7 @@ function ServerViewPage() {
         { title: 'Attachment storage', okLabel: 'Copy to Cordia', cancelLabel: 'Keep current path' }
       )
       const storage_mode = copyToCordia ? 'program_copy' : 'current_path'
-      for (const p of paths) {
-        const meta = await getFileMetadata(p)
-        const result = await registerAttachmentFromPath(p, storage_mode)
-        const attachment_id = result.attachment_id
-        const rec = await getAttachmentRecord(attachment_id)
-        const ready = rec?.status === 'ready'
-        setStagedAttachments((prev) => [
-          ...prev,
-          {
-            staged_id: `${p}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-            path: p,
-            file_name: meta.file_name,
-            extension: meta.extension,
-            size_bytes: meta.size_bytes,
-            storage_mode,
-            spoiler: false,
-            attachment_id,
-            thumbnail_path: rec?.thumbnail_path ?? null,
-            ready: ready ?? false,
-          },
-        ])
-      }
+      await enqueueStagedAttachmentAdd(paths, storage_mode, setStagedAttachments)
     } catch (error) {
       console.warn('Failed to add attachment:', error)
     }

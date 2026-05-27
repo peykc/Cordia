@@ -3,6 +3,7 @@ import React, { useCallback, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { getCurrent } from '@tauri-apps/api/window'
 import { useVideoFullscreen } from '../contexts/VideoFullscreenContext'
+import { useTheme } from '../contexts/ThemeContext'
 import { useServers } from '../contexts/ServersContext'
 
 const noDrag = { WebkitAppRegion: 'no-drag' } as React.CSSProperties
@@ -42,6 +43,7 @@ function useTitleBarPageTitle(): string {
  * and mirroring keys drifts (replaces, redirects, WebView quirks). Center title + window controls only.
  */
 function TitleBar() {
+  const { theme } = useTheme()
   const { isNativeVideoFullscreen } = useVideoFullscreen()
   const pageTitle = useTitleBarPageTitle()
 
@@ -66,7 +68,10 @@ function TitleBar() {
   if (isNativeVideoFullscreen) return null
 
   return (
-    <div className="relative z-[9998] flex h-8 shrink-0 select-none items-stretch bg-background">
+    <div 
+      className="relative z-[9998] flex h-8 shrink-0 select-none items-stretch"
+      style={{ backgroundColor: Boolean(theme.sidebar.trim()) ? `hsl(${theme.sidebar})` : '#121214' }}
+    >
       <div
         className="flex min-w-0 flex-1 items-center justify-center px-3"
         data-tauri-drag-region

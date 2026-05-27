@@ -12,7 +12,7 @@ import { getFileTypeFromExt } from '../../lib/fileType'
 import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { CustomVideoPlayer } from '../CustomVideoPlayer'
 import { getSingleAttachmentAspectRatio } from '../../lib/chatMessageLayout'
-import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
+import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
 
 const NOT_DOWNLOADED_CARD_NARROW_PX = 110
 

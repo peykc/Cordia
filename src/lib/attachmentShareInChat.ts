@@ -1,4 +1,4 @@
-import type { EphemeralChatMessage } from '../contexts/EphemeralMessagesContext'
+import type { EphemeralChatMessage } from '../domain/messages/types'
 
 /**
  * Same rules as inline "Share again" / "Share in this chat" on attachment tiles in chat.

@@ -17,9 +17,10 @@ import { IconForCategory } from './FileIcon'
 import { ChatMediaSlot } from './ChatMediaSlot'
 import { cn } from '../lib/utils'
 import { ensureMusicCoverThumbnail } from '../lib/tauri'
-import type { WaveformPeaksPayload } from '../contexts/EphemeralMessagesContext'
+import type { WaveformPeaksPayload } from '../domain/content/types'
 import { ChatInlineAudioContext } from '../contexts/ChatInlineAudioContext'
 import { LAZY_CHAT_COVER_ROOT_MARGIN } from './music/musicWaveformShared'
+import { ChatBarWaveformSkeleton, SimplifiedMusicWaveform } from './music/SimplifiedMusicWaveform'
 import { useMusicWaveform } from './music/useMusicWaveform'
 
 type Props = {
@@ -89,7 +90,6 @@ function ChatMusicAttachmentCardInner({
     cardRootRef,
     audioRef,
     showLocalAudioTag,
-    canvasRef,
     waveWrapRef,
     preloadAttr,
     onAudioLoadedMetadata,
@@ -107,6 +107,8 @@ function ChatMusicAttachmentCardInner({
     onWavePointerMove,
     onWavePointerUp,
     formatSplitTime,
+    waveformStatus,
+    peaks,
   } = useMusicWaveform({
     audioSrc,
     waveformSeed,
@@ -119,6 +121,8 @@ function ChatMusicAttachmentCardInner({
     requestChatPlayback: useDetachedChatAudio && !isDetachedActive ? requestChatPlayback : null,
     claimPlaybackForScrub: useDetachedChatAudio && !isDetachedActive ? claimPlaybackForScrub : null,
     maxCanvasDpr: 1,
+    /** DOM bar strip — modal keeps full canvas waveform. */
+    chatBarWaveform: true,
   })
 
   const coverSlotRef = useRef<HTMLDivElement | null>(null)
@@ -362,7 +366,22 @@ function ChatMusicAttachmentCardInner({
                         : undefined
                     }
                   >
-                    <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 block h-full w-full" aria-hidden />
+                    {waveformStatus === 'seed' || waveformStatus === 'loading' ? (
+                      <ChatBarWaveformSkeleton
+                        waveHeight={waveH}
+                        compact={compact}
+                        className="absolute inset-0"
+                        animated={waveformStatus === 'loading'}
+                      />
+                    ) : (
+                      <SimplifiedMusicWaveform
+                        peaks={peaks}
+                        progress={displayProgress}
+                        waveHeight={waveH}
+                        barGap={compact ? 1.5 : 2}
+                        className="absolute inset-0"
+                      />
+                    )}
                   </div>
 
                   <div className="min-w-0 border-l border-border/30 pl-2 text-right tabular-nums text-[10px] leading-none text-muted-foreground whitespace-nowrap">

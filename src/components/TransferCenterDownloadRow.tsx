@@ -9,8 +9,9 @@ import { Button } from './ui/button'
 import { FilenameEllipsis } from './FilenameEllipsis'
 import { formatBytes } from '../lib/bytes'
 import { openPathInFileExplorer } from '../lib/tauri'
-import type { AttachmentTransferState, TransferHistoryEntry } from '../contexts/EphemeralMessagesContext'
-import type { MediaPreviewState } from '../contexts/MediaPreviewContext'
+import { useTransferByRequestId } from '../stores/ephemeralMessagesStore'
+import type { AttachmentTransferState, TransferHistoryEntry } from '../domain/transfers/types'
+import type { MediaPreviewState } from '../domain/media/types'
 import { cn } from '../lib/utils'
 
 function directoryForPath(path: string): string {
@@ -80,18 +81,27 @@ function TransferCenterDownloadRowInner({
   omitProgressBar = false,
   activeStrip = false,
 }: TransferCenterDownloadRowProps) {
+  const liveTransfer = useTransferByRequestId(row.request_id)
+  const effectiveStatus = liveTransfer?.status ?? status
+  const effectiveProgress = liveTransfer?.progress ?? progress
+  const effectiveDebugKbps = liveTransfer?.debug_kbps ?? debugKbps
+  const effectiveDebugEtaSeconds = liveTransfer?.debug_eta_seconds ?? debugEtaSeconds
+  const effectiveDebugPendingBytes = liveTransfer?.debug_pending_bytes ?? debugPendingBytes
   const { identity } = useIdentity()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const { findMessageById } = useEphemeralMessages()
   const inaccessible = row.is_inaccessible === true
   const canCancel =
-    status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring'
-  const canRemove = inaccessible || status === 'rejected' || status === 'failed'
-  const pct = status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round(progress * 100)))
+    effectiveStatus === 'queued' ||
+    effectiveStatus === 'requesting' ||
+    effectiveStatus === 'connecting' ||
+    effectiveStatus === 'transferring'
+  const canRemove = inaccessible || effectiveStatus === 'rejected' || effectiveStatus === 'failed'
+  const pct = effectiveStatus === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round(effectiveProgress * 100)))
   const showBar = activeStrip
     ? !inaccessible
-    : !omitProgressBar && !inaccessible && (status === 'transferring' || status === 'completed')
+    : !omitProgressBar && !inaccessible && (effectiveStatus === 'transferring' || effectiveStatus === 'completed')
 
   const onPreview = useCallback(
     (
@@ -184,15 +194,17 @@ function TransferCenterDownloadRowInner({
                   <p
                     className="truncate text-[10px] leading-tight text-muted-foreground whitespace-nowrap tabular-nums"
                     title={`${fromLabel} · ${formatBytes(row.size_bytes)}${
-                      status === 'queued'
+                      effectiveStatus === 'queued'
                         ? ' · Queued'
-                        : status === 'requesting' || status === 'connecting' || status === 'transferring'
-                          ? ` · ${formatRate(debugKbps)} · ETA ${formatEta(debugEtaSeconds)}${
-                              debugPendingBytes != null && debugPendingBytes > 64 * 1024
-                                ? ` · ${formatBuffer(debugPendingBytes)}`
+                        : effectiveStatus === 'requesting' ||
+                            effectiveStatus === 'connecting' ||
+                            effectiveStatus === 'transferring'
+                          ? ` · ${formatRate(effectiveDebugKbps)} · ETA ${formatEta(effectiveDebugEtaSeconds)}${
+                              effectiveDebugPendingBytes != null && effectiveDebugPendingBytes > 64 * 1024
+                                ? ` · ${formatBuffer(effectiveDebugPendingBytes)}`
                                 : ''
                             }`
-                          : status === 'failed'
+                          : effectiveStatus === 'failed'
                             ? ' · Failed'
                             : ''
                     }`}
@@ -200,22 +212,24 @@ function TransferCenterDownloadRowInner({
                     <span className="text-muted-foreground">{fromLabel}</span>
                     <span className="text-muted-foreground"> · </span>
                     <span className="text-muted-foreground">{formatBytes(row.size_bytes)}</span>
-                    {status === 'queued' ? (
+                    {effectiveStatus === 'queued' ? (
                       <span className="text-muted-foreground"> · Queued</span>
-                    ) : status === 'requesting' || status === 'connecting' || status === 'transferring' ? (
+                    ) : effectiveStatus === 'requesting' ||
+                      effectiveStatus === 'connecting' ||
+                      effectiveStatus === 'transferring' ? (
                       <>
                         <span className="text-muted-foreground"> · </span>
-                        <span>{formatRate(debugKbps)}</span>
+                        <span>{formatRate(effectiveDebugKbps)}</span>
                         <span className="text-muted-foreground"> · </span>
-                        <span>ETA {formatEta(debugEtaSeconds)}</span>
-                        {debugPendingBytes != null && debugPendingBytes > 64 * 1024 && (
+                        <span>ETA {formatEta(effectiveDebugEtaSeconds)}</span>
+                        {effectiveDebugPendingBytes != null && effectiveDebugPendingBytes > 64 * 1024 && (
                           <span title="Data waiting to be written to disk" className="text-muted-foreground">
                             {' '}
-                            · {formatBuffer(debugPendingBytes)}
+                            · {formatBuffer(effectiveDebugPendingBytes)}
                           </span>
                         )}
                       </>
-                    ) : status === 'failed' ? (
+                    ) : effectiveStatus === 'failed' ? (
                       <span className="text-red-300/90"> · Failed</span>
                     ) : null}
                   </p>
@@ -227,7 +241,7 @@ function TransferCenterDownloadRowInner({
                     <div
                       className={cn(
                         'h-full rounded-full',
-                        status === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70'
+                        effectiveStatus === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70'
                       )}
                       style={{ width: `${Math.max(0, pct)}%` }}
                     />
@@ -252,7 +266,10 @@ function TransferCenterDownloadRowInner({
               <div className="mt-0.5 flex min-w-0 items-center gap-2">
                 <div className="h-0.5 min-w-0 flex-1 max-w-[200px] rounded-full bg-foreground/10 overflow-hidden">
                   <div
-                    className={cn('h-full rounded-full', status === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70')}
+                    className={cn(
+                      'h-full rounded-full',
+                      effectiveStatus === 'completed' ? 'bg-emerald-500/80' : 'bg-violet-500/70'
+                    )}
                     style={{ width: `${Math.max(2, pct)}%` }}
                   />
                 </div>
@@ -260,13 +277,16 @@ function TransferCenterDownloadRowInner({
               </div>
             )}
             {!inaccessible &&
-              (status === 'queued' || status === 'requesting' || status === 'connecting' || status === 'transferring') && (
+              (effectiveStatus === 'queued' ||
+                effectiveStatus === 'requesting' ||
+                effectiveStatus === 'connecting' ||
+                effectiveStatus === 'transferring') && (
                 <div className="text-[9px] text-muted-foreground mt-0.5 space-x-1">
-                  <span>{formatRate(debugKbps)}</span>
+                  <span>{formatRate(effectiveDebugKbps)}</span>
                   <span>·</span>
-                  <span>ETA {formatEta(debugEtaSeconds)}</span>
-                  {debugPendingBytes != null && debugPendingBytes > 64 * 1024 && (
-                    <span title="Data waiting to be written to disk">· {formatBuffer(debugPendingBytes)}</span>
+                  <span>ETA {formatEta(effectiveDebugEtaSeconds)}</span>
+                  {effectiveDebugPendingBytes != null && effectiveDebugPendingBytes > 64 * 1024 && (
+                    <span title="Data waiting to be written to disk">· {formatBuffer(effectiveDebugPendingBytes)}</span>
                   )}
                 </div>
               )}
@@ -346,7 +366,7 @@ function TransferCenterDownloadRowInner({
 }
 
 /**
- * Memoized row: live transfer fields are passed as primitives so global progress ticks
- * don’t force every visible history row to re-render.
+ * Memoized row: active rows subscribe to their own request ID so transfer
+ * progress can move toward row-level invalidation.
  */
 export const TransferCenterDownloadRow = memo(TransferCenterDownloadRowInner)

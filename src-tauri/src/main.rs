@@ -9,6 +9,7 @@ mod server;
 mod beacon;
 mod account_manager;
 mod waveform;
+mod system_commands;
 
 #[cfg(windows)]
 mod file_association;
@@ -21,6 +22,7 @@ use audio_dsp::{get_dsp, InputMode};
 use server::{ServerManager, ServerInfo};
 use beacon::{check_beacon_health, get_default_beacon_url};
 use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile, KnownProfileForExport};
+use system_commands::{open_path_in_file_explorer, path_exists, read_clipboard_text};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
@@ -2758,62 +2760,6 @@ async fn set_beacon_url(url: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to save account info: {}", e))?;
     
     Ok(())
-}
-
-/// Read text from the system clipboard (avoids webview permission prompt).
-#[tauri::command]
-fn read_clipboard_text() -> Result<String, String> {
-    use arboard::Clipboard;
-    let mut clipboard = Clipboard::new().map_err(|e| format!("Clipboard unavailable: {}", e))?;
-    clipboard.get_text().map_err(|e| format!("Clipboard read failed: {}", e))
-}
-
-#[tauri::command]
-fn open_path_in_file_explorer(path: String) -> Result<(), String> {
-    let target = path.trim();
-    if target.is_empty() {
-        return Err("Path is empty".to_string());
-    }
-    let p = std::path::PathBuf::from(target);
-    if !p.exists() {
-        return Err("Path does not exist".to_string());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("Failed to open in explorer: {}", e))?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("Failed to open in Finder: {}", e))?;
-        return Ok(());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("Failed to open in file manager: {}", e))?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err("Unsupported OS".to_string())
-}
-
-#[tauri::command]
-fn path_exists(path: String) -> bool {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    PathBuf::from(trimmed).exists()
 }
 
 #[cfg(windows)]

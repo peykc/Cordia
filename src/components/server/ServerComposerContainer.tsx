@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { open, confirm } from '@tauri-apps/api/dialog'
-import { getAttachmentRecord, getFileMetadata, registerAttachmentFromPath } from '../../lib/tauri'
+import { getAttachmentRecord } from '../../lib/tauri'
+import { enqueueStagedAttachmentAdd } from '../../lib/stagedAttachmentAddPipeline'
 import { getDraft, setDraft, clearDraft } from '../../lib/messageDrafts'
 import { ServerComposer, type StagedAttachment } from './ServerComposer'
 
@@ -100,26 +101,7 @@ export function ServerComposerContainer({
         { title: 'Attachment storage', okLabel: 'Copy to Cordia', cancelLabel: 'Keep current path' }
       )
       const storage_mode = copyToCordia ? 'program_copy' : 'current_path'
-      for (const p of paths) {
-        const meta = await getFileMetadata(p)
-        const result = await registerAttachmentFromPath(p, storage_mode)
-        const rec = await getAttachmentRecord(result.attachment_id)
-        setStagedAttachments((prev) => [
-          ...prev,
-          {
-            staged_id: `${p}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-            path: p,
-            file_name: meta.file_name,
-            extension: meta.extension,
-            size_bytes: meta.size_bytes,
-            storage_mode,
-            spoiler: false,
-            attachment_id: result.attachment_id,
-            thumbnail_path: rec?.thumbnail_path ?? null,
-            ready: rec?.status === 'ready',
-          },
-        ])
-      }
+      await enqueueStagedAttachmentAdd(paths, storage_mode, setStagedAttachments)
     } catch (e) { console.warn('Add attachment failed:', e) }
   }, [])
 
