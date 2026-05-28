@@ -15,8 +15,8 @@ We currently support the following versions with security updates:
 
 Instead, please report them via one of the following methods:
 
-1. **Email**: Send details to [security@yourdomain.com] (replace with your actual security email)
-2. **GitHub Security Advisory**: Use GitHub's private vulnerability reporting feature (if enabled)
+1. **GitHub Security Advisory**: Use [GitHub private vulnerability reporting](https://github.com/Pey-K/Cordia/security/advisories/new) (preferred)
+2. **Email**: Send details to the repository owner via GitHub profile contact if private reporting is unavailable
 
 ### What to Include
 
@@ -83,7 +83,7 @@ If you're running your own beacon:
 - **No Authentication**: The beacon has no user/auth; optional CORS, body size, and connection limits are available via env (see BEACON_SETUP.md)
 - **Public Invite Codes**: Invite codes are not cryptographically secure (they're opaque but predictable)
 - **IP Exposure**: P2P connections may expose your local IP address to peers
-- **Ephemeral messaging (planned)**: text messaging is planned; message encryption and persistence are future work
+- **Ephemeral messaging**: server chat and attachment messaging exist; end-to-end encryption and durable message persistence remain future work
 
 ### Privacy Protections
 

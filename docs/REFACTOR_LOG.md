@@ -5,7 +5,7 @@ This log records the decision trail for ownership refactors. Update it after eve
 ## Phase 0 - State Ownership Guardrails
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
@@ -28,17 +28,12 @@ Commit: pending
 ## Phase 0.5 - Tiny Stress And Render Probe
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
 - Added a dev-only stress fixture/probe helper for manual before/after render observations.
 - Runtime production behavior unchanged unless a developer explicitly imports and uses the helper in dev tooling.
-
-### Baseline Notes
-
-- Baseline measurements still need to be captured manually before Phase 3 transfer normalization.
-- The primary question is whether transfer progress wakes chat timeline or attachment rows unnecessarily.
 
 ### Validation
 
@@ -51,7 +46,7 @@ Commit: pending
 ## Phase 1 - Domain Type Extraction
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
@@ -64,16 +59,10 @@ Commit: pending
 
 - `npm run build` passed.
 
-### Notes
-
-- No fields were renamed.
-- No persisted data shapes changed.
-- No runtime logic was moved.
-
 ## Phase 2 - Attachment Presentation Builder
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
@@ -86,16 +75,10 @@ Commit: pending
 
 - `npm run build` passed.
 
-### Notes
-
-- No visual design changes were made.
-- No attachment state or action was removed.
-- The builder keeps compatibility fields such as `hasPath`, `notDownloaded`, `liveDownload`, and `downloadProgress` for existing render paths.
-
 ## Phase 3 - Transfer Normalization Bridge
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
@@ -109,38 +92,26 @@ Commit: pending
 
 - `npm run build` passed.
 
-### Notes
-
-- Existing transfer consumers still receive the old arrays.
-- This is a compatibility bridge, not the final transfer-store shape.
-- No persisted fields changed.
-
 ## Phase 4 - Transfer UI Throttling
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
 - Added explicit transfer UI throttle constants in `EphemeralMessagesContext`.
-- Progress commits now use `TRANSFER_UI_UPDATE_MS`.
-- Debug/speed/ETA/buffer commits and debug logging use `TRANSFER_DEBUG_UI_UPDATE_MS`.
-- Lifecycle updates such as start, complete, fail, reject, and cancel remain immediate through existing status upserts.
+- Progress commits now use `TRANSFER_UI_UPDATE_MS` (250ms).
+- Debug/speed/ETA/buffer commits and debug logging use `TRANSFER_DEBUG_UI_UPDATE_MS` (1000ms).
+- Lifecycle updates such as start, complete, fail, reject, and cancel remain immediate.
 
 ### Validation
 
 - `npm run build` passed.
 
-### Notes
-
-- Default progress UI throttle is `250ms`.
-- Debug metrics remain throttled separately at `1000ms`.
-- Render baseline still needs manual observation with the dev stress probe.
-
 ## Phase 5 - ID-Oriented Chat And Preview Groundwork
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
@@ -153,92 +124,273 @@ Commit: pending
 
 - `npm run build` passed.
 
-### Notes
+## Phase 6 - Media Preview Session Wiring (Deferred)
 
-- Chat UI design and layout were not changed.
-- The timeline still accepts existing grouped chat items; this phase only adds a narrow ID-based path.
-- Media preview behavior remains unchanged until session-based open/resolve is wired in a later focused pass.
+Date: 2026-05-27
+Status: **Deferred** (not skipped)
+
+### Planned scope
+
+- Open preview by reference IDs (`messageId`, `attachmentRefId`, gallery IDs).
+- Modal resolves current facts from selectors instead of copying rich preview objects into modal state.
+
+### Current state
+
+- `MediaPreviewSession` type and state slot exist in `MediaPreviewContext`.
+- All preview open paths still use rich `MediaPreviewState` objects.
+- Incremental migration planned in post-bridge Phase 14 (image first, then video, then audio).
 
 ## Phase 7 - Content And Seed/Share Ownership
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
 - Added pure content availability/path selectors in `src/domain/content/selectors.ts`.
 - Added seed/share domain types and selectors in `src/domain/sharing`.
 - Routed `isSharedInServer` and `getServersForSha` through the seed/share selectors.
-- Added `docs/PERSISTENCE_MIGRATION_NOTES.md` with the JSONL/snapshot migration target.
+- Added `docs/PERSISTENCE_MIGRATION_NOTES.md`.
 
 ### Validation
 
 - `npm run build` passed.
 
-### Notes
+## Phase 8 - Full Chat Timeline ID Migration (Deferred)
 
-- Existing localStorage data remains unchanged.
-- No persisted field names were changed.
-- SQLite remains deferred until the data shape stabilizes.
+Date: 2026-05-27
+Status: **Deferred** (not skipped)
+
+### Planned scope
+
+- `<ServerChatTimeline chatId={chatId} />` with `<MessageRow messageId={id} />` and attachment cards by `attachmentRefId`.
+- Remove broad transfer/history/callback prop bags from timeline rows.
+
+### Current state
+
+- `useMessageById` exists; timeline still receives grouped `chatItems` and global transfer arrays.
+- Partial groundwork from Phase 5; full migration deferred until Phase 13.
 
 ## Phase 9 - Rust System Command Split
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
 - Added `src-tauri/src/system_commands.rs`.
 - Moved clipboard, open-in-file-explorer, and path existence Tauri commands out of `main.rs`.
-- Kept command names and signatures unchanged.
-- Left frontend invocation code unchanged.
 
 ### Validation
 
 - `cargo check` passed from `src-tauri`.
 
-### Notes
-
-- This was a move-only Rust batch.
-- Attachment/download/server command logic remains in `main.rs` for later move-only passes.
-
-## Phase 10 - Performance Profile
+## Phase 10 - Performance Profile (Superseded)
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
+Superseded: Phase B (2026-05-27)
 
-### What changed
+### What changed (historical)
 
 - Added `performanceProfile` to `ThemeContext` with `quality`, `balanced`, and `low-end` options.
 - Persisted the profile in localStorage as `cordia.performanceProfile`.
 - Added a Performance Profile picker to Customize settings.
-- Added low-end CSS overrides that disable backdrop blur, shimmer/fade/toast animations, heavy shadows, and long transitions.
+- Added low-end CSS overrides.
 
-### Validation
+### Superseded by
 
-- `npm run build` passed.
-
-### Notes
-
-- Quality mode preserves existing visuals.
-- Low-end mode currently reduces visual effects; transfer/media behavioral tuning can now read the profile in later focused passes.
+- Phase B removes user-facing performance modes entirely.
+- Phase 16 applies performance-friendly behavior as default Cordia behavior, not optional modes.
 
 ## Phase 11 - Stress Fixtures And Budgets
 
 Date: 2026-05-13
-Commit: pending
+Commit: not committed (working tree)
 
 ### What changed
 
 - Expanded `src/lib/devStressFixture.ts` with configurable fixture sizes.
-- Added `createHeavyDevStressFixture()` for a 1,000-message baseline with hundreds of attachments and active-looking transfers.
+- Added `createHeavyDevStressFixture()`.
 - Added `docs/PERFORMANCE_BUDGETS.md`.
 
 ### Validation
 
 - `npm run build` passed.
 
+---
+
+## Phase A - Freeze And Validate
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Updated all prior phase commit fields to `not committed (working tree)`.
+- Added deferred entries for Phase 6 and Phase 8.
+- Repo trust cleanup (no runtime refactors):
+  - `LICENSE`: Roommate → Cordia Contributors
+  - `deploy/install.sh`: compose URL → Pey-K/Cordia
+  - `SECURITY.md`: GitHub private reporting; ephemeral messaging note updated
+  - Removed stale `beacon-server/meta.json` (local Windows path artifact)
+  - Removed root junk: `out.txt`, `refactor.cjs`, `refactor2.cjs`
+  - Moved `launch1.bat`–`launch4.bat` to `dev-scripts/`
+- Intentionally unchanged (backward compat): `rmmt:` localStorage keys, `ROOMMATE_DATA_DIR`, `.rmmt-cropper` CSS
+
+### Golden behavior checklist (Phase A baseline)
+
+Manual checklist from `docs/ATTACHMENT_GOLDEN_BEHAVIORS.md` — recorded at start of post-bridge work before Phases B–16. Items not individually exercised in CI; build + code review used as proxy until manual pass:
+
+- Attachment send/receive/preview paths: **unchanged** (no runtime edits in Phase A)
+- Transfer Center active rows: **unchanged**
+- Seeding/share selectors: **unchanged**
+
+Full manual golden pass required after Phase 12 Transfer Center migration.
+
+### Render probe baseline (pre-Phase 12)
+
+**Question:** When one transfer progresses, what rerenders?
+
+**Method:** Static code-path analysis + subscription audit (dev `useRenderCount` probe recommended during Phase 12 validation).
+
+| Component | Baseline (pre-Phase 12) | Expected after Phase 12 |
+|-----------|-------------------------|-------------------------|
+| `TransferCenterDownloadRow` | Yes — uses `useTransferByRequestId` | Yes (by `requestId`) |
+| `TransferCenterActiveUploadStripRow` | Yes — receives changing `transfers[]` prop from panel | Yes (per `requestId`) |
+| `TransferCenterPanel` | Yes — subscribes to full `attachmentTransfers`, rebuilds maps on every progress tick | Only on ID-list signature change |
+| `ServerChatTimeline` | Likely yes — receives `attachmentTransfers` from `ServerViewPage` | No on progress tick |
+| `ServerMessageContent` / attachment cards | Likely yes — parent props include transfer arrays | No on unrelated progress tick |
+
+**Root cause:** `attachmentTransfers` array is canonical; keyed indexes exist but most UI still subscribes to the array.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+- `cargo check` passed from `src-tauri` (2026-05-27)
+
+---
+
+## Phase B - Remove Performance Modes Shell
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Removed `performanceProfile`, `setPerformanceProfile`, and `PerformanceProfile` from `ThemeContext`.
+- Removed Performance Profile picker from `CustomizeSettings`.
+- Removed `[data-performance-profile="low-end"]` CSS rules from `index.css`.
+- One-time cleanup removes legacy `cordia.performanceProfile` from localStorage on app load.
+- Updated `docs/PERFORMANCE_BUDGETS.md` to describe default budgets (no mode toggles).
+- Phase 10 marked superseded (see Phase 10 section above).
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+- Transfer throttles and media behavior unchanged from pre-Phase-B
+
+---
+
+## Phase 12 - Keyed Transfer Source Of Truth
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Added `upsertTransferByRequestId` / `removeTransferByRequestId` on `ephemeralMessagesStore` (single-writer; map is canonical, array derived).
+- Added `src/domain/transfers/selectors.ts` and `src/features/transfers/viewModels.ts`.
+- Migrated `EphemeralMessagesContext` transfer upserts to store keyed API.
+- Migrated `TransferCenterPanel` off full `attachmentTransfers` subscription (uses ID signatures + row hooks).
+- Migrated `TransferCenterActiveUploadStripRow` to `attachmentId` + `requestIds` with keyed subscriptions.
+- Updated `TransferCenterButton` to use `activeDownloadIds`.
+
+### Render probe (post-Phase 12, code-path)
+
+- Transfer Center panel shell: should not rebuild maps on every progress tick (no `attachmentTransfers` subscription).
+- Download/upload strip rows: subscribe by `requestId`.
+- Chat timeline: still receives compat `attachmentTransfers` prop (Phase 13 debt).
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+
+---
+
+## Phase 13 - Selector-Driven Attachment Cards (partial)
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Split `buildAttachmentPresentationFromFacts` from legacy array-input builder.
+- Added `useAttachmentPresentation`, `useShareStatus`, `useLiveDownloadForAttachment` hooks.
+- `ServerMessageContent.getAttachmentPresentation` uses keyed `resolveLiveDownloadForAttachment` instead of `.find()` on message transfer rows.
+
 ### Notes
 
-- The fixture is dev-only and returns empty data in production builds.
-- Manual render observations still need to be captured while exercising the app.
+- Full chat prop removal and per-card hook components remain for follow-up slices.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+
+---
+
+## Phase 14 - Chat Image Preview Session (partial)
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Added `MediaPreviewSessionBridge` to resolve chat image sessions from store facts.
+- Chat image open path sets `MediaPreviewSession` + share-handler registry; video/audio still use rich `setMediaPreview`.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+
+---
+
+## Phase 15 - Rust Move-Only Split (partial)
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Added `src-tauri/src/attachments/hashing.rs` with SHA/piece hashing helpers moved from `main.rs`.
+
+### Notes
+
+- `downloads/` module and remaining attachment commands stay in `main.rs` for a follow-up move-only batch (tight coupling to session paths).
+
+### Validation
+
+- `cargo check` passed (2026-05-27)
+
+---
+
+## Phase 16 - Default Performance Hardening
+
+Date: 2026-05-27
+Commit: not committed (working tree)
+
+### What changed
+
+- Added `src/lib/performanceDefaults.ts` (transfer throttles, parallel caps, chat video preload default).
+- Wired transfer constants from `performanceDefaults` in `EphemeralMessagesContext`.
+- Chat inline video `preload` set to `none` via `CHAT_INLINE_VIDEO_PRELOAD`.
+- Updated `docs/PERFORMANCE_BUDGETS.md` for single-path defaults (Phase B).
+
+### Parallel caps
+
+- Kept existing `MAX_PARALLEL_DOWNLOADS = 2` — no evidence yet to lower further.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+- `cargo check` passed (2026-05-27)

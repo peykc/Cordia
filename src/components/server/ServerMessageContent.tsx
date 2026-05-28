@@ -16,8 +16,13 @@ import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
 import { buildChatAudioPreviewState, buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
 import { attachmentShareInChatVisible } from '../../lib/attachmentShareInChat'
 import { buildAttachmentPresentation } from '../../features/chat/buildAttachmentPresentation'
+import { resolveLiveDownloadForAttachment } from '../../features/chat/useAttachmentPresentation'
+import { useMediaPreview } from '../../contexts/MediaPreviewContext'
+import { registerChatPreviewShareHandler } from '../../features/media/chatPreviewShareRegistry'
+import { useEphemeralMessagesStore } from '../../stores/ephemeralMessagesStore'
 import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
 import type { ChatAudioGalleryItem, ChatMediaGalleryItem } from '../../domain/media/types'
+import { CHAT_INLINE_VIDEO_PRELOAD } from '../../lib/performanceDefaults'
 import {
   CHAT_MEDIA_MIN_W,
   CHAT_MEDIA_GRID_MAX_W,
@@ -93,7 +98,6 @@ export function ServerMessageContent({
   const {
     identity,
     unsharedAttachmentRecords,
-    attachmentTransfersByMessageId,
     rejectedDownloadByAttachmentId,
     activeUploadByAttachmentId,
     sharedByAttachmentId,
@@ -119,6 +123,8 @@ export function ServerMessageContent({
     getProfile,
     fallbackNameForUser,
   } = callbacks || {}
+
+  const { setMediaPreviewSession } = useMediaPreview()
 
   const shareInChatVisible = (att: EphemeralAttachmentMeta, isOwn: boolean, hasPathStr: string | undefined) =>
     attachmentShareInChatVisible({
@@ -146,6 +152,23 @@ export function ServerMessageContent({
     const mediaOnly = attachmentsList.filter((a: EphemeralAttachmentMeta) =>
       isMediaType(getFileTypeFromExt(a.file_name) as Parameters<typeof isMediaType>[0])
     )
+
+    if (type === 'image') {
+      const isOwnAtt = msg.from_user_id === identity?.user_id
+      registerChatPreviewShareHandler(att.attachment_id, () =>
+        handleShareAgainAttachment(att, isOwnAtt, hasPath)
+      )
+      setMediaPreviewSession({
+        source: 'chat',
+        messageId: msg.id,
+        attachmentRefId: att.attachment_id,
+        galleryAttachmentRefIds:
+          mediaOnly.length >= 2 ? mediaOnly.map((a: EphemeralAttachmentMeta) => a.attachment_id) : undefined,
+        startIndex: mediaOnly.findIndex((a: EphemeralAttachmentMeta) => a.attachment_id === att.attachment_id),
+      })
+      return
+    }
+
     let chatMediaGallery: { items: ChatMediaGalleryItem[]; startIndex: number } | undefined
     if (mediaOnly.length >= 2) {
       const startIndex = mediaOnly.findIndex((a: EphemeralAttachmentMeta) => a.attachment_id === att.attachment_id)
@@ -277,15 +300,18 @@ export function ServerMessageContent({
   const hostOnlineForAttachment: boolean = rowModel?.hostOnlineForAttachment ?? false
   const swarmSourceCount: number = Number(rowModel?.swarmSourceCount ?? 0)
 
-  const attachmentTransferRows =
-    attachmentTransfersByMessageId && msg ? attachmentTransfersByMessageId[msg.id] ?? [] : []
-
-  const getAttachmentPresentation = (att: { attachment_id: string; sha256?: string; preview_path?: string | null }) => {
+  const getAttachmentPresentation = (att: { attachment_id: string; sha256?: string; preview_path?: string | null; file_name?: string }) => {
     const isOwn = msg.from_user_id === identity?.user_id
+    const { transfersByRequestId, activeDownloadIds } = useEphemeralMessagesStore.getState()
+    const liveDownload = resolveLiveDownloadForAttachment(
+      transfersByRequestId,
+      activeDownloadIds,
+      att.attachment_id
+    )
     return buildAttachmentPresentation({
       att: att as EphemeralAttachmentMeta,
       isOwn,
-      attachmentTransferRows,
+      attachmentTransferRows: [],
       transferHistory: [],
       sharedAttachments: [],
       sharedByAttachmentId,
@@ -293,6 +319,7 @@ export function ServerMessageContent({
       unsharedAttachmentRecords: unsharedAttachmentRecords ?? {},
       hasAccessibleCompletedDownload: hasAccessibleCompletedDownload ?? (() => false),
       getCachedPathForSha: getCachedPathForSha ?? (() => null),
+      liveDownload,
     })
   }
 
@@ -665,7 +692,7 @@ export function ServerMessageContent({
                                                                       className="object-cover"
                                                                       muted
                                                                       playsInline
-                                                                      preload="auto"
+                                                                      preload={CHAT_INLINE_VIDEO_PRELOAD}
                                                                       onLoadedMetadata={onVideoMetadata}
                                                                     />
                                                                   )}
@@ -675,7 +702,7 @@ export function ServerMessageContent({
                                                                       className="!absolute !w-0 !h-0 !opacity-0 !pointer-events-none !min-w-0 !min-h-0"
                                                                       muted
                                                                       playsInline
-                                                                      preload="metadata"
+                                                                      preload={CHAT_INLINE_VIDEO_PRELOAD}
                                                                       onLoadedMetadata={onVideoMetadata}
                                                                     />
                                                                   ) : null}
@@ -830,7 +857,7 @@ export function ServerMessageContent({
                                                                 {thumbPath ? (
                                                                   <img src={convertFileSrc(thumbPath)} alt="" loading="lazy" className="object-cover" />
                                                                 ) : (
-                                                                  <video src={convertFileSrc(hasPath)} className="object-cover" muted playsInline preload="auto" />
+                                                                  <video src={convertFileSrc(hasPath)} className="object-cover" muted playsInline preload={CHAT_INLINE_VIDEO_PRELOAD} />
                                                                 )}
                                                               </ChatMediaSlot>
                                                               <span className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 pointer-events-none rounded-lg">
@@ -1416,7 +1443,7 @@ export function ServerMessageContent({
                                                                             className="!absolute !w-0 !h-0 !opacity-0 !pointer-events-none !min-w-0 !min-h-0"
                                                                             muted
                                                                             playsInline
-                                                                            preload="metadata"
+                                                                            preload={CHAT_INLINE_VIDEO_PRELOAD}
                                                                             onLoadedMetadata={onVideoMetadata}
                                                                             onError={() => {
                                                                               // no-op: metadata probe failures are tolerated
@@ -1430,7 +1457,7 @@ export function ServerMessageContent({
                                                                         className="object-cover"
                                                                         muted
                                                                         playsInline
-                                                                        preload="metadata"
+                                                                        preload={CHAT_INLINE_VIDEO_PRELOAD}
                                                                         onLoadedMetadata={onVideoMetadata}
                                                                         onError={() => {
                                                                           // no-op: render fallback handled elsewhere

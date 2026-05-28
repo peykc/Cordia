@@ -19,6 +19,7 @@ import { SettingsModalProvider } from './contexts/SettingsModalContext'
 import { TransferCenterModalProvider } from './contexts/TransferCenterModalContext'
 import { NotificationsModalProvider } from './contexts/NotificationsModalContext'
 import { MediaPreviewProvider, useMediaPreview } from './contexts/MediaPreviewContext'
+import { MediaPreviewSessionBridge } from './features/media/MediaPreviewSessionBridge'
 import { VideoFullscreenProvider, useVideoFullscreen } from './contexts/VideoFullscreenContext'
 import TitleBar from './components/TitleBar'
 import { WindowResizeHandles } from './components/WindowResizeHandles'
@@ -70,7 +71,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function MediaPreviewRoot() {
-  const { mediaPreview, setMediaPreview } = useMediaPreview()
+  const { mediaPreview, setMediaPreview, setMediaPreviewSession } = useMediaPreview()
   const location = useLocation()
   const previewRef = useRef(mediaPreview)
   previewRef.current = mediaPreview
@@ -99,6 +100,7 @@ function MediaPreviewRoot() {
       onClose={() => {
         if (mediaPreview.url?.startsWith('blob:')) URL.revokeObjectURL(mediaPreview.url)
         setMediaPreview(null)
+        setMediaPreviewSession(null)
       }}
     />
   )
@@ -186,6 +188,7 @@ function App() {
                                     <TransferCenterModalProvider>
                                       <NotificationsModalProvider>
                                         <MediaPreviewProvider>
+                                          <MediaPreviewSessionBridge />
                                           <VideoFullscreenProvider>
                                             <ThemeProvider>
                                               <ServerSyncBootstrap />

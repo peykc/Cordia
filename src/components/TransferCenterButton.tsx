@@ -1,4 +1,3 @@
-import { useMemo } from 'react'
 import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
 import { ArrowUpDown } from 'lucide-react'
 import { Button } from './ui/button'
@@ -6,21 +5,16 @@ import { Tooltip } from './Tooltip'
 import { useTransferCenterModal } from '../contexts/TransferCenterModalContext'
 export function TransferCenterButton() {
   const { openTransferCenter, anchorRef } = useTransferCenterModal()
-  const attachmentTransfers = useEphemeralMessagesStore(s => s.attachmentTransfers)
-  const activeDownloads = useMemo(
-    () =>
-      attachmentTransfers.filter(
-        (t) =>
-          t.direction === 'download' &&
-          (t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring')
-      ),
-    [attachmentTransfers]
-  )
-  const activeCount = activeDownloads.length
-  const averageProgress =
-    activeCount > 0
-      ? activeDownloads.reduce((sum, t) => sum + Math.max(0, Math.min(1, t.progress || 0)), 0) / activeCount
-      : 0
+  const activeDownloadIds = useEphemeralMessagesStore((s) => s.activeDownloadIds)
+  const activeCount = activeDownloadIds.length
+  const averageProgress = useEphemeralMessagesStore((s) => {
+    if (s.activeDownloadIds.length === 0) return 0
+    let sum = 0
+    for (const id of s.activeDownloadIds) {
+      sum += Math.max(0, Math.min(1, s.transfersByRequestId[id]?.progress ?? 0))
+    }
+    return sum / s.activeDownloadIds.length
+  })
 
   return (
     <Tooltip content="Open transfer center" side="bottom">

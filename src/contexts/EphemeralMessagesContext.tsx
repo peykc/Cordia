@@ -44,6 +44,11 @@ import type {
 } from '../domain/messages/types'
 import type { AttachmentTransferState, TransferHistoryEntry } from '../domain/transfers/types'
 import { getServersForContentSha, isContentSharedInServer } from '../domain/sharing/selectors'
+import {
+  MAX_PARALLEL_DOWNLOADS,
+  TRANSFER_DEBUG_UI_UPDATE_MS,
+  TRANSFER_UI_UPDATE_MS,
+} from '../lib/performanceDefaults'
 
 export type { WaveformPeaksPayload } from '../domain/content/types'
 export type { EphemeralAttachmentMeta } from '../domain/attachments/types'
@@ -115,7 +120,6 @@ type UploadSession = {
   subscribers: Map<string, UploadSubscriber>
 }
 
-const MAX_PARALLEL_DOWNLOADS = 2
 const MAX_ACTIVE_UPLOAD_SESSIONS = 2
 const MAX_UPLOAD_CACHE_BYTES = 2 * 1024 * 1024
 const UPLOAD_SESSION_IDLE_TIMEOUT_MS = 30_000
@@ -123,8 +127,6 @@ const UPLOAD_MAX_BUFFER = 8 * 1024 * 1024
 const UPLOAD_LOW_WATER = 2 * 1024 * 1024
 const MAX_PENDING_BYTES = 1024 * 1024
 const RESUME_PENDING_BYTES = 512 * 1024
-const TRANSFER_UI_UPDATE_MS = 250
-const TRANSFER_DEBUG_UI_UPDATE_MS = 1000
 
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
@@ -348,7 +350,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     last_seen_at_by_server: {},
   })
   const attachmentTransfers = useEphemeralMessagesStore((s) => s.attachmentTransfers)
-  const setAttachmentTransfers = useEphemeralMessagesStore((s) => s.setAttachmentTransfers)
+  const upsertTransferByRequestId = useEphemeralMessagesStore((s) => s.upsertTransferByRequestId)
+  const removeTransferByRequestId = useEphemeralMessagesStore((s) => s.removeTransferByRequestId)
   const transferHistory = useEphemeralMessagesStore((s) => s.transferHistory)
   const setTransferHistory = useEphemeralMessagesStore((s) => s.setTransferHistory)
   const sharedAttachments = useEphemeralMessagesStore((s) => s.sharedAttachments)
@@ -501,13 +504,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
-    setAttachmentTransfers((prev) => {
-      const idx = prev.findIndex((t) => t.request_id === requestId)
-      if (idx < 0) return [...prev, updater(undefined)]
-      const next = [...prev]
-      next[idx] = updater(prev[idx])
-      return next
-    })
+    upsertTransferByRequestId(requestId, (prev) => updater(prev))
   }
 
   const updateTransferProgress = (requestId: string, progress: number) => {
@@ -1020,7 +1017,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
     removeQueuedDownloadRequest(requestId)
     cleanupTransferPeer(requestId)
-    setAttachmentTransfers((prev) => prev.filter((t) => t.request_id !== requestId))
+    removeTransferByRequestId(requestId)
     setTransferHistory((prev) => prev.filter((h) => h.request_id !== requestId))
     if (
       transfer &&
@@ -1576,9 +1573,16 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         if (parsed.kind === 'attachment_reshared' && typeof parsed.attachment_id === 'string' && parsed.attachment_id.trim()) {
           const attachmentId = parsed.attachment_id.trim()
           if (detail.from_user_id !== identity?.user_id) {
-            setAttachmentTransfers((prev) =>
-              prev.filter((t) => !(t.direction === 'download' && t.attachment_id === attachmentId && t.status === 'rejected'))
-            )
+            const snapshot = useEphemeralMessagesStore.getState().transfersByRequestId
+            for (const [requestId, transfer] of Object.entries(snapshot)) {
+              if (
+                transfer.direction === 'download' &&
+                transfer.attachment_id === attachmentId &&
+                transfer.status === 'rejected'
+              ) {
+                removeTransferByRequestId(requestId)
+              }
+            }
             setTransferHistory((prev) =>
               prev.filter((h) => !(h.direction === 'download' && h.attachment_id === attachmentId && h.status === 'rejected'))
             )

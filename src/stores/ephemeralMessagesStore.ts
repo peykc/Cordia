@@ -12,6 +12,7 @@ function bucketKey(signingPubkey: string, chatId: string): string {
 export interface EphemeralMessagesState {
   messagesByBucket: MessageBuckets
   messagesById: Record<string, EphemeralChatMessage>
+  /** Derived compatibility array — prefer keyed lookups for subscriptions. */
   attachmentTransfers: AttachmentTransferState[]
   transfersByRequestId: Record<string, AttachmentTransferState>
   activeDownloadIds: string[]
@@ -23,7 +24,13 @@ export interface EphemeralMessagesState {
   serverSharedSha: Record<string, string[]>
   contentCacheBySha: Record<string, string>
   setMessagesByBucket: (updater: MessageBuckets | ((prev: MessageBuckets) => MessageBuckets)) => void
+  /** Compatibility setter — prefer upsertTransferByRequestId / removeTransferByRequestId. */
   setAttachmentTransfers: (updater: AttachmentTransferState[] | ((prev: AttachmentTransferState[]) => AttachmentTransferState[])) => void
+  upsertTransferByRequestId: (
+    requestId: string,
+    updater: (prev: AttachmentTransferState | undefined) => AttachmentTransferState
+  ) => void
+  removeTransferByRequestId: (requestId: string) => void
   setTransferHistory: (updater: TransferHistoryEntry[] | ((prev: TransferHistoryEntry[]) => TransferHistoryEntry[])) => void
   setSharedAttachments: (updater: SharedAttachmentItem[] | ((prev: SharedAttachmentItem[]) => SharedAttachmentItem[])) => void
   setServerSharedSha: (updater: Record<string, string[]> | ((prev: Record<string, string[]>) => Record<string, string[]>)) => void
@@ -38,17 +45,18 @@ function isActiveTransfer(t: AttachmentTransferState): boolean {
   return t.status === 'queued' || t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring'
 }
 
-function indexTransfers(transfers: AttachmentTransferState[]) {
-  const transfersByRequestId: Record<string, AttachmentTransferState> = {}
+function indexTransfers(transfersByRequestId: Record<string, AttachmentTransferState>) {
+  const attachmentTransfers = Object.values(transfersByRequestId)
   const activeDownloadIds: string[] = []
   const activeUploadIds: string[] = []
-  for (const transfer of transfers) {
-    transfersByRequestId[transfer.request_id] = transfer
+  for (const transfer of attachmentTransfers) {
     if (!isActiveTransfer(transfer)) continue
     if (transfer.direction === 'download') activeDownloadIds.push(transfer.request_id)
     else activeUploadIds.push(transfer.request_id)
   }
-  return { transfersByRequestId, activeDownloadIds, activeUploadIds }
+  activeDownloadIds.sort()
+  activeUploadIds.sort()
+  return { attachmentTransfers, transfersByRequestId, activeDownloadIds, activeUploadIds }
 }
 
 function indexTransferHistory(history: TransferHistoryEntry[]) {
@@ -92,7 +100,23 @@ export const useEphemeralMessagesStore = create<EphemeralMessagesState>((set) =>
   setAttachmentTransfers: (updater) =>
     set((s) => {
       const attachmentTransfers = runUpdater(updater, s.attachmentTransfers)
-      return { attachmentTransfers, ...indexTransfers(attachmentTransfers) }
+      const transfersByRequestId: Record<string, AttachmentTransferState> = {}
+      for (const transfer of attachmentTransfers) {
+        transfersByRequestId[transfer.request_id] = transfer
+      }
+      return indexTransfers(transfersByRequestId)
+    }),
+  upsertTransferByRequestId: (requestId, updater) =>
+    set((s) => {
+      const nextTransfer = updater(s.transfersByRequestId[requestId])
+      const transfersByRequestId = { ...s.transfersByRequestId, [requestId]: nextTransfer }
+      return indexTransfers(transfersByRequestId)
+    }),
+  removeTransferByRequestId: (requestId) =>
+    set((s) => {
+      if (!s.transfersByRequestId[requestId]) return s
+      const { [requestId]: _removed, ...rest } = s.transfersByRequestId
+      return indexTransfers(rest)
     }),
   setTransferHistory: (updater) =>
     set((s) => {
@@ -126,4 +150,24 @@ export function useTransferByRequestId(requestId: string | undefined): Attachmen
 
 export function useTransferHistoryByRequestId(requestId: string | undefined): TransferHistoryEntry | undefined {
   return useEphemeralMessagesStore((state) => (requestId ? state.transferHistoryByRequestId[requestId] : undefined))
+}
+
+export function useActiveUploadRequestIdsForAttachment(attachmentId: string | undefined): string[] {
+  return useEphemeralMessagesStore((state) => {
+    if (!attachmentId) return []
+    return state.activeUploadIds.filter(
+      (id) => state.transfersByRequestId[id]?.attachment_id === attachmentId
+    )
+  })
+}
+
+export function useLiveDownloadForAttachment(attachmentId: string | undefined): AttachmentTransferState | undefined {
+  return useEphemeralMessagesStore((state) => {
+    if (!attachmentId) return undefined
+    for (const id of state.activeDownloadIds) {
+      const transfer = state.transfersByRequestId[id]
+      if (transfer?.attachment_id === attachmentId && transfer.direction === 'download') return transfer
+    }
+    return undefined
+  })
 }

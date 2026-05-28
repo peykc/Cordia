@@ -35,56 +35,32 @@ export type AttachmentPresentation = {
   showDownloadProgress: boolean
 }
 
-export function buildAttachmentPresentation({
-  att,
-  isOwn,
-  attachmentTransferRows,
-  transferHistory,
-  sharedAttachments,
-  sharedByAttachmentId,
-  completedDownloadPathByAttachmentId,
-  unsharedAttachmentRecords,
-  hasAccessibleCompletedDownload,
-  getCachedPathForSha,
-}: {
-  att: EphemeralAttachmentMeta
+export type AttachmentPresentationFacts = {
+  attachmentRef: EphemeralAttachmentMeta
   isOwn: boolean
-  attachmentTransferRows: AttachmentTransferState[]
-  transferHistory: TransferHistoryEntry[]
-  sharedAttachments: SharedAttachmentPresentationItem[]
-  sharedByAttachmentId?: Record<string, SharedAttachmentPresentationItem | undefined>
-  completedDownloadPathByAttachmentId?: Record<string, string | undefined>
-  unsharedAttachmentRecords: Record<string, UnsharedAttachmentRecord | null | undefined>
+  liveDownload?: AttachmentTransferState
+  completedDownloadPath?: string
+  sharedItem?: SharedAttachmentPresentationItem
+  cachedPath?: string
+  unsharedRec?: UnsharedAttachmentRecord | null
   hasAccessibleCompletedDownload: (id: string | null | undefined) => boolean
-  getCachedPathForSha: (sha: string | undefined) => string | null
-}): AttachmentPresentation {
-  const sharedItem = sharedByAttachmentId
-    ? sharedByAttachmentId[att.attachment_id]
-    : sharedAttachments.find((s) => s.attachment_id === att.attachment_id)
-  const unsharedRec = unsharedAttachmentRecords[att.attachment_id]
-  const completedDownloadPath = completedDownloadPathByAttachmentId
-    ? completedDownloadPathByAttachmentId[att.attachment_id]
-    : transferHistory.find(
-        (h) =>
-          h.direction === 'download' &&
-          h.attachment_id === att.attachment_id &&
-          h.status === 'completed' &&
-          h.saved_path
-      )?.saved_path
-  const cachedPath = getCachedPathForSha(att.sha256) ?? undefined
-  const liveDownload = attachmentTransferRows.find(
-    (t) =>
-      t.direction === 'download' &&
-      t.attachment_id === att.attachment_id &&
-      (t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring')
-  )
+}
+
+export function buildAttachmentPresentationFromFacts({
+  attachmentRef: att,
+  isOwn,
+  liveDownload,
+  completedDownloadPath,
+  sharedItem,
+  cachedPath,
+  unsharedRec,
+  hasAccessibleCompletedDownload,
+}: AttachmentPresentationFacts): AttachmentPresentation {
   const hasCompletedDownload = hasAccessibleCompletedDownload(att.attachment_id)
   const hasPath = isOwn
     ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? cachedPath ?? att.preview_path ?? undefined)
     : (completedDownloadPath ?? cachedPath ?? undefined)
-  const thumbPath = isOwn
-    ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
-    : undefined
+  const thumbPath = isOwn ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined) : undefined
   const notDownloaded = !isOwn && !hasCompletedDownload && !hasPath
   const downloadProgress = liveDownload
     ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100)))
@@ -134,4 +110,65 @@ export function buildAttachmentPresentation({
     downloadProgress,
     showDownloadProgress,
   }
+}
+
+/** Legacy broad-input builder — resolves facts then delegates to buildAttachmentPresentationFromFacts. */
+export function buildAttachmentPresentation({
+  att,
+  isOwn,
+  attachmentTransferRows,
+  transferHistory,
+  sharedAttachments,
+  sharedByAttachmentId,
+  completedDownloadPathByAttachmentId,
+  unsharedAttachmentRecords,
+  hasAccessibleCompletedDownload,
+  getCachedPathForSha,
+  liveDownload: liveDownloadOverride,
+}: {
+  att: EphemeralAttachmentMeta
+  isOwn: boolean
+  attachmentTransferRows?: AttachmentTransferState[]
+  transferHistory?: TransferHistoryEntry[]
+  sharedAttachments?: SharedAttachmentPresentationItem[]
+  sharedByAttachmentId?: Record<string, SharedAttachmentPresentationItem | undefined>
+  completedDownloadPathByAttachmentId?: Record<string, string | undefined>
+  unsharedAttachmentRecords: Record<string, UnsharedAttachmentRecord | null | undefined>
+  hasAccessibleCompletedDownload: (id: string | null | undefined) => boolean
+  getCachedPathForSha: (sha: string | undefined) => string | null
+  liveDownload?: AttachmentTransferState
+}): AttachmentPresentation {
+  const sharedItem = sharedByAttachmentId
+    ? sharedByAttachmentId[att.attachment_id]
+    : sharedAttachments?.find((s) => s.attachment_id === att.attachment_id)
+  const unsharedRec = unsharedAttachmentRecords[att.attachment_id]
+  const completedDownloadPath = completedDownloadPathByAttachmentId
+    ? completedDownloadPathByAttachmentId[att.attachment_id]
+    : transferHistory?.find(
+        (h) =>
+          h.direction === 'download' &&
+          h.attachment_id === att.attachment_id &&
+          h.status === 'completed' &&
+          h.saved_path
+      )?.saved_path
+  const cachedPath = getCachedPathForSha(att.sha256) ?? undefined
+  const liveDownload =
+    liveDownloadOverride ??
+    attachmentTransferRows?.find(
+      (t) =>
+        t.direction === 'download' &&
+        t.attachment_id === att.attachment_id &&
+        (t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring')
+    )
+
+  return buildAttachmentPresentationFromFacts({
+    attachmentRef: att,
+    isOwn,
+    liveDownload,
+    completedDownloadPath,
+    sharedItem,
+    cachedPath,
+    unsharedRec,
+    hasAccessibleCompletedDownload,
+  })
 }

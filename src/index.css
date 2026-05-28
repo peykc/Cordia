@@ -200,39 +200,6 @@
       background-position: -200% 0;
     }
   }
-
-  [data-performance-profile="low-end"] .animate-shimmer,
-  [data-performance-profile="low-end"] .fade-in,
-  [data-performance-profile="low-end"] .animate-fade-in,
-  [data-performance-profile="low-end"] .toast-slide-in,
-  [data-performance-profile="low-end"] .toast-slide-out {
-    animation: none !important;
-  }
-
-  [data-performance-profile="low-end"] .backdrop-blur,
-  [data-performance-profile="low-end"] .backdrop-blur-sm,
-  [data-performance-profile="low-end"] .backdrop-blur-md,
-  [data-performance-profile="low-end"] .backdrop-blur-lg,
-  [data-performance-profile="low-end"] .backdrop-blur-xl,
-  [data-performance-profile="low-end"] .backdrop-blur-2xl,
-  [data-performance-profile="low-end"] .backdrop-blur-3xl {
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
-
-  [data-performance-profile="low-end"] .shadow,
-  [data-performance-profile="low-end"] .shadow-sm,
-  [data-performance-profile="low-end"] .shadow-md,
-  [data-performance-profile="low-end"] .shadow-lg,
-  [data-performance-profile="low-end"] .shadow-xl,
-  [data-performance-profile="low-end"] .shadow-2xl {
-    box-shadow: none !important;
-  }
-
-  [data-performance-profile="low-end"] * {
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
 }
 
 /* Ensure window can be resized from all edges */

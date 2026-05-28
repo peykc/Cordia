@@ -2,6 +2,8 @@
 
 Use these budgets during refactor smoke checks, especially with the dev stress fixtures in `src/lib/devStressFixture.ts`.
 
+Cordia has one production behavior path — no user-facing performance modes. These defaults apply to everyone.
+
 ## Dev Fixtures
 
 - Tiny baseline: `createDevStressFixture()` creates roughly 200 messages, 50 attachments, and 10 active-looking transfers.
@@ -12,12 +14,12 @@ The fixtures are dev-only and return empty data in production builds.
 ## Budgets
 
 - No full chat timeline rerender from one transfer progress tick.
-- Transfer progress UI should update at most 4 times per second by default.
-- Debug transfer metrics should update less often than progress.
+- Transfer progress UI should update at most 4 times per second by default (~250ms throttle).
+- Debug transfer metrics should update less often than progress (~1000ms or dev-only).
 - No mounted video/audio elements outside visible or actively playing media.
 - Opening a chat with 1,000 messages should avoid obvious main-thread stalls after initial data preparation.
 - No large localStorage parse/stringify should happen during normal chat entry after storage migration work begins.
-- Low-end mode should disable backdrop blur, shimmer/fade animations, heavy shadows, and long transitions.
+- No large binary/base64 blobs in React state.
 
 ## Manual Probe Notes
 
@@ -27,4 +29,3 @@ Suggested checks:
 
 - Start a fake or real transfer and watch whether `ServerViewPage`, timeline rows, and attachment cards rerender on every tick.
 - Open Transfer Center during active transfers and confirm only active rows visibly update.
-- Toggle low-end mode and confirm blur/shimmer/shadow reductions apply while quality mode remains unchanged.

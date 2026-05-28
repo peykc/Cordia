@@ -18,7 +18,7 @@ cd "$INSTALL_DIR"
 
 # Download docker-compose.yml
 echo "Downloading configuration..."
-curl -fsSL https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/Pey-K/Cordia/main/deploy/docker-compose.yml -o docker-compose.yml
 
 echo ""
 echo "✅ Configuration downloaded successfully!"

@@ -11,11 +11,20 @@ import { useIdentity } from '../contexts/IdentityContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
+import { useEphemeralMessagesStore, useTransferByRequestId } from '../stores/ephemeralMessagesStore'
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
 import { transferListThumbnailPath } from '../lib/transferListMedia'
 import { cn } from '../lib/utils'
 
-export type ActiveUploadGroup = { attachmentId: string; transfers: AttachmentTransferState[] }
+export type ActiveUploadGroup = { attachmentId: string; requestIds: string[] }
+
+function useUploadTransfersForRequestIds(requestIds: string[]): AttachmentTransferState[] {
+  return useEphemeralMessagesStore((state) =>
+    requestIds
+      .map((id) => state.transfersByRequestId[id])
+      .filter((t): t is AttachmentTransferState => t != null)
+  )
+}
 
 function formatEta(seconds?: number): string {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '—'
@@ -62,15 +71,32 @@ function pickPrimaryUpload(transfers: AttachmentTransferState[]): AttachmentTran
   })[0]!
 }
 
-type Props = { group: ActiveUploadGroup; shared: SharedAttachmentItem | undefined }
+type Props = { attachmentId: string; requestIds: string[]; shared: SharedAttachmentItem | undefined }
 
-function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
+function UploadRecipientLine({ requestId, peerLabel }: { requestId: string; peerLabel: (uid: string) => string }) {
+  const transfer = useTransferByRequestId(requestId)
+  if (!transfer) return null
+  return (
+    <div className="border-b border-border/40 px-2 py-1.5 text-[11px] last:border-b-0">
+      <div className="truncate font-medium">{peerLabel(transfer.to_user_id)}</div>
+      <div className="mt-0.5 text-[10px] text-muted-foreground">
+        {transfer.status}
+        {' | '}
+        {formatRate(transfer.debug_kbps)}
+        {' | '}
+        ETA {formatEta(transfer.debug_eta_seconds)}
+      </div>
+    </div>
+  )
+}
+
+function TransferCenterActiveUploadStripRowInner({ attachmentId: _attachmentId, requestIds, shared }: Props) {
   const { identity } = useIdentity()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const { findMessageById } = useEphemeralMessages()
   const { setMediaPreview } = useMediaPreview()
-  const { transfers } = group
+  const transfers = useUploadTransfersForRequestIds(requestIds)
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
@@ -196,15 +222,17 @@ function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
     ]
   )
 
-  const sortedTransfers = useMemo(
+  const sortedRequestIds = useMemo(
     () =>
-      [...transfers].sort((a, b) => {
-        const la = peerLabel(a.to_user_id)
-        const lb = peerLabel(b.to_user_id)
+      [...requestIds].sort((a, b) => {
+        const ta = useEphemeralMessagesStore.getState().transfersByRequestId[a]
+        const tb = useEphemeralMessagesStore.getState().transfersByRequestId[b]
+        const la = ta ? peerLabel(ta.to_user_id) : a
+        const lb = tb ? peerLabel(tb.to_user_id) : b
         if (la !== lb) return la.localeCompare(lb)
-        return a.request_id.localeCompare(b.request_id)
+        return a.localeCompare(b)
       }),
-    [transfers, peerLabel]
+    [requestIds, peerLabel]
   )
 
   const peerCount = peerEntries.length
@@ -343,20 +371,8 @@ function TransferCenterActiveUploadStripRowInner({ group, shared }: Props) {
             }}
           >
             <p className="px-2 pb-1 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">Recipients</p>
-            {sortedTransfers.map((t) => (
-              <div
-                key={t.request_id}
-                className="border-b border-border/40 px-2 py-1.5 text-[11px] last:border-b-0"
-              >
-                <div className="truncate font-medium">{peerLabel(t.to_user_id)}</div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground">
-                  {t.status}
-                  {' | '}
-                  {formatRate(t.debug_kbps)}
-                  {' | '}
-                  ETA {formatEta(t.debug_eta_seconds)}
-                </div>
-              </div>
+            {sortedRequestIds.map((requestId) => (
+              <UploadRecipientLine key={requestId} requestId={requestId} peerLabel={peerLabel} />
             ))}
           </div>,
           document.body
