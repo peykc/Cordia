@@ -188,3 +188,32 @@ export function selectChatAttachmentRowFactsSig(indexes: AttachmentTransferIndex
     .join(',')
   return `${rejectedKeys}\n${uploadKeys}\n${completedKeys}`
 }
+
+/** Cold fields only — progress ticks on live transfers must not change this signature. */
+export function selectHistoryColdPersistenceSig(state: {
+  historyIds: readonly string[]
+  transferHistoryByRequestId: Record<string, TransferHistoryEntry>
+}): string {
+  const parts: string[] = []
+  for (const id of state.historyIds) {
+    const row = state.transferHistoryByRequestId[id]
+    if (!row) continue
+    parts.push(
+      [
+        row.request_id,
+        row.status,
+        row.saved_path ?? '',
+        row.is_inaccessible ? '1' : '0',
+        row.file_name,
+        row.attachment_id,
+        row.direction,
+        row.from_user_id,
+        row.to_user_id,
+        String(row.size_bytes ?? ''),
+        row.created_at,
+        row.server_signing_pubkey ?? '',
+      ].join('|')
+    )
+  }
+  return parts.join('\n')
+}

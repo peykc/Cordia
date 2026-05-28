@@ -449,3 +449,44 @@ Commit: `1e32c1a`
 - `npm run build` passed (2026-05-27)
 - `cargo check` passed (2026-05-27)
 - Manual golden checklist — re-run required after this phase
+
+---
+
+## Golden pass (pre-Phase 13.5 baseline)
+
+Date: 2026-05-27
+
+Recorded before 13.5 hot/cold split code:
+
+- Phase 13 build gates passed; transfer flows exercised in prior session (active download/upload rows, cancel, completed history, seeding, same-SHA reuse per `docs/ATTACHMENT_GOLDEN_BEHAVIORS.md`).
+- Known pre-13.5 leak: Provider subscribed to `attachmentTransfers` / `transferHistory`; mirror effect wrote live `progress` into history on every tick → provider rerenders + localStorage churn.
+
+---
+
+## Phase 13.5 — Hot/cold transfer split (complete)
+
+Date: 2026-05-27
+
+### What changed
+
+- **Removed history mirror** — deleted `useEffect(..., [attachmentTransfers])` that copied live progress into `transferHistory`.
+- **`syncTransferHistoryLifecycle`** — idempotent cold writes at explicit lifecycle sites (`start` / `status` / `terminal`); cancel remains Choice A (remove live + filter history, no canceled terminal row).
+- **Provider desubscribed** — no React hooks on `attachmentTransfers` or `transferHistory`; orchestration uses `getState()` / keyed lookups.
+- **`TransferHistoryPersistence`** — `store.subscribe` + debounced cold signature (`selectHistoryColdPersistenceSig`, excludes progress) for localStorage; window close prune moved here.
+- **Stable active ID arrays** — `sameStringArray` preserves refs when membership unchanged (progress-only upserts).
+- **Transfer Center active downloads** — rows built from `activeDownloadIds` + static `ActiveDownloadRowView`; live progress via `useTransferByRequestId` in row only.
+- **`attachmentTransfers` compat-only** — grep gate: no UI React subscriptions; store derivation / legacy setter / `getState()` orchestration only.
+
+### Render probe (post-13.5, code-path)
+
+- Progress ticks update `transfersByRequestId` only; `transferHistory` unchanged during active download progress.
+- Provider orchestration body does not React-subscribe to hot transfer slices.
+- Active download strip recomputes row metadata only when `activeDownloadRequestIdsSig` changes (membership), not on progress.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+- `cargo check` passed (2026-05-27)
+- **Check 1 (localStorage):** cold signature excludes progress; persistence subscribe no-ops on progress-only live ticks.
+- **Check 2 (terminal history):** explicit `terminal` writes on download complete/fail/reject and upload complete/fail replace mirror.
+- Manual golden checklist — re-run required after this phase

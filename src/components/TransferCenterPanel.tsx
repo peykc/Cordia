@@ -12,11 +12,13 @@ import {
   selectActiveUploadSessionCount,
 } from '../domain/transfers/selectors'
 import {
+  buildActiveDownloadRowView,
   buildActiveUploadGroups,
+  activeDownloadRowViewToHistoryEntry,
   selectActiveDownloadRequestIdsSig,
   selectActiveUploadGroupKeysSig,
   selectUploadActiveLayoutSig,
-} from '../lib/transferCenterSelectors'
+} from '../features/transfers/viewModels'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useServers } from '../contexts/ServersContext'
@@ -200,10 +202,17 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
     return new Set(activeDownloadRequestIdsSig.split('\0'))
   }, [activeDownloadRequestIdsSig])
 
-  const activeDownloadRows = useMemo(
-    () => downloadRows.filter((row) => activeDownloadRequestIdSet.has(row.request_id)),
-    [downloadRows, activeDownloadRequestIdSet]
-  )
+  const activeDownloadRows = useMemo(() => {
+    const state = useEphemeralMessagesStore.getState()
+    return state.activeDownloadIds
+      .map((requestId) =>
+        buildActiveDownloadRowView(
+          state.transfersByRequestId[requestId],
+          state.transferHistoryByRequestId[requestId]
+        )
+      )
+      .filter((row): row is NonNullable<typeof row> => row != null)
+  }, [activeDownloadRequestIdsSig])
 
   const activeUploadGroups = useMemo(
     () => buildActiveUploadGroups(useEphemeralMessagesStore.getState()),
@@ -389,16 +398,17 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
             ) : (
               <div className="relative w-full" style={{ height: `${activeDownloadVirtualizer.getTotalSize()}px` }}>
                 {activeDownloadVirtualizer.getVirtualItems().map((vi) => {
-                  const row = activeDownloadRows[vi.index]
-                  if (!row) return null
+                  const activeRow = activeDownloadRows[vi.index]
+                  if (!activeRow) return null
+                  const row = activeDownloadRowViewToHistoryEntry(activeRow)
                   const fromLabel =
-                    row.from_user_id === identity?.user_id
+                    activeRow.fromUserId === identity?.user_id
                       ? 'You'
-                      : remoteProfiles.getProfile(row.from_user_id)?.display_name?.trim() ||
-                        `User ${row.from_user_id.slice(0, 8)}`
+                      : remoteProfiles.getProfile(activeRow.fromUserId)?.display_name?.trim() ||
+                        `User ${activeRow.fromUserId.slice(0, 8)}`
                   return (
                     <div
-                      key={row.request_id}
+                      key={activeRow.requestId}
                       data-index={vi.index}
                       ref={activeDownloadVirtualizer.measureElement}
                       className="absolute left-0 top-0 w-full"
@@ -408,8 +418,6 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                         row={row}
                         compact={false}
                         activeStrip
-                        status={row.status}
-                        progress={row.progress}
                         fromLabel={fromLabel}
                         setMediaPreview={setMediaPreview}
                         cancelTransferRequest={cancelTransferRequest}

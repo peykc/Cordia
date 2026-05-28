@@ -46,10 +46,10 @@ type TransferStatus = AttachmentTransferState['status']
 export type TransferCenterDownloadRowProps = {
   row: TransferHistoryEntry
   compact: boolean
-  /** Resolved live/history status */
-  status: TransferStatus
-  /** 0..1 */
-  progress: number
+  /** Resolved live/history status (history tab); active strip uses live transfer only. */
+  status?: TransferStatus
+  /** 0..1 (history tab); active strip uses live transfer only. */
+  progress?: number
   debugKbps?: number
   debugEtaSeconds?: number
   debugPendingBytes?: number
@@ -69,8 +69,8 @@ export type TransferCenterDownloadRowProps = {
 function TransferCenterDownloadRowInner({
   row,
   compact,
-  status,
-  progress,
+  status = 'queued',
+  progress = 0,
   debugKbps,
   debugEtaSeconds,
   debugPendingBytes,

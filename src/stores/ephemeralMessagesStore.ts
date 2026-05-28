@@ -4,6 +4,7 @@ import type { AttachmentTransferState, TransferHistoryEntry } from '../domain/tr
 import {
   EMPTY_ATTACHMENT_INDEXES,
   mergeAttachmentIndexes,
+  sameStringArray,
   selectChatAttachmentRowFactsSig,
   type AttachmentTransferIndexes,
 } from '../domain/transfers/attachmentIndexes'
@@ -63,6 +64,21 @@ function indexTransfers(transfersByRequestId: Record<string, AttachmentTransferS
   activeDownloadIds.sort()
   activeUploadIds.sort()
   return { attachmentTransfers, transfersByRequestId, activeDownloadIds, activeUploadIds }
+}
+
+function mergeActiveIdArrays(
+  prev: EphemeralMessagesState,
+  nextActiveDownloadIds: string[],
+  nextActiveUploadIds: string[]
+): { activeDownloadIds: string[]; activeUploadIds: string[] } {
+  return {
+    activeDownloadIds: sameStringArray(prev.activeDownloadIds, nextActiveDownloadIds)
+      ? prev.activeDownloadIds
+      : nextActiveDownloadIds,
+    activeUploadIds: sameStringArray(prev.activeUploadIds, nextActiveUploadIds)
+      ? prev.activeUploadIds
+      : nextActiveUploadIds,
+  }
 }
 
 function indexTransferHistory(history: TransferHistoryEntry[]) {
@@ -136,42 +152,57 @@ export const useEphemeralMessagesStore = create<EphemeralMessagesState>((set) =>
         transfersByRequestId[transfer.request_id] = transfer
       }
       const transferIndex = indexTransfers(transfersByRequestId)
+      const { activeDownloadIds, activeUploadIds } = mergeActiveIdArrays(
+        s,
+        transferIndex.activeDownloadIds,
+        transferIndex.activeUploadIds
+      )
       const attachmentIndexes = withAttachmentIndexes(
         s,
         transferIndex.transfersByRequestId,
-        transferIndex.activeDownloadIds,
-        transferIndex.activeUploadIds,
+        activeDownloadIds,
+        activeUploadIds,
         s.transferHistory
       )
-      return { ...transferIndex, ...attachmentIndexes }
+      return { ...transferIndex, activeDownloadIds, activeUploadIds, ...attachmentIndexes }
     }),
   upsertTransferByRequestId: (requestId, updater) =>
     set((s) => {
       const nextTransfer = updater(s.transfersByRequestId[requestId])
       const transfersByRequestId = { ...s.transfersByRequestId, [requestId]: nextTransfer }
       const transferIndex = indexTransfers(transfersByRequestId)
+      const { activeDownloadIds, activeUploadIds } = mergeActiveIdArrays(
+        s,
+        transferIndex.activeDownloadIds,
+        transferIndex.activeUploadIds
+      )
       const attachmentIndexes = withAttachmentIndexes(
         s,
         transferIndex.transfersByRequestId,
-        transferIndex.activeDownloadIds,
-        transferIndex.activeUploadIds,
+        activeDownloadIds,
+        activeUploadIds,
         s.transferHistory
       )
-      return { ...transferIndex, ...attachmentIndexes }
+      return { ...transferIndex, activeDownloadIds, activeUploadIds, ...attachmentIndexes }
     }),
   removeTransferByRequestId: (requestId) =>
     set((s) => {
       if (!s.transfersByRequestId[requestId]) return s
       const { [requestId]: _removed, ...rest } = s.transfersByRequestId
       const transferIndex = indexTransfers(rest)
+      const { activeDownloadIds, activeUploadIds } = mergeActiveIdArrays(
+        s,
+        transferIndex.activeDownloadIds,
+        transferIndex.activeUploadIds
+      )
       const attachmentIndexes = withAttachmentIndexes(
         s,
         transferIndex.transfersByRequestId,
-        transferIndex.activeDownloadIds,
-        transferIndex.activeUploadIds,
+        activeDownloadIds,
+        activeUploadIds,
         s.transferHistory
       )
-      return { ...transferIndex, ...attachmentIndexes }
+      return { ...transferIndex, activeDownloadIds, activeUploadIds, ...attachmentIndexes }
     }),
   setTransferHistory: (updater) =>
     set((s) => {

@@ -32,7 +32,6 @@ import {
 import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
 import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
-import { getCurrent } from '@tauri-apps/api/window'
 import type { EphemeralAttachmentMeta } from '../domain/attachments/types'
 import type {
   AddBundlingMessageInput,
@@ -43,6 +42,7 @@ import type {
   SendMixedMessageInput,
 } from '../domain/messages/types'
 import type { AttachmentTransferState, TransferHistoryEntry } from '../domain/transfers/types'
+import { TransferHistoryPersistence } from '../features/transfers/TransferHistoryPersistence'
 import { getServersForContentSha, isContentSharedInServer } from '../domain/sharing/selectors'
 import {
   MAX_PARALLEL_DOWNLOADS,
@@ -273,6 +273,135 @@ function transferHistoryKeyForAccount(accountId: string | null): string {
   return accountId ? `${TRANSFER_HISTORY_KEY_PREFIX}:${accountId}` : TRANSFER_HISTORY_KEY_PREFIX
 }
 
+type TransferHistoryColdMeta = {
+  size_bytes?: number
+  message_id?: string
+  file_name?: string
+}
+
+function syncTransferHistoryLifecycle(
+  requestId: string,
+  transfer: AttachmentTransferState,
+  event: 'start' | 'status' | 'terminal',
+  meta?: TransferHistoryColdMeta
+): void {
+  const { setTransferHistory, transferHistoryByRequestId } = useEphemeralMessagesStore.getState()
+  const existing = transferHistoryByRequestId[requestId]
+  const now = new Date().toISOString()
+
+  if (event === 'start') {
+    if (existing) return
+    setTransferHistory((prev) =>
+      [
+        {
+          request_id: requestId,
+          message_id: meta?.message_id ?? transfer.message_id ?? '',
+          attachment_id: transfer.attachment_id,
+          file_name: meta?.file_name ?? (transfer.file_name || 'attachment.bin'),
+          size_bytes: meta?.size_bytes,
+          from_user_id: transfer.from_user_id,
+          to_user_id: transfer.to_user_id,
+          direction: transfer.direction,
+          status: transfer.status,
+          progress: 0,
+          created_at: now,
+          updated_at: now,
+          server_signing_pubkey: transfer.server_signing_pubkey,
+        },
+        ...prev,
+      ].slice(0, 300)
+    )
+    return
+  }
+
+  if (event === 'status') {
+    if (existing?.status === transfer.status) return
+    setTransferHistory((prev) => {
+      const idx = prev.findIndex((h) => h.request_id === requestId)
+      if (idx < 0) {
+        if (transfer.status === 'completed' || transfer.status === 'failed' || transfer.status === 'rejected') {
+          return prev
+        }
+        return [
+          {
+            request_id: requestId,
+            message_id: meta?.message_id ?? transfer.message_id ?? '',
+            attachment_id: transfer.attachment_id,
+            file_name: meta?.file_name ?? (transfer.file_name || 'attachment.bin'),
+            size_bytes: meta?.size_bytes,
+            from_user_id: transfer.from_user_id,
+            to_user_id: transfer.to_user_id,
+            direction: transfer.direction,
+            status: transfer.status,
+            progress: 0,
+            created_at: now,
+            updated_at: now,
+            server_signing_pubkey: transfer.server_signing_pubkey,
+          },
+          ...prev,
+        ].slice(0, 300)
+      }
+      const row = prev[idx]
+      if (row.status === transfer.status) return prev
+      const next = [...prev]
+      next[idx] = { ...row, status: transfer.status, updated_at: now }
+      return next
+    })
+    return
+  }
+
+  const finalProgress = transfer.status === 'completed' ? 1 : 0
+  if (
+    existing &&
+    existing.status === transfer.status &&
+    existing.progress === finalProgress &&
+    (existing.saved_path ?? undefined) === (transfer.saved_path ?? undefined)
+  ) {
+    return
+  }
+  if (
+    !existing &&
+    (transfer.status === 'completed' || transfer.status === 'failed' || transfer.status === 'rejected')
+  ) {
+    return
+  }
+  setTransferHistory((prev) => {
+    const idx = prev.findIndex((h) => h.request_id === requestId)
+    if (idx < 0) return prev
+    const row = prev[idx]
+    const updated: TransferHistoryEntry = {
+      ...row,
+      status: transfer.status,
+      progress: finalProgress,
+      saved_path: transfer.saved_path ?? row.saved_path,
+      updated_at: now,
+    }
+    if (
+      row.status === updated.status &&
+      row.progress === updated.progress &&
+      (row.saved_path ?? undefined) === (updated.saved_path ?? undefined)
+    ) {
+      return prev
+    }
+    const next = [...prev]
+    next[idx] = updated
+    return next
+  })
+}
+
+function syncHistoryLifecycle(
+  requestId: string,
+  event: 'start' | 'status' | 'terminal',
+  meta?: TransferHistoryColdMeta
+): void {
+  const transfer = useEphemeralMessagesStore.getState().transfersByRequestId[requestId]
+  if (transfer) syncTransferHistoryLifecycle(requestId, transfer, event, meta)
+}
+
+function getTransferByRequestId(requestId: string): AttachmentTransferState | undefined {
+  return useEphemeralMessagesStore.getState().transfersByRequestId[requestId]
+}
+
 function unreadStateKeyForAccount(accountId: string | null): string {
   return accountId ? `${UNREAD_STATE_KEY_PREFIX}:${accountId}` : UNREAD_STATE_KEY_PREFIX
 }
@@ -347,10 +476,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     unread_count_by_server: {},
     last_seen_at_by_server: {},
   })
-  const attachmentTransfers = useEphemeralMessagesStore((s) => s.attachmentTransfers)
   const upsertTransferByRequestId = useEphemeralMessagesStore((s) => s.upsertTransferByRequestId)
   const removeTransferByRequestId = useEphemeralMessagesStore((s) => s.removeTransferByRequestId)
-  const transferHistory = useEphemeralMessagesStore((s) => s.transferHistory)
   const setTransferHistory = useEphemeralMessagesStore((s) => s.setTransferHistory)
   const sharedAttachments = useEphemeralMessagesStore((s) => s.sharedAttachments)
   const setSharedAttachments = useEphemeralMessagesStore((s) => s.setSharedAttachments)
@@ -385,11 +512,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     >
   >(new Map())
-  const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
   const messagesByBucketRef = useRef<MessageBuckets>({})
   const sharedAttachmentsRef = useRef<SharedAttachmentItem[]>([])
-  const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
-  transferHistoryRef.current = transferHistory
   const loadedBucketsRef = useRef<Set<string>>(new Set())
   const activeSigningPubkeyRef = useRef<string | null>(null)
   const receiptSentRef = useRef<Set<string>>(new Set())
@@ -544,13 +668,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     return `${baseDir}${sep}Cordia${sep}${safeServer}${sep}${ym}`
   }
 
-  const activeDownloadCount = (excludeRequestId?: string) =>
-    attachmentTransfersRef.current.filter(
-      (t) =>
-        t.direction === 'download' &&
-        t.request_id !== excludeRequestId &&
+  const activeDownloadCount = (excludeRequestId?: string) => {
+    const state = useEphemeralMessagesStore.getState()
+    let count = 0
+    for (const id of state.activeDownloadIds) {
+      if (id === excludeRequestId) continue
+      const t = state.transfersByRequestId[id]
+      if (
+        t?.direction === 'download' &&
         (t.status === 'requesting' || t.status === 'connecting' || t.status === 'transferring')
-    ).length
+      ) {
+        count += 1
+      }
+    }
+    return count
+  }
 
   const enqueueDownload = (entry: QueuedDownloadRequest) => {
     const q = downloadQueueRef.current
@@ -576,28 +708,17 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         return cur < bestSize ? idx : best
       }, 0)
       const [next] = q.splice(nextIdx, 1)
-      const now = new Date().toISOString()
       upsertTransfer(next.request_id, (prev) => ({
         ...(prev as AttachmentTransferState),
         status: 'requesting',
         progress: 0,
         error: undefined,
       }))
-      upsertHistory(next.request_id, (prev) => ({
-        ...(prev as TransferHistoryEntry),
-        request_id: next.request_id,
+      syncHistoryLifecycle(next.request_id, 'status', {
         message_id: next.message_id,
-        attachment_id: next.attachment_id,
         file_name: next.file_name,
-        size_bytes: next.size_bytes ?? prev?.size_bytes,
-        from_user_id: next.from_user_id,
-        to_user_id: next.to_user_id,
-        direction: 'download',
-        status: 'requesting',
-        progress: 0,
-        created_at: prev?.created_at ?? now,
-        updated_at: now,
-      }))
+        size_bytes: next.size_bytes,
+      })
       dispatchDownloadRequest(next.preferred_peer_user_id ?? next.from_user_id, next.request_id, next.attachment_id)
     }
     downloadQueueRef.current = q
@@ -664,7 +785,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     if (now - lastTick < TRANSFER_DEBUG_UI_UPDATE_MS) return
     debugTickRef.current.set(requestId, now)
 
-    const prevState = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    const prevState = getTransferByRequestId(requestId)
     const prevDisplayedEta = prevState?.debug_eta_seconds
     let finalEta = etaSeconds ?? prevDisplayedEta
     if (finalEta != null && prevDisplayedEta != null && finalEta > prevDisplayedEta) {
@@ -760,6 +881,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             status: 'failed',
             error: 'Failed writing download chunk',
           }))
+          syncHistoryLifecycle(requestId, 'terminal')
           cleanupTransferPeer(requestId)
           tryStartNextQueuedDownload()
           return
@@ -768,13 +890,14 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       try {
         const savePath = await finishDownloadStream(requestId)
         if (!downloadStreamStateRef.current.has(requestId)) return
-        const sha = attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.sha256
+        const sha = getTransferByRequestId(requestId)?.sha256
         upsertTransfer(requestId, (prev) => ({
           ...(prev as AttachmentTransferState),
           status: 'completed',
           progress: 1,
           saved_path: savePath,
         }))
+        syncHistoryLifecycle(requestId, 'terminal')
         if (sha) setContentCacheBySha((c) => ({ ...c, [sha]: savePath }))
         cleanupTransferPeer(requestId)
         tryStartNextQueuedDownload()
@@ -785,6 +908,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           status: 'failed',
           error: 'Failed finalizing download file',
         }))
+        syncHistoryLifecycle(requestId, 'terminal')
         cleanupTransferPeer(requestId)
         tryStartNextQueuedDownload()
       }
@@ -845,7 +969,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }
 
   const failUploadSubscriber = (session: UploadSession, requestId: string, error: string) => {
-    const current = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    const current = getTransferByRequestId(requestId)
     const alreadyTerminal =
       current?.status === 'failed' || current?.status === 'completed' || current?.status === 'rejected'
     if (!alreadyTerminal) {
@@ -854,6 +978,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         status: 'failed',
         error,
       }))
+      syncHistoryLifecycle(requestId, 'terminal')
     }
     cleanupTransferPeer(requestId)
     removeUploadSubscriber(session, requestId)
@@ -942,6 +1067,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                 status: 'completed',
                 progress: 1,
               }))
+              syncHistoryLifecycle(sub.requestId, 'terminal')
               cleanupTransferPeer(sub.requestId)
               removeUploadSubscriber(runForSession, sub.requestId)
               progressed = true
@@ -1012,7 +1138,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const cancelTransferRequest = (requestId: string) => {
     if (!requestId) return
-    const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    const transfer = getTransferByRequestId(requestId)
     removeQueuedDownloadRequest(requestId)
     cleanupTransferPeer(requestId)
     removeTransferByRequestId(requestId)
@@ -1028,7 +1154,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const hasAccessibleCompletedDownload = useCallback((attachmentId: string | null | undefined): boolean => {
     if (!attachmentId) return false
-    return transferHistoryRef.current.some(
+    const history = useEphemeralMessagesStore.getState().transferHistory
+    return history.some(
       (h) =>
         h.direction === 'download' &&
         h.attachment_id === attachmentId &&
@@ -1040,9 +1167,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
 
   const refreshTransferHistoryAccessibility: EphemeralMessagesContextType['refreshTransferHistoryAccessibility'] =
     useCallback(async () => {
-      const candidates = transferHistoryRef.current.filter(
-        (h) => h.direction === 'download' && h.status === 'completed' && Boolean(h.saved_path)
-      )
+      const candidates = useEphemeralMessagesStore
+        .getState()
+        .transferHistory.filter(
+          (h) => h.direction === 'download' && h.status === 'completed' && Boolean(h.saved_path)
+        )
       if (candidates.length === 0) return
 
       const checks = await Promise.all(
@@ -1103,33 +1232,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }
 
-  const upsertHistory = (
-    requestId: string,
-    updater: (prev?: TransferHistoryEntry) => TransferHistoryEntry | null
-  ) => {
-    setTransferHistory((prev) => {
-      const idx = prev.findIndex((h) => h.request_id === requestId)
-      if (idx < 0) {
-        const created = updater(undefined)
-        if (!created) return prev
-        return [created, ...prev].slice(0, 300)
-      }
-      const updated = updater(prev[idx])
-      if (!updated) {
-        const next = [...prev]
-        next.splice(idx, 1)
-        return next
-      }
-      const next = [...prev]
-      next[idx] = updated
-      return next
-    })
-  }
-
-  useEffect(() => {
-    attachmentTransfersRef.current = attachmentTransfers
-  }, [attachmentTransfers])
-
   useEffect(() => {
     messagesByBucketRef.current = messagesByBucket
   }, [messagesByBucket])
@@ -1150,34 +1252,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     }
   }, [swarmEnabled])
-
-  useEffect(() => {
-    const now = new Date().toISOString()
-    for (const t of attachmentTransfers) {
-      upsertHistory(t.request_id, (prev) => {
-        if (!prev && (t.status === 'completed' || t.status === 'failed' || t.status === 'rejected')) {
-          return null
-        }
-        return {
-        request_id: t.request_id,
-        message_id: t.message_id || prev?.message_id || '',
-        attachment_id: t.attachment_id,
-        file_name: t.file_name || prev?.file_name || 'attachment.bin',
-        size_bytes: prev?.size_bytes,
-        from_user_id: t.from_user_id || prev?.from_user_id || '',
-        to_user_id: t.to_user_id || prev?.to_user_id || '',
-        direction: t.direction || prev?.direction || 'download',
-        status: t.status,
-        progress: t.progress,
-        saved_path: t.saved_path ?? prev?.saved_path,
-        is_inaccessible: prev?.is_inaccessible,
-        created_at: prev?.created_at || now,
-        updated_at: now,
-        server_signing_pubkey: t.server_signing_pubkey ?? prev?.server_signing_pubkey,
-        }
-      })
-    }
-  }, [attachmentTransfers])
 
   // Reset account-scoped state and load lightweight metadata only.
   useEffect(() => {
@@ -1495,18 +1569,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     if (!currentAccountId) return
     try {
       window.localStorage.setItem(
-        transferHistoryKeyForAccount(currentAccountId),
-        JSON.stringify(transferHistory.slice(0, 300))
-      )
-    } catch {
-      // ignore local storage write failures
-    }
-  }, [transferHistory, currentAccountId])
-
-  useEffect(() => {
-    if (!currentAccountId) return
-    try {
-      window.localStorage.setItem(
         serverSharedShaKeyForAccount(currentAccountId),
         JSON.stringify(serverSharedSha)
       )
@@ -1526,29 +1588,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       // ignore
     }
   }, [contentCacheBySha, currentAccountId])
-
-  useEffect(() => {
-    if (!currentAccountId) return
-    let unlisten: (() => void) | undefined
-    getCurrent()
-      .onCloseRequested(() => {
-        const pruned = transferHistoryRef.current.filter((h) => h.is_inaccessible !== true).slice(0, 300)
-        try {
-          window.localStorage.setItem(transferHistoryKeyForAccount(currentAccountId), JSON.stringify(pruned))
-        } catch {
-          // ignore local storage write failures
-        }
-        setTransferHistory(pruned)
-      })
-      .then((fn) => {
-        unlisten = fn
-      })
-      .catch(() => {})
-
-    return () => {
-      unlisten?.()
-    }
-  }, [currentAccountId])
 
   useEffect(() => {
     let cancelled = false
@@ -1856,6 +1895,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         sha256: sharedItem.sha256,
         server_signing_pubkey: signingPubkey || undefined,
       }))
+      syncHistoryLifecycle(requestId, 'start', {
+        message_id: relatedMessage?.id,
+        file_name: attachment.file_name,
+        size_bytes: attachment.size_bytes,
+      })
       window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
         detail: { to_user_id: fromUserId, request_id: requestId, accepted: true },
       }))
@@ -1891,6 +1935,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       dc.onopen = async () => {
         try {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'transferring' }))
+          syncHistoryLifecycle(requestId, 'status')
           dc.send(
             JSON.stringify({
               type: 'meta',
@@ -1903,6 +1948,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           startUploadSessionPump(session)
         } catch (err) {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'failed', error: String(err) }))
+          syncHistoryLifecycle(requestId, 'terminal')
           removeUploadSubscriber(session, requestId)
           cleanupTransferPeer(requestId)
         }
@@ -1928,6 +1974,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             status: prev?.status === 'completed' ? 'completed' : 'failed',
             error: prev?.status === 'completed' ? undefined : 'Receiver disconnected',
           }))
+          syncHistoryLifecycle(requestId, 'terminal')
         }
         uploadSessionWakeRef.current.get(session.attachmentId)?.()
         removeUploadSubscriber(session, requestId)
@@ -1940,6 +1987,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             status: 'failed',
             error: 'Data channel error during upload',
           }))
+          syncHistoryLifecycle(requestId, 'terminal')
         }
         uploadSessionWakeRef.current.get(session.attachmentId)?.()
         removeUploadSubscriber(session, requestId)
@@ -1955,15 +2003,17 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       const fromUserId = detail?.from_user_id?.trim()
       const requestId = detail?.request_id?.trim()
       if (!fromUserId || !requestId) return
-      const existing = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+      const existing = getTransferByRequestId(requestId)
       if (!existing || existing.direction !== 'download') return
       if (!detail?.accepted) {
         upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'rejected' }))
+        syncHistoryLifecycle(requestId, 'terminal')
         cleanupTransferPeer(requestId)
         tryStartNextQueuedDownload()
         return
       }
       upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'connecting' }))
+      syncHistoryLifecycle(requestId, 'status')
       const pc = createPeerConnection()
       transferPeersRef.current.set(requestId, pc)
       pc.onicecandidate = (ev) => {
@@ -1994,7 +2044,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                   writerRunning: false,
                   flowPauseSent: false,
                 })
-                const fileName = control.file_name || (attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.file_name ?? 'attachment.bin')
+                const fileName = control.file_name || (getTransferByRequestId(requestId)?.file_name ?? 'attachment.bin')
                 beginDownloadStream(requestId, fileName, control.sha256 ?? null, resolveDownloadTargetDir(requestId))
                   .then(() => {
                     startDownloadWriter(requestId)
@@ -2005,6 +2055,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                       status: 'failed',
                       error: 'Failed to start download stream',
                     }))
+                    syncHistoryLifecycle(requestId, 'terminal')
                     cleanupTransferPeer(requestId)
                     tryStartNextQueuedDownload()
                   })
@@ -2014,6 +2065,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                   status: 'transferring',
                   progress: 0,
                 }))
+                syncHistoryLifecycle(requestId, 'status')
               }
               if (control.type === 'done') {
                 const st = downloadStreamStateRef.current.get(requestId)
@@ -2023,6 +2075,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                     status: 'failed',
                     error: 'Download stream missing',
                   }))
+                  syncHistoryLifecycle(requestId, 'terminal')
                   cleanupTransferPeer(requestId)
                   tryStartNextQueuedDownload()
                   return
@@ -2412,14 +2465,17 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       )
     )
 
-    const duplicateActive = attachmentTransfersRef.current.some(
-      (t) =>
-        t.direction === 'download' &&
+    const state = useEphemeralMessagesStore.getState()
+    const duplicateActive = state.activeDownloadIds.some((id) => {
+      const t = state.transfersByRequestId[id]
+      return (
+        t?.direction === 'download' &&
         (t.message_id === msg.id || t.attachment_id === att.attachment_id) &&
         t.status !== 'completed' &&
         t.status !== 'failed' &&
         t.status !== 'rejected'
-    )
+      )
+    })
     if (duplicateActive) return
     let peerUserId = msg.from_user_id
     if (swarmEnabled && att.sha256) {
@@ -2448,21 +2504,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       progress: 0,
       sha256: att.sha256,
     }))
-    const now = new Date().toISOString()
-    upsertHistory(request_id, () => ({
-      request_id,
+    syncHistoryLifecycle(request_id, 'start', {
       message_id: msg.id,
-      attachment_id: attachmentId,
       file_name: att.file_name,
       size_bytes: att.size_bytes,
-      from_user_id: msg.from_user_id,
-      to_user_id: identity.user_id,
-      direction: 'download',
-      status: queueInstead ? 'queued' : 'requesting',
-      progress: 0,
-      created_at: now,
-      updated_at: now,
-    }))
+    })
     if (queueInstead) {
       enqueueDownload({
         request_id,
@@ -2673,7 +2719,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     ]
   )
 
-  return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>
+  return (
+    <EphemeralMessagesContext.Provider value={value}>
+      <TransferHistoryPersistence />
+      {children}
+    </EphemeralMessagesContext.Provider>
+  )
 }
 
 export function useEphemeralMessages() {
