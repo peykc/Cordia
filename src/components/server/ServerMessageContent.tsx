@@ -15,11 +15,11 @@ import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
 import { buildChatAudioPreviewState, buildChatMediaPreviewState } from '../../lib/chatMediaPreview'
 import { attachmentShareInChatVisible } from '../../lib/attachmentShareInChat'
-import { buildAttachmentPresentation } from '../../features/chat/buildAttachmentPresentation'
-import { resolveLiveDownloadForAttachment } from '../../features/chat/useAttachmentPresentation'
+import { resolveChatAttachmentPresentation } from '../../features/chat/resolveChatAttachmentPresentation'
+import { ChatAttachmentDownloadProgress } from '../../features/chat/ChatAttachmentDownloadProgress'
+import { ChatAttachmentHideWhileDownloading } from '../../features/chat/ChatAttachmentLiveDownload'
 import { useMediaPreview } from '../../contexts/MediaPreviewContext'
 import { registerChatPreviewShareHandler } from '../../features/media/chatPreviewShareRegistry'
-import { useEphemeralMessagesStore } from '../../stores/ephemeralMessagesStore'
 import type { EphemeralAttachmentMeta } from '../../domain/attachments/types'
 import type { ChatAudioGalleryItem, ChatMediaGalleryItem } from '../../domain/media/types'
 import { CHAT_INLINE_VIDEO_PRELOAD } from '../../lib/performanceDefaults'
@@ -302,24 +302,13 @@ export function ServerMessageContent({
 
   const getAttachmentPresentation = (att: { attachment_id: string; sha256?: string; preview_path?: string | null; file_name?: string }) => {
     const isOwn = msg.from_user_id === identity?.user_id
-    const { transfersByRequestId, activeDownloadIds } = useEphemeralMessagesStore.getState()
-    const liveDownload = resolveLiveDownloadForAttachment(
-      transfersByRequestId,
-      activeDownloadIds,
-      att.attachment_id
-    )
-    return buildAttachmentPresentation({
+    return resolveChatAttachmentPresentation({
       att: att as EphemeralAttachmentMeta,
       isOwn,
-      attachmentTransferRows: [],
-      transferHistory: [],
-      sharedAttachments: [],
       sharedByAttachmentId,
-      completedDownloadPathByAttachmentId,
       unsharedAttachmentRecords: unsharedAttachmentRecords ?? {},
       hasAccessibleCompletedDownload: hasAccessibleCompletedDownload ?? (() => false),
       getCachedPathForSha: getCachedPathForSha ?? (() => null),
-      liveDownload,
     })
   }
 
@@ -384,12 +373,9 @@ export function ServerMessageContent({
                                                   const isSingle = count === 1
                                                   const isOwn = msg.from_user_id === identity?.user_id
                                                   const {
-                                                    liveDownload,
                                                     hasPath,
                                                     thumbPath,
                                                     notDownloaded,
-                                                    downloadProgress,
-                                                    showDownloadProgress,
                                                   } = getAttachmentPresentation(att)
                                                   const stateLabel = attachmentStateLabelFor(att)
                                                   const gridImagePath = imageTierPreviewPath(thumbPath, hasPath, count)
@@ -473,7 +459,7 @@ export function ServerMessageContent({
                                                           )}
                                                           narrowContent={
                                                             <>
-                                                              {!liveDownload && (
+                                                              <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                 <Button
                                                                   type="button"
                                                                   variant="outline"
@@ -489,7 +475,7 @@ export function ServerMessageContent({
                                                                     <Ban className="h-3.5 w-3.5" aria-hidden />
                                                                   )}
                                                                 </Button>
-                                                              )}
+                                                              </ChatAttachmentHideWhileDownloading>
                                                               <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
                                                               <span className="text-[9px] text-muted-foreground shrink-0">
                                                                 {formatBytes(att.size_bytes)}
@@ -507,19 +493,12 @@ export function ServerMessageContent({
                                                                   )}
                                                                 </span>
                                                               )}
-                                                              {showDownloadProgress && (
-                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                  <div
-                                                                    className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                    style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                  />
-                                                                </div>
-                                                              )}
+                                                              <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" />
                                                             </>
                                                           }
                                                           wideContent={
                                                             <>
-                                                              {!liveDownload && (
+                                                              <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                 <Button
                                                                   type="button"
                                                                   variant="outline"
@@ -535,7 +514,7 @@ export function ServerMessageContent({
                                                                     <Ban className="h-3.5 w-3.5" aria-hidden />
                                                                   )}
                                                                 </Button>
-                                                              )}
+                                                              </ChatAttachmentHideWhileDownloading>
                                                               {stateLabel === 'Unavailable' ? (
                                                                 <ImageOff className="h-8 w-8 shrink-0 text-muted-foreground" aria-hidden />
                                                               ) : category === 'video' ? (
@@ -560,14 +539,7 @@ export function ServerMessageContent({
                                                                   )}
                                                                 </span>
                                                               )}
-                                                              {showDownloadProgress && (
-                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                  <div
-                                                                    className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                    style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                  />
-                                                                </div>
-                                                              )}
+                                                              <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" />
                                                             </>
                                                           }
                                                         />
@@ -787,35 +759,27 @@ export function ServerMessageContent({
                                                           className="relative w-full flex flex-col items-center justify-center gap-1.5 p-2 bg-muted rounded-lg border border-border/50 transition-[background-color,filter] hover:bg-muted/80 hover:brightness-110 aspect-square"
                                                           narrowContent={
                                                             <>
-                                                              {!liveDownload && (
+                                                              <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                 <Button type="button" variant="outline" size="icon" className="h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)} disabled={stateLabel !== 'Available'} aria-label="Download">
                                                                   {stateLabel === 'Available' ? <Download className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" aria-hidden />}
                                                                 </Button>
-                                                              )}
+                                                              </ChatAttachmentHideWhileDownloading>
                                                               <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
                                                               <span className="text-[9px] text-muted-foreground shrink-0">{formatBytes(att.size_bytes)}</span>
-                                                              {showDownloadProgress && (
-                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                  <div className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')} style={{ width: `${Math.max(2, downloadProgress)}%` }} />
-                                                                </div>
-                                                              )}
+                                                                <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" />
                                                             </>
                                                           }
                                                           wideContent={
                                                             <>
-                                                              {!liveDownload && (
+                                                              <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                 <Button type="button" variant="outline" size="icon" className="absolute top-1.5 right-1.5 h-7 w-7 shrink-0 border-2 border-foreground/50 rounded-md bg-background/80" onClick={() => stateLabel === 'Available' && requestAttachmentDownload(msg, att)} disabled={stateLabel !== 'Available'} aria-label="Download">
                                                                   {stateLabel === 'Available' ? <Download className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" aria-hidden />}
                                                                 </Button>
-                                                              )}
+                                                              </ChatAttachmentHideWhileDownloading>
                                                               {stateLabel === 'Unavailable' ? <ImageOff className="h-8 w-8 shrink-0 text-muted-foreground" aria-hidden /> : category === 'video' ? <ImageDownPlay className="h-8 w-8 shrink-0 text-muted-foreground" strokeWidth={1.5} /> : <ImageDown className="h-8 w-8 shrink-0 text-muted-foreground" strokeWidth={1.5} />}
                                                               <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
                                                               <span className="text-[9px] text-muted-foreground shrink-0">{formatBytes(att.size_bytes)}</span>
-                                                              {showDownloadProgress && (
-                                                                <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                  <div className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')} style={{ width: `${Math.max(2, downloadProgress)}%` }} />
-                                                                </div>
-                                                              )}
+                                                                <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" />
                                                             </>
                                                           }
                                                         />
@@ -896,9 +860,6 @@ export function ServerMessageContent({
                                                       hasPath,
                                                       thumbPath,
                                                       notDownloaded,
-                                                      liveDownload,
-                                                      downloadProgress,
-                                                      showDownloadProgress,
                                                     } = getAttachmentPresentation(att)
                                                     const stateLabel = attachmentStateLabelFor(att)
                                                     const category = getFileTypeFromExt(att.file_name) as Parameters<typeof IconForCategory>[0]['cat']
@@ -916,7 +877,7 @@ export function ServerMessageContent({
                                                             className="relative w-full flex flex-col items-center justify-center gap-1.5 bg-muted transition-[background-color,filter] hover:bg-muted/80 hover:brightness-110 min-h-[56px]"
                                                             narrowContent={
                                                               <>
-                                                                {!liveDownload && (
+                                                                <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                   <Button
                                                                     type="button"
                                                                     variant="outline"
@@ -932,7 +893,7 @@ export function ServerMessageContent({
                                                                       <Ban className="h-3.5 w-3.5" aria-hidden />
                                                                     )}
                                                                   </Button>
-                                                                )}
+                                                                </ChatAttachmentHideWhileDownloading>
                                                                 <FilenameEllipsis name={att.file_name} className="text-[10px] text-foreground truncate w-full text-center block" title={att.file_name} />
                                                                 <span className="text-[9px] text-muted-foreground shrink-0">{formatBytes(att.size_bytes)}</span>
                                                                 {stateLabel === 'Unavailable' && (
@@ -946,14 +907,7 @@ export function ServerMessageContent({
                                                                     )}
                                                                   </span>
                                                                 )}
-                                                                {showDownloadProgress && (
-                                                                  <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                    <div
-                                                                      className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                      style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                    />
-                                                                  </div>
-                                                                )}
+                                                                <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full" />
                                                               </>
                                                             }
                                                             wideContent={
@@ -974,7 +928,7 @@ export function ServerMessageContent({
                                                                     size={formatBytes(att.size_bytes)}
                                                                   >
                                                                     <div className="flex flex-col items-center justify-center gap-1 shrink-0">
-                                                                      {!liveDownload && (
+                                                                      <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                         <Button
                                                                           type="button"
                                                                           variant="outline"
@@ -990,18 +944,11 @@ export function ServerMessageContent({
                                                                             <Ban className="h-3.5 w-3.5" aria-hidden />
                                                                           )}
                                                                         </Button>
-                                                                      )}
+                                                                      </ChatAttachmentHideWhileDownloading>
                                                                       {stateLabel === 'Unavailable' && (
                                                                         <span className="text-[9px] text-muted-foreground text-center">Not available</span>
                                                                       )}
-                                                                      {showDownloadProgress && (
-                                                                        <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                          <div
-                                                                            className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                            style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                          />
-                                                                        </div>
-                                                                      )}
+                                                                        <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full" />
                                                                     </div>
                                                                   </ChatMusicAttachmentCard>
                                                                 ) : (
@@ -1011,7 +958,7 @@ export function ServerMessageContent({
                                                                     size={formatBytes(att.size_bytes)}
                                                                   >
                                                                     <div className="flex flex-col items-end gap-1 shrink-0">
-                                                                      {!liveDownload && (
+                                                                      <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                         <Button
                                                                           type="button"
                                                                           variant="outline"
@@ -1027,18 +974,11 @@ export function ServerMessageContent({
                                                                             <Ban className="h-3.5 w-3.5" aria-hidden />
                                                                           )}
                                                                         </Button>
-                                                                      )}
+                                                                      </ChatAttachmentHideWhileDownloading>
                                                                       {stateLabel === 'Unavailable' && (
                                                                         <span className="text-[9px] text-muted-foreground text-right">Not available</span>
                                                                       )}
-                                                                      {showDownloadProgress && (
-                                                                        <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                          <div
-                                                                            className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                            style={{ width: `${Math.max(2, downloadProgress)}%` }}
-                                                                          />
-                                                                        </div>
-                                                                      )}
+                                                                        <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full" />
                                                                     </div>
                                                                   </ChatFileRowSlot>
                                                                 )}
@@ -1188,7 +1128,6 @@ export function ServerMessageContent({
                                                     hasPath,
                                                     thumbPath,
                                                     notDownloaded,
-                                                    liveDownload,
                                                   } = getAttachmentPresentation(att)
                                                   const previewImagePath = imageTierPreviewPath(thumbPath, hasPath, 1) ?? (thumbPath ?? hasPath)!
                                                   const category = getFileTypeFromExt(att.file_name)
@@ -1196,8 +1135,6 @@ export function ServerMessageContent({
                                                   const mediaPreviewPath = category === 'video'
                                                     ? (thumbPath || hasPath)
                                                     : (hasPath || thumbPath)
-                                                  const p = liveDownload ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100))) : 0
-                                                  const showProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
                                                   if (isMedia) {
                                                     return (
                                                       <ChatSingleMediaAspect
@@ -1232,7 +1169,7 @@ export function ServerMessageContent({
                                                               className="relative w-full h-full min-h-0 min-w-0 flex flex-col items-center justify-center gap-2 p-4 bg-muted rounded-lg transition-[background-color,filter] hover:bg-muted/80 hover:brightness-110"
                                                               narrowContent={
                                                                 <>
-                                                                  {!liveDownload && (
+                                                                  <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                     <Button
                                                                       type="button"
                                                                       variant="outline"
@@ -1248,7 +1185,7 @@ export function ServerMessageContent({
                                                                         <Ban className="h-4 w-4" aria-hidden />
                                                                       )}
                                                                     </Button>
-                                                                  )}
+                                                                  </ChatAttachmentHideWhileDownloading>
                                                                   <FilenameEllipsis name={att.file_name} className="text-xs text-foreground truncate max-w-full text-center block" title={att.file_name} />
                                                                   <span className="text-[10px] text-muted-foreground shrink-0">
                                                                     {formatBytes(att.size_bytes)}
@@ -1267,19 +1204,12 @@ export function ServerMessageContent({
                                                                       )}
                                                                     </span>
                                                                   )}
-                                                                  {showProgress && (
-                                                                    <div className="w-full max-w-[200px] h-1.5 bg-foreground/15 overflow-hidden rounded-full">
-                                                                      <div
-                                                                        className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                        style={{ width: `${Math.max(2, p)}%` }}
-                                                                      />
-                                                                    </div>
-                                                                  )}
+                                                                  <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-full max-w-[200px] h-1.5 bg-foreground/15 overflow-hidden rounded-full" />
                                                                 </>
                                                               }
                                                               wideContent={
                                                                 <>
-                                                                  {!liveDownload && (
+                                                                  <ChatAttachmentHideWhileDownloading attachmentId={att.attachment_id}>
                                                                     <Button
                                                                       type="button"
                                                                       variant="outline"
@@ -1295,7 +1225,7 @@ export function ServerMessageContent({
                                                                         <Ban className="h-4 w-4" aria-hidden />
                                                                       )}
                                                                     </Button>
-                                                                  )}
+                                                                  </ChatAttachmentHideWhileDownloading>
                                                                   {attachmentStateLabel === 'Unavailable' ? (
                                                                     <ImageOff className="h-12 w-12 shrink-0 text-muted-foreground" aria-hidden />
                                                                   ) : (getFileTypeFromExt(att.file_name) === 'video') ? (
@@ -1321,14 +1251,7 @@ export function ServerMessageContent({
                                                                       )}
                                                                     </span>
                                                                   )}
-                                                                  {showProgress && (
-                                                                    <div className="w-full max-w-[200px] h-1.5 bg-foreground/15 overflow-hidden rounded-full">
-                                                                      <div
-                                                                        className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                        style={{ width: `${Math.max(2, p)}%` }}
-                                                                      />
-                                                                    </div>
-                                                                  )}
+                                                                  <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-full max-w-[200px] h-1.5 bg-foreground/15 overflow-hidden rounded-full" />
                                                                 </>
                                                               }
                                                             />
@@ -1538,16 +1461,9 @@ export function ServerMessageContent({
                                                             />
                                                           )}
                                                         </div>
-                                                        {showProgress && (
-                                                          <div className="h-1 bg-foreground/15 overflow-hidden rounded-full max-w-[280px]">
-                                                            <div
-                                                              className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                              style={{ width: `${Math.max(2, p)}%` }}
-                                                            />
-                                                          </div>
-                                                        )}
-                                                        {liveDownload?.status === 'completed' && liveDownload.saved_path && (
-                                                          <span className="block text-[9px] text-muted-foreground truncate" title={liveDownload.saved_path}>
+                                                        <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="h-1 bg-foreground/15 overflow-hidden rounded-full max-w-[280px]" />
+                                                        {completedDownloadPathByAttachmentId?.[att.attachment_id] && (
+                                                          <span className="block text-[9px] text-muted-foreground truncate" title={completedDownloadPathByAttachmentId[att.attachment_id]}>
                                                             Saved
                                                           </span>
                                                         )}
@@ -1599,14 +1515,7 @@ export function ServerMessageContent({
                                                                     )}
                                                                   </span>
                                                                 )}
-                                                                {showProgress && (
-                                                                  <div className="w-full max-w-[120px] h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                    <div
-                                                                      className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                      style={{ width: `${Math.max(2, p)}%` }}
-                                                                    />
-                                                                  </div>
-                                                                )}
+                                                                <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" />
                                                               </>
                                                             }
                                                             wideContent={
@@ -1644,14 +1553,7 @@ export function ServerMessageContent({
                                                                     {attachmentStateLabel === 'Unavailable' && (
                                                                       <span className="text-[9px] text-muted-foreground text-center">Not available</span>
                                                                     )}
-                                                                    {showProgress && (
-                                                                      <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                        <div
-                                                                          className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                          style={{ width: `${Math.max(2, p)}%` }}
-                                                                        />
-                                                                      </div>
-                                                                    )}
+                                                                    <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full" />
                                                                   </div>
                                                                 </ChatMusicAttachmentCard>
                                                               ) : (
@@ -1679,14 +1581,7 @@ export function ServerMessageContent({
                                                                     {attachmentStateLabel === 'Unavailable' && (
                                                                       <span className="text-[9px] text-muted-foreground text-right">Not available</span>
                                                                     )}
-                                                                    {showProgress && (
-                                                                      <div className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full">
-                                                                        <div
-                                                                          className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
-                                                                          style={{ width: `${Math.max(2, p)}%` }}
-                                                                        />
-                                                                      </div>
-                                                                    )}
+                                                                    <ChatAttachmentDownloadProgress attachmentId={att.attachment_id} variant="inline" className="w-24 h-1 bg-foreground/15 overflow-hidden rounded-full" />
                                                                   </div>
                                                                 </ChatFileRowSlot>
                                                               )

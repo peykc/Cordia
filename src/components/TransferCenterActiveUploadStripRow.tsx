@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useStoreWithEqualityFn } from 'zustand/traditional'
 import { User } from 'lucide-react'
 import { FileIcon } from './FileIcon'
 import { Button } from './ui/button'
@@ -19,10 +20,27 @@ import { cn } from '../lib/utils'
 export type ActiveUploadGroup = { attachmentId: string; requestIds: string[] }
 
 function useUploadTransfersForRequestIds(requestIds: string[]): AttachmentTransferState[] {
-  return useEphemeralMessagesStore((state) =>
-    requestIds
-      .map((id) => state.transfersByRequestId[id])
-      .filter((t): t is AttachmentTransferState => t != null)
+  return useStoreWithEqualityFn(
+    useEphemeralMessagesStore,
+    (state) =>
+      requestIds
+        .map((id) => state.transfersByRequestId[id])
+        .filter((t): t is AttachmentTransferState => t != null),
+    (prev, next) => {
+      if (prev === next) return true
+      if (prev.length !== next.length) return false
+      for (let i = 0; i < prev.length; i++) {
+        const a = prev[i]!
+        const b = next[i]!
+        if (a === b) continue
+        if (a.request_id !== b.request_id) return false
+        if (a.progress !== b.progress) return false
+        if (a.status !== b.status) return false
+        if (a.debug_kbps !== b.debug_kbps) return false
+        if (a.debug_eta_seconds !== b.debug_eta_seconds) return false
+      }
+      return true
+    }
   )
 }
 

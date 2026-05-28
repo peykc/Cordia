@@ -394,3 +394,58 @@ Commit: not committed (working tree)
 
 - `npm run build` passed (2026-05-27)
 - `cargo check` passed (2026-05-27)
+
+---
+
+## Checkpoint — post-bridge roadmap base
+
+Date: 2026-05-27
+Branch: `checkpoint-post-bridge-roadmap` (base at `0ffdaf7`)
+
+Post-bridge Phases A/B/12–16 landed on this branch before Phase 13 chat decoupling.
+
+---
+
+## Golden pass (checkpoint baseline)
+
+Date: 2026-05-27
+
+Automated gate before Phase 13 code:
+
+- `npm run build` passed on checkpoint branch
+- Manual UI checklist in `docs/ATTACHMENT_GOLDEN_BEHAVIORS.md` — **re-run in app after Phase 13** (not automated in CI)
+
+---
+
+## Phase 13 — Chat transfer-array decouple (complete)
+
+Date: 2026-05-27
+Commit: `1e32c1a`
+
+### What changed
+
+- Added `src/domain/transfers/attachmentIndexes.ts` with structurally shared maps:
+  - `rejectedDownloadByAttachmentId`, `activeUploadByAttachmentId`, `completedDownloadPathByAttachmentId`
+  - `activeDownloadRequestIdByAttachmentId`, `activeUploadRequestIdsByAttachmentId`
+- Store indexes rebuilt in `upsertTransferByRequestId` / `setTransferHistory` with `mergeStableRecord` / stable inner arrays (progress ticks do not recreate maps when membership unchanged).
+- **4A:** `ServerViewPage` / `ServerChatTimeline` no longer receive `attachmentTransfers` / `transferHistory`; timeline reads store attachment indexes.
+- **4B:** Removed `attachmentTransfers` / `transferHistory` from public `useEphemeralMessages()` context value (orchestration keeps internal refs).
+- Chat attachment progress uses per-attachment wrapper components (`ChatAttachmentDownloadProgress`, `ChatAttachmentHideWhileDownloading`) — hooks not called in parent loops.
+- `resolveChatAttachmentPresentation` uses O(1) index lookup instead of scanning `activeDownloadIds`.
+- Fixed `selectActiveUploadGroupKeysSig` to include `requestId` membership.
+- Stabilized upload-row bulk selector (`useStoreWithEqualityFn`) and `MediaPreviewSessionBridge` shared map (`useShallow`).
+- Removed stale `errors_filtered.txt`.
+
+### Render probe (post-Phase 13, code-path)
+
+- Transfer progress updates write keyed `transfersByRequestId` entries; attachment summary maps reuse prior object references when membership/path/rejected flags unchanged.
+- `ServerChatTimeline` subscribes to stable attachment index maps (not compat transfer arrays).
+- `useEphemeralMessages()` context value no longer depends on `attachmentTransfers` / `transferHistory`.
+- Per-attachment download progress subscribes via `useLiveDownloadForAttachment` → `activeDownloadRequestIdByAttachmentId` + `useTransferByRequestId`.
+- **Expected:** progress ticks rerender affected attachment progress UI + Transfer Center rows only; not full chat timeline via context invalidation.
+
+### Validation
+
+- `npm run build` passed (2026-05-27)
+- `cargo check` passed (2026-05-27)
+- Manual golden checklist — re-run required after this phase

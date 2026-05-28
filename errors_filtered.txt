@@ -1,6 +1,0 @@
-﻿src/components/server/ServerMessageContent.tsx(949,92): error TS2339: Property 'audio_duration_secs' does not exist on type 'EphemeralAttachmentMeta'.
-src/components/server/ServerMessageContent.tsx(1039,88): error TS2339: Property 'audio_duration_secs' does not exist on type 'EphemeralAttachmentMeta'.
-src/components/TransferCenterButton.tsx(10,11): error TS2339: Property 'attachmentTransfers' does not exist on type 'EphemeralMessagesContextType'.
-src/components/TransferCenterButton.tsx(14,10): error TS7006: Parameter 't' implicitly has an 'any' type.
-src/components/TransferCenterButton.tsx(23,33): error TS7006: Parameter 'sum' implicitly has an 'any' type.
-src/components/TransferCenterButton.tsx(23,38): error TS7006: Parameter 't' implicitly has an 'any' type.

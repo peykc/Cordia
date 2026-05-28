@@ -45,21 +45,20 @@ export function useAttachmentPresentation({
 
 export function resolveLiveDownloadForAttachment(
   transfersByRequestId: Record<string, AttachmentTransferState>,
-  activeDownloadIds: string[],
+  activeDownloadRequestIdByAttachmentId: Record<string, string>,
   attachmentId: string
 ): AttachmentTransferState | undefined {
-  for (const requestId of activeDownloadIds) {
-    const transfer = transfersByRequestId[requestId]
-    if (
-      transfer?.attachment_id === attachmentId &&
-      transfer.direction === 'download' &&
-      (transfer.status === 'requesting' ||
-        transfer.status === 'connecting' ||
-        transfer.status === 'transferring' ||
-        transfer.status === 'queued')
-    ) {
-      return transfer
-    }
+  const requestId = activeDownloadRequestIdByAttachmentId[attachmentId]
+  if (!requestId) return undefined
+  const transfer = transfersByRequestId[requestId]
+  if (transfer?.attachment_id !== attachmentId || transfer.direction !== 'download') return undefined
+  if (
+    transfer.status === 'requesting' ||
+    transfer.status === 'connecting' ||
+    transfer.status === 'transferring' ||
+    transfer.status === 'queued'
+  ) {
+    return transfer
   }
   return undefined
 }

@@ -111,8 +111,6 @@ function ServerViewPage() {
     addBundlingMessage,
     updateBundlingProgress,
     requestAttachmentDownload,
-    attachmentTransfers,
-    transferHistory,
     sharedAttachments,
     hasAccessibleCompletedDownload,
     refreshSharedAttachments,
@@ -1011,8 +1009,6 @@ function ServerViewPage() {
                         onProfileClick={onProfileClick}
                         lastDeliveredMessageId={lastDeliveredMessageId}
                         lastPendingMessageId={lastPendingMessageId}
-                        attachmentTransfers={attachmentTransfers}
-                        transferHistory={transferHistory}
                         sharedAttachments={sharedAttachments}
                         hasAccessibleCompletedDownload={hasAccessibleCompletedDownload}
                         getCachedPathForSha={getCachedPathForSha}

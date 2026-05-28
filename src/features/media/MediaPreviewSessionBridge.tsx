@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { useMediaPreview } from '../../contexts/MediaPreviewContext'
 import { useEphemeralMessages } from '../../contexts/EphemeralMessagesContext'
@@ -29,7 +30,7 @@ function presentationForAttachment(
   const state = useEphemeralMessagesStore.getState()
   const liveDownload = resolveLiveDownloadForAttachment(
     state.transfersByRequestId,
-    state.activeDownloadIds,
+    state.activeDownloadRequestIdByAttachmentId,
     att.attachment_id
   )
   return buildAttachmentPresentationFromFacts({
@@ -54,11 +55,13 @@ export function MediaPreviewSessionBridge() {
   const justSharedKeys = useMemo(() => new Set<string>(), [])
 
   const message = useMessageById(mediaPreviewSession?.messageId)
-  const sharedByAttachmentId = useEphemeralMessagesStore((s) => {
-    const map: Record<string, SharedAttachmentPresentationItem> = {}
-    for (const item of s.sharedAttachments) map[item.attachment_id] = item
-    return map
-  })
+  const sharedByAttachmentId = useEphemeralMessagesStore(
+    useShallow((s) => {
+      const map: Record<string, SharedAttachmentPresentationItem> = {}
+      for (const item of s.sharedAttachments) map[item.attachment_id] = item
+      return map
+    })
+  )
 
   useEffect(() => {
     if (!mediaPreviewSession || mediaPreviewSession.source !== 'chat') return

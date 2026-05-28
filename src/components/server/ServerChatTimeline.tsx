@@ -2,29 +2,15 @@ import React, { memo, useMemo, useRef, type ComponentProps, type MutableRefObjec
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { MessageBubble } from '../MessageBubble'
 import { ServerMessageContent } from './ServerMessageContent'
-import { useMessageById } from '../../stores/ephemeralMessagesStore'
+import { useMessageById, useEphemeralMessagesStore } from '../../stores/ephemeralMessagesStore'
 import type { EphemeralChatMessage } from '../../domain/messages/types'
 import type { MediaPreviewState } from '../../domain/media/types'
-import type { AttachmentTransferState, TransferHistoryEntry } from '../../domain/transfers/types'
 import type { PresenceLevel } from '../../contexts/PresenceContext'
 import type { Server } from '../../lib/tauri'
 
 type ChatItem =
   | { type: 'day'; id: string; dateStr: string }
   | { type: 'group'; id: string; userId: string; messages: EphemeralChatMessage[] }
-
-/** Avoid invalidating heavy row-model useMemo when transfer history changes but attachment-derived maps are unchanged. */
-function shallowAttachmentMapEqual(
-  a: Record<string, boolean | string | undefined>,
-  b: Record<string, boolean | string | undefined>
-): boolean {
-  const aKeys = Object.keys(a)
-  if (aKeys.length !== Object.keys(b).length) return false
-  for (const k of aKeys) {
-    if (a[k] !== b[k]) return false
-  }
-  return true
-}
 
 /** Per-message primitives only; reused when unchanged so React.memo is effective. */
 export interface MessageRowModel {
@@ -38,12 +24,10 @@ export interface MessageRowCallbacks {
   identity: ServerChatTimelineProps['identity']
   sharedAttachments: SharedAttachmentItem[]
   unsharedAttachmentRecords: Record<string, { file_path?: string | null; thumbnail_path?: string | null } | null | undefined>
-  transferHistory: TransferHistoryEntry[]
-  attachmentTransfersByMessageId: Record<string, AttachmentTransferState[]>
-  rejectedDownloadByAttachmentId: Record<string, boolean>
-  activeUploadByAttachmentId: Record<string, boolean>
+  rejectedDownloadByAttachmentId: Record<string, true>
+  activeUploadByAttachmentId: Record<string, true>
   sharedByAttachmentId: Record<string, SharedAttachmentItem | undefined>
-  completedDownloadPathByAttachmentId: Record<string, string | undefined>
+  completedDownloadPathByAttachmentId: Record<string, string>
   getCachedPathForSha: (sha256: string | undefined) => string | null
   hasAccessibleCompletedDownload: (id: string | null | undefined) => boolean
   revealedSpoilerIds: Set<string>
@@ -149,8 +133,6 @@ export interface ServerChatTimelineProps {
   onProfileClick: (userId: string, element: HTMLElement) => void
   lastDeliveredMessageId: string | null
   lastPendingMessageId: string | null
-  attachmentTransfers: AttachmentTransferState[]
-  transferHistory: TransferHistoryEntry[]
   sharedAttachments: SharedAttachmentItem[]
   hasAccessibleCompletedDownload: (attachmentId: string | null | undefined) => boolean
   getCachedPathForSha: (sha256: string | undefined) => string | null
@@ -200,8 +182,6 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     onProfileClick,
     lastDeliveredMessageId,
     lastPendingMessageId,
-    attachmentTransfers,
-    transferHistory,
     sharedAttachments,
     hasAccessibleCompletedDownload,
     getCachedPathForSha,
@@ -222,95 +202,9 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     inlineVideoShowControls,
   } = props
 
-  const transferByMessageId = useMemo(() => {
-    const byMsg: Record<string, AttachmentTransferState[]> = {}
-    const attachmentToMessageIds: Record<string, Set<string>> = {}
-    for (const it of chatItems) {
-      if (it.type !== 'group') continue
-      for (const msg of it.messages) {
-        const atts = msg.attachments ?? (msg.attachment ? [msg.attachment] : [])
-        for (const a of atts) {
-          if (!attachmentToMessageIds[a.attachment_id]) attachmentToMessageIds[a.attachment_id] = new Set()
-          attachmentToMessageIds[a.attachment_id].add(msg.id)
-        }
-      }
-    }
-    for (const t of attachmentTransfers) {
-      if (!byMsg[t.message_id]) byMsg[t.message_id] = []
-      byMsg[t.message_id].push(t)
-      const msgIds = attachmentToMessageIds[t.attachment_id]
-      if (msgIds) {
-        for (const mid of msgIds) {
-          if (mid === t.message_id) continue
-          if (!byMsg[mid]) byMsg[mid] = []
-          byMsg[mid].push(t)
-        }
-      }
-    }
-    return byMsg
-  }, [chatItems, attachmentTransfers])
-
-  const attachmentMapsCacheRef = useRef<{
-    rejected: Record<string, boolean>
-    activeUpload: Record<string, boolean>
-    completed: Record<string, string | undefined>
-  } | null>(null)
-
-  /** Per-attachment summary maps so rows don't scan global arrays during render. */
-  const { rejectedDownloadByAttachmentId, activeUploadByAttachmentId, completedDownloadPathByAttachmentId } = useMemo(() => {
-    const rejected: Record<string, boolean> = {}
-    const activeUpload: Record<string, boolean> = {}
-    const completedDownloadPath: Record<string, string | undefined> = {}
-    for (const t of attachmentTransfers) {
-      if (t.direction === 'download' && t.status === 'rejected') {
-        rejected[t.attachment_id] = true
-      }
-      if (
-        t.direction === 'upload' &&
-        t.status !== 'completed' &&
-        t.status !== 'failed' &&
-        t.status !== 'rejected'
-      ) {
-        activeUpload[t.attachment_id] = true
-      }
-    }
-    for (const h of transferHistory) {
-      if (h.direction === 'download' && h.status === 'rejected') {
-        rejected[h.attachment_id] = true
-      }
-      if (
-        h.direction === 'download' &&
-        h.status === 'completed' &&
-        h.saved_path &&
-        !completedDownloadPath[h.attachment_id]
-      ) {
-        completedDownloadPath[h.attachment_id] = h.saved_path
-      }
-    }
-    const prev = attachmentMapsCacheRef.current
-    if (
-      prev &&
-      shallowAttachmentMapEqual(prev.rejected, rejected) &&
-      shallowAttachmentMapEqual(prev.activeUpload, activeUpload) &&
-      shallowAttachmentMapEqual(prev.completed, completedDownloadPath)
-    ) {
-      return {
-        rejectedDownloadByAttachmentId: prev.rejected,
-        activeUploadByAttachmentId: prev.activeUpload,
-        completedDownloadPathByAttachmentId: prev.completed,
-      }
-    }
-    attachmentMapsCacheRef.current = {
-      rejected,
-      activeUpload,
-      completed: completedDownloadPath,
-    }
-    return {
-      rejectedDownloadByAttachmentId: rejected,
-      activeUploadByAttachmentId: activeUpload,
-      completedDownloadPathByAttachmentId: completedDownloadPath,
-    }
-  }, [attachmentTransfers, transferHistory])
+  const rejectedDownloadByAttachmentId = useEphemeralMessagesStore((s) => s.rejectedDownloadByAttachmentId)
+  const activeUploadByAttachmentId = useEphemeralMessagesStore((s) => s.activeUploadByAttachmentId)
+  const completedDownloadPathByAttachmentId = useEphemeralMessagesStore((s) => s.completedDownloadPathByAttachmentId)
 
   const sharedByAttachmentId = useMemo(() => {
     const map: Record<string, SharedAttachmentItem | undefined> = {}
@@ -434,8 +328,6 @@ function ServerChatTimelineImpl(props: ServerChatTimelineProps) {
     identity,
     sharedAttachments,
     unsharedAttachmentRecords,
-    transferHistory,
-    attachmentTransfersByMessageId: transferByMessageId,
     rejectedDownloadByAttachmentId,
     activeUploadByAttachmentId,
     sharedByAttachmentId,

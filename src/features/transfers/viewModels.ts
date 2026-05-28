@@ -4,10 +4,10 @@ import {
   type ActiveUploadGroupView,
 } from '../../domain/transfers/selectors'
 
-/** Stable while only upload progress/debug changes — same attachment_id groups. */
+/** Stable while only upload progress/debug changes — membership by attachment + request IDs. */
 export function selectActiveUploadGroupKeysSig(s: EphemeralMessagesState): string {
   return groupActiveUploadsByAttachmentId(s)
-    .map((g) => g.attachmentId)
+    .map((g) => `${g.attachmentId}:${g.requestIds.join(',')}`)
     .join('\0')
 }
 

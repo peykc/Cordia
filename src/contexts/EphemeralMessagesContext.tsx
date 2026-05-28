@@ -140,8 +140,6 @@ interface EphemeralMessagesContextType {
   /** Update bundling progress (0–100) for a message. */
   updateBundlingProgress: (messageId: string, percent: number) => void
   requestAttachmentDownload: (msg: EphemeralChatMessage, attachment?: EphemeralAttachmentMeta) => Promise<void>
-  attachmentTransfers: AttachmentTransferState[]
-  transferHistory: TransferHistoryEntry[]
   hasAccessibleCompletedDownload: (attachmentId: string | null | undefined) => boolean
   refreshTransferHistoryAccessibility: () => Promise<void>
   removeTransferHistoryEntry: (requestId: string) => void
@@ -2646,8 +2644,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       addBundlingMessage,
       updateBundlingProgress,
       requestAttachmentDownload,
-      attachmentTransfers,
-      transferHistory,
       hasAccessibleCompletedDownload,
       refreshTransferHistoryAccessibility,
       removeTransferHistoryEntry,
@@ -2668,8 +2664,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       messagesByBucket,
       unreadState,
       identity?.user_id,
-      attachmentTransfers,
-      transferHistory,
       sharedAttachments,
       serverSharedSha,
       contentCacheBySha,
